@@ -170,7 +170,7 @@ class Port {
 
 // An input queue, a delay line of `slots` that one element a cycle enters, and an output queue; the entry is a Port.
 // A pop takes up to its vl of what is out, once vl are out or nothing more is on its way; no pop's vl is matched to a
-// push's. A push that can never enter, the line stopped under a full output queue, drops that queue: it was left over.
+// push's. What the pops leave stays in the output queue: pushed more than popped, the queue fills and the line stops.
 class Stream {
  public:
   Stream(const char *unit, const char *name, const char *unit_of_work, Port::Role role, uint32_t slots, uint32_t capacity)
@@ -185,13 +185,9 @@ class Stream {
     in_line_ = 0;
   }
 
-  // Asked in program order: no pop is issued while a push waits, so a stopped line never makes room for it.
-  bool takes(uint32_t elements) const { return has_room(elements) || output_ == capacity_; }
+  bool has_room(uint32_t elements) const { return elements <= capacity_ - input_; }
   bool gives(uint32_t elements) const { return elements <= output_ || drained(); }
-  void push(uint32_t elements) {
-    if (!has_room(elements)) output_ = 0;
-    input_ += elements;
-  }
+  void push(uint32_t elements) { input_ += elements; }
   void pop(uint32_t elements) { output_ -= elements < output_ ? elements : output_; }
   // Forgets what is in the queues and the line, for a unit whose work has an end; statistics and the entry stay.
   void flush() {
@@ -217,7 +213,6 @@ class Stream {
   const Port &entry() const { return entry_; }
 
  private:
-  bool has_room(uint32_t elements) const { return input_ <= capacity_ && elements <= capacity_ - input_; }
   bool drained() const { return !input_ && !in_line_; }
   void advance(Cycle now) {
     uint64_t &word = line_[head_ / 64];

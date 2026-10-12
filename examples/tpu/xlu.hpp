@@ -36,7 +36,7 @@ class Xlu {
 
   bool can_accept(const Insn &insn, Cycle now) const {
     if (!issue_.room(now)) return false;
-    if (is_push(insn)) return stream_.takes(insn.vl);
+    if (is_push(insn)) return stream_.has_room(insn.vl);
     return stream_.gives(insn.vl);
   }
   Cycle issue(const Insn &insn, Id, Cycle now) {

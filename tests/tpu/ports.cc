@@ -286,18 +286,21 @@ void fewer_pushed(const Unit &unit) {
             n(second) + "; expected " + n(1 + unit.slots) + " (1 + " + n(unit.slots) + " slots), 1");
 }
 
-// 100 times a push of 4 and a pop of 2, through queues of 8: what the pops leave never stops the unit for good.
+// A push of 4 and a pop of 2, over and over, through queues of 8: what the pops leave stays, the output queue
+// fills, the array stops and a push waits for good. Nothing drops what was left: the program is the one at fault.
 void more_pushed(const Unit &unit) {
   Run run;
-  int done = 0, cycles = 0, longest = 0;
-  for (; done < 100; done++) {
-    const int push = wait_for(run, unit.push, 4), pop = wait_for(run, unit.pop, 2);
-    if (push == 100 || pop == 100) break;
-    cycles += push + pop;
-    longest = push + pop > longest ? push + pop : longest;
+  int done = 0;
+  for (; done < 100; done++)
+    if (wait_for(run, unit.push, 4) == 100 || wait_for(run, unit.pop, 2) == 100) break;
+  int refused = 0;
+  for (int c = 0; c < 1000; c++) {
+    run.next();
+    refused += !run.issue(unit.push, 4);
   }
-  check(done == 100, std::string(unit.name) + ": a push of 4 and a pop of 2, " + n(done) + " times of 100 in " + n(cycles) +
-                         " cycles, " + n(longest) + " the longest; expected all 100");
+  check(done < 100 && refused == 1000, std::string(unit.name) + ": a push of 4 and a pop of 2 stop after " + n(done) +
+                                           " times, and a push is refused in " + n(refused) +
+                                           " of the 1000 cycles after; expected fewer than 100, 1000");
 }
 
 // A tile that comes out shallower: every pop waits for its own tile, 2 elements through 3 slots, never served from the last.
@@ -353,10 +356,9 @@ int main(int argc, char **argv) {
   sfu_and_xlu();
   misc();
   squashed();
-  for (const Unit *unit : {&SYSTOLIC, &MSA, &XLU}) {
-    fewer_pushed(*unit);
-    more_pushed(*unit);
-  }
+  for (const Unit *unit : {&SYSTOLIC, &MSA, &XLU}) fewer_pushed(*unit);
+  more_pushed(SYSTOLIC);
+  more_pushed(MSA);
   xlu_shallower();
   interleaved(SYSTOLIC, 48 + 7 + 1);
   interleaved(MSA, 48 + 7 + 1);

@@ -31,22 +31,18 @@ What a stream is asked to pop need not be what it was pushed, and the rule
 is the stream's, the same for the three units. A pop of `vl` is issued when
 the output queue holds `vl`, or when the input queue and the delay line are
 empty: nothing more is on its way, so it takes what is out, `vl` at most. A
-push is issued when the input queue has room, or when the output queue is
-full: the line is stopped and room would never come, since the model is asked
-in program order and no pop is issued while a push waits. What the output
-queue holds then was left by the pops before, and that push drops it. A
-stream whose pushes and pops count the same rows never meets either case: a
-pop asks for no more than was pushed, and a push that waits under a full
-output queue waited forever before.
+stream whose pops count the rows its pushes counted never meets the second
+case, and its timing is what it was.
 
-The two arrays compute as queues, so what a pop leaves is popped next, and
-nothing in their instructions says when it is left for good: it is known only
-when it stops the array. The cross-lane unit computes a tile, the pushes
-between two pops, and its first pop replaces what the last tile left
-(`functional.hpp`). So its timing forgets the old tile at the first push after
-a pop, the queues and the line, and a pop is never served from the tile
-before. The tile's shape is not read, nor the field at 19:15: a tile 2 lanes
-by 1 deep that comes out 1 lane by 2 deep is a push of 1 and a pop of 2.
+What a pop leaves stays in the output queue. The two arrays compute as
+queues, so it is popped next: an array program that pushes more than it pops
+fills the output queue and stops, and a push then waits for good. The
+cross-lane unit computes a tile, the pushes between two pops, and its first
+pop replaces what the last tile left (`functional.hpp`). So its timing forgets
+the old tile at the first push after a pop, the queues and the line, and a pop
+is never served from the tile before. The tile's shape is not read, nor the
+field at 19:15: a tile 2 lanes by 1 deep that comes out 1 lane by 2 deep is a
+push of 1 and a pop of 2.
 
 A unit is a plain copyable class with the methods of the timing face
 (`owns`, `configure`, `can_accept`, `issue`, `commit`, `tick`) and a static

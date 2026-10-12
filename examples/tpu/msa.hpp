@@ -36,7 +36,7 @@ class Msa {
   bool can_accept(const Insn &insn, Cycle now) const {
     if (!issue_.room(now)) return false;
     if (is(insn, POP)) return stream_.gives(insn.vl) && insn.vl <= pop_.room(now);
-    if (is_input(insn)) return stream_.takes(insn.vl);
+    if (is_input(insn)) return stream_.has_room(insn.vl);
     return weight_push_.room(now) != 0;
   }
   Cycle issue(const Insn &insn, Id, Cycle now) {
