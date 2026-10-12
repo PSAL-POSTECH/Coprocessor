@@ -1,4 +1,5 @@
 // The tpu model's cross-lane unit: one element a cycle enters its delay line, one instruction a cycle the unit.
+// The pushes between two pops are one tile, as in tpu::Functional: the first push after a pop forgets the tile before.
 #ifndef TPU_XLU_HPP
 #define TPU_XLU_HPP
 
@@ -36,14 +37,17 @@ class Xlu {
   bool can_accept(const Insn &insn, Cycle now) const {
     if (!issue_.room(now)) return false;
     if (is_push(insn)) return stream_.has_room(insn.vl);
-    return stream_.holds(insn.vl);
+    return stream_.gives(insn.vl);
   }
   Cycle issue(const Insn &insn, Id, Cycle now) {
     issue_.admit(1, now);
-    if (is_push(insn))
+    if (is_push(insn)) {
+      if (popped_) stream_.flush();
       stream_.push(insn.vl);
-    else
+    } else {
       stream_.pop(insn.vl);
+    }
+    popped_ = !is_push(insn);
     return 1;
   }
   void commit(const Insn &, Id, Cycle) {}
@@ -51,6 +55,7 @@ class Xlu {
   void reset() {
     stream_.reset();
     issue_.reset();
+    popped_ = false;
   }
 
   std::vector<const vcix_accel::Port *> ports() const { return {&stream_.entry(), &issue_}; }
@@ -74,6 +79,8 @@ class Xlu {
 
   Stream stream_{"Xlu", "input", "elements", vcix_accel::Port::PRIMARY, DEFAULT_LATENCY, DEFAULT_ENTRIES};
   vcix_accel::Port issue_{"Xlu", "issue", "instructions", 1};
+  // A pop was issued since the last push: the next push starts a tile.
+  bool popped_ = false;
 };
 
 }  // namespace tpu

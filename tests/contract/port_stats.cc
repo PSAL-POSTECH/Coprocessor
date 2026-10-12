@@ -46,7 +46,7 @@ class Toy : public Model {
   bool can_accept(const Insn &insn, Cycle now) const override {
     if (form_of(insn) == OP) return issue_.room(now) >= 1 && lanes_.room(now) >= insn.vl;
     if (form_of(insn) == PUSH) return array_.has_room(insn.vl);
-    return array_.holds(insn.vl);
+    return array_.gives(insn.vl);
   }
   Cycle issue(const Insn &insn, Id, Cycle now) override {
     if (form_of(insn) == OP) {
