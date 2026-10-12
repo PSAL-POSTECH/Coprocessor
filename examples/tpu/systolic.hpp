@@ -40,9 +40,9 @@ class Systolic {
 
   bool can_accept(const Insn &insn, Cycle now) const {
     if (!issue_.room(now)) return false;
-    if (is(insn, INPUT_PUSH)) return stream_.has_room(insn.vl);
+    if (is(insn, INPUT_PUSH)) return stream_.takes(insn.vl);
     if (is(insn, WEIGHT_PUSH)) return weight_push_.room(now) != 0;
-    return stream_.holds(insn.vl) && insn.vl <= pop_.room(now);
+    return stream_.gives(insn.vl) && insn.vl <= pop_.room(now);
   }
   Cycle issue(const Insn &insn, Id, Cycle now) {
     issue_.admit(1, now);

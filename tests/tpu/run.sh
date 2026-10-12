@@ -37,7 +37,7 @@ printf 'tpu_sfu_latency_cycles: 0\n' > "$BUILD/tpu-latency-0.yml"
 echo "-- the units' ports, with no simulator"
 "$BUILD/tpu_ports" "$BUILD/libtpu.so" > "$BUILD/tpu-ports.log" 2>&1
 rc[ports]=$?
-report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpu-ports.log") passed" "exit 0, 9 passed" \
+report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpu-ports.log") passed" "exit 0, 18 passed" \
   "tpu_ports: each unit's ports count what the cases worked out by hand say (tpu-ports.log)"
 
 echo "-- special-function unit"

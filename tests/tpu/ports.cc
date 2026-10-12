@@ -16,7 +16,7 @@
 namespace {
 
 constexpr uint32_t INPUT_PUSH = 0x2200305B, WEIGHT_PUSH = 0x2600305B, POP = 0x0800305B, VEXP = 0x2C00305B;
-constexpr uint32_t XLU_PUSH = 0x2E00305B, MSA_PUSH = 0x2A00305B, MSA_WEIGHT = 0x2A08305B, MSA_POP = 0x0C00305B;
+constexpr uint32_t XLU_PUSH = 0x2E00305B, XLU_POP = 0x0400305B, MSA_PUSH = 0x2A00305B, MSA_WEIGHT = 0x2A08305B, MSA_POP = 0x0C00305B;
 constexpr uint32_t MVIN = 0x0400302B, VLANE_IDX = 0x0000305B;
 
 const vcix_model *m;
@@ -150,14 +150,18 @@ void one_row() {
 }
 
 // Pushes and pops of two, one instruction a cycle: the array takes a row every cycle once it is full.
+// A pop is offered only for rows that were pushed: one offered to an empty array is issued and takes nothing.
 void continuous() {
   Run run;
   const int cycles = 4000;
-  uint64_t short_by = 0;
+  uint64_t short_by = 0, unpopped = 0;
   bool bounded = true;
   for (int c = 1; c <= cycles; c++) {
     run.next();
-    if (!run.issue(POP, 2)) run.issue(INPUT_PUSH, 2);
+    if (unpopped && run.issue(POP, 2))
+      unpopped -= 2;
+    else if (run.issue(INPUT_PUSH, 2))
+      unpopped += 2;
     const uint64_t admitted = run.stat("Systolic", "input", VCIX_STAT_ADMITTED);
     bounded = bounded && admitted <= uint64_t(c);
     short_by = uint64_t(c) - admitted;
@@ -253,6 +257,82 @@ void squashed() {
   check(with.all() == without.all(), "a push squashed 3 cycles after its issue, behind a vexp, leaves every statistic as if never issued");
 }
 
+// Cycles from now until the instruction is issued, 100 if it never is.
+int wait_for(Run &run, uint32_t bits, uint32_t vl) {
+  int waited = 0;
+  do {
+    run.next();
+    waited++;
+  } while (waited < 100 && !run.issue(bits, vl));
+  return waited;
+}
+
+struct Unit {
+  const char *name;
+  uint32_t push, pop;
+  int slots;
+};
+const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7}, MSA = {"msa", MSA_PUSH, MSA_POP, 7}, XLU = {"xlu", XLU_PUSH, XLU_POP, 3};
+
+// A pop of more than was pushed is issued once nothing more is on its way, and so is the pop after it.
+void fewer_pushed(const Unit &unit) {
+  Run run;
+  run.next();
+  run.issue(unit.push, 1);
+  const int first = wait_for(run, unit.pop, 2);
+  const int second = wait_for(run, unit.pop, 2);
+  check(first == 1 + unit.slots && second == 1,
+        std::string(unit.name) + ": a push of 1 is popped by 2 after " + n(first) + " cycles, and popped again after " +
+            n(second) + "; expected " + n(1 + unit.slots) + " (1 + " + n(unit.slots) + " slots), 1");
+}
+
+// 100 times a push of 4 and a pop of 2, through queues of 8: what the pops leave never stops the unit for good.
+void more_pushed(const Unit &unit) {
+  Run run;
+  int done = 0, cycles = 0, longest = 0;
+  for (; done < 100; done++) {
+    const int push = wait_for(run, unit.push, 4), pop = wait_for(run, unit.pop, 2);
+    if (push == 100 || pop == 100) break;
+    cycles += push + pop;
+    longest = push + pop > longest ? push + pop : longest;
+  }
+  check(done == 100, std::string(unit.name) + ": a push of 4 and a pop of 2, " + n(done) + " times of 100 in " + n(cycles) +
+                         " cycles, " + n(longest) + " the longest; expected all 100");
+}
+
+// A tile that comes out shallower: every pop waits for its own tile, 2 elements through 3 slots, never served from the last.
+void xlu_shallower() {
+  Run run;
+  int as_first = 0;
+  for (int tile = 0; tile < 100; tile++) {
+    const int push = wait_for(run, XLU_PUSH, 4), pop = wait_for(run, XLU_POP, 2);
+    as_first += push == 1 && pop == 2 + 3;
+  }
+  check(as_first == 100, "xlu: 100 tiles pushed by 4 and popped by 2: " + n(as_first) +
+                             " pops issued 2 + 3 cycles after their own push; expected 100");
+}
+
+// Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: the pushes and pops of a
+// matched stream, whose timing the rule for an unmatched one must not move. 48 rows at one a cycle, then 7 slots and the pop.
+void interleaved(const Unit &unit, int expected) {
+  Run run;
+  std::vector<uint32_t> program(4, unit.push);
+  for (int t = 4; t < 12; t++) {
+    program.push_back(unit.pop);
+    program.push_back(unit.push);
+  }
+  program.insert(program.end(), 4, unit.pop);
+  int cycles = 0;
+  bool all = true;
+  for (uint32_t bits : program) {
+    const int waited = wait_for(run, bits, 4);
+    all = all && waited < 100;
+    cycles += waited;
+  }
+  check(all && cycles == expected, std::string(unit.name) + ": 12 subtiles of 4 rows, pushed 4 ahead of their pops: " +
+                                       n(cycles) + " cycles; expected " + n(expected));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -273,5 +353,12 @@ int main(int argc, char **argv) {
   sfu_and_xlu();
   misc();
   squashed();
+  for (const Unit *unit : {&SYSTOLIC, &MSA, &XLU}) {
+    fewer_pushed(*unit);
+    more_pushed(*unit);
+  }
+  xlu_shallower();
+  interleaved(SYSTOLIC, 48 + 7 + 1);
+  interleaved(MSA, 48 + 7 + 1);
   return failed;
 }

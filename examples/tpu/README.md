@@ -12,8 +12,8 @@ registers and to memory, which `execute` hands every instruction to.
 |---|---|---|---|
 | `tpu::Sfu` | `sfu.hpp` | `verf`, `vtanh`, `vsin`, `vcos`, `vlog`, `vatan`, `vexp` (`sf.vc.v.iv`, custom-2) | a pipeline: one instruction enters per cycle, the result is ready `tpu_sfu_latency_cycles` after it entered, and any number are inside at once |
 | `tpu::Misc` | `misc.hpp` | `vlane_idx`, `compute` (custom-2); the DMA's `dma_config_desc`, `mvin`, `mvin2`, `mvin3`, `mvout` (custom-1) | one cycle each, any number in a cycle |
-| `tpu::Systolic` | `systolic.hpp` | the systolic array's input push (`sf.vc.iv` 0), weight push (`sf.vc.iv` 1) and pop (`sf.vc.v.i` 2) (custom-2) | one instruction per cycle. A push of `vl` elements waits for room in the input queue; one element a cycle enters a delay line of 2 x `vpu_num_lanes` - 1 slots and comes out into the output queue; a pop of `vl` waits until the output queue holds `vl`. A weight push changes nothing. The array stops while the output queue is full |
-| `tpu::Xlu` | `xlu.hpp` | the cross-lane unit's `xlu_push` (`sf.vc.iv` 3), `xlu_push_pattern` (`sf.vc.ivv` 3) and `xlu_pop` (`sf.vc.v.i` 1) (custom-2) | one instruction per cycle, one cycle each. A push of `vl` elements, of either kind, waits for room in the input queue; one element a cycle enters a delay line of `tpu_xlu_latency_cycles` slots and comes out into the output queue; a pop of `vl` waits until the output queue holds `vl`. The unit stops while the output queue is full |
+| `tpu::Systolic` | `systolic.hpp` | the systolic array's input push (`sf.vc.iv` 0), weight push (`sf.vc.iv` 1) and pop (`sf.vc.v.i` 2) (custom-2) | one instruction per cycle. A push of `vl` elements waits for room in the input queue; one element a cycle enters a delay line of 2 x `vpu_num_lanes` - 1 slots and comes out into the output queue; a pop of `vl` waits until the output queue holds `vl`, or until nothing more is on its way. A weight push changes nothing. The array stops while the output queue is full |
+| `tpu::Xlu` | `xlu.hpp` | the cross-lane unit's `xlu_push` (`sf.vc.iv` 3), `xlu_push_pattern` (`sf.vc.ivv` 3) and `xlu_pop` (`sf.vc.v.i` 1) (custom-2) | one instruction per cycle, one cycle each. A push of `vl` elements, of either kind, waits for room in the input queue; one element a cycle enters a delay line of `tpu_xlu_latency_cycles` slots and comes out into the output queue; a pop of `vl` waits until the output queue holds `vl`, or until nothing more is on its way. The first push after a pop starts a tile, and what the unit still held is forgotten. The unit stops while the output queue is full |
 | `tpu::Msa` | `msa.hpp` | the multi-precision array's `msa push` (`sf.vc.iv` 2) and `msa pop` (`sf.vc.v.i` 3) (custom-2) | the systolic array's, with queues and a delay line of its own, from the same two keys. One push serves both operands: with [4] of its field at 19:15 set it is a weight push and changes nothing, otherwise an input push of `vl` elements. The delay line is 2 x `vpu_num_lanes` - 1 slots whatever the field's active-width shift ([3:2]) and format ([1:0]) are |
 
 The systolic array's `compute` has no timing effect and is owned by
@@ -22,12 +22,31 @@ instructions at one cycle each. Nothing on custom-3 is owned.
 
 The array and the cross-lane unit are the same structure with a delay line of
 a different length: `tpu::Stream` (`stream.hpp`) is the two queues and the
-delay line, and each unit has one. The cross-lane unit's timing knows no tile:
-a pop takes whatever the output queue holds, and the field at 19:15 is not
-read. Its latency is not known: the 10 of `tpu_xlu_latency_cycles` is a
-placeholder. The multi-precision array is a third `tpu::Stream`, as long as
+delay line, and each unit has one. Its latency is not known: the 10 of
+`tpu_xlu_latency_cycles` is a placeholder. The multi-precision array is a third `tpu::Stream`, as long as
 the systolic array's. That an array working on a reduced width takes the full
 delay is a decision, not a measurement: no hardware says what it takes.
+
+What a stream is asked to pop need not be what it was pushed, and the rule
+is the stream's, the same for the three units. A pop of `vl` is issued when
+the output queue holds `vl`, or when the input queue and the delay line are
+empty: nothing more is on its way, so it takes what is out, `vl` at most. A
+push is issued when the input queue has room, or when the output queue is
+full: the line is stopped and room would never come, since the model is asked
+in program order and no pop is issued while a push waits. What the output
+queue holds then was left by the pops before, and that push drops it. A
+stream whose pushes and pops count the same rows never meets either case: a
+pop asks for no more than was pushed, and a push that waits under a full
+output queue waited forever before.
+
+The two arrays compute as queues, so what a pop leaves is popped next, and
+nothing in their instructions says when it is left for good: it is known only
+when it stops the array. The cross-lane unit computes a tile, the pushes
+between two pops, and its first pop replaces what the last tile left
+(`functional.hpp`). So its timing forgets the old tile at the first push after
+a pop, the queues and the line, and a pop is never served from the tile
+before. The tile's shape is not read, nor the field at 19:15: a tile 2 lanes
+by 1 deep that comes out 1 lane by 2 deep is a push of 1 and a pop of 2.
 
 A unit is a plain copyable class with the methods of the timing face
 (`owns`, `configure`, `can_accept`, `issue`, `commit`, `tick`) and a static
