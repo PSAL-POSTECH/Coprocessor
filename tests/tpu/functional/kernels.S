@@ -210,6 +210,31 @@ k_mxu_pop_32:
 2:  vse32.v v16, (a1)
     mv      a0, t0
     ret
+# Its vmatpush (sf.vc.iv 1) and vmatmul (sf.vc.iv 0) of words: a3 = the field, 0 to 31, whose [4:3] names the half
+# of the depth a vmatpush fills and whose [2] latches the weights at a vmatmul.
+.macro mxu_operand name, p
+    .globl \name
+\name:
+    vsetvli t0, a2, e32, m2, ta, ma
+    vle32.v v8, (a0)
+    la      t1, 1f
+    slli    t3, a3, 3
+    add     t1, t1, t3
+    jr      t1
+1:
+  .irp field, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    sf.vc.iv \p, 0, v8, \field
+    j       2f
+  .endr
+  .irp field, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+    sf.vc.iv \p, 0, v8, \field-32
+    j       2f
+  .endr
+2:  mv      a0, t0
+    ret
+.endm
+    mxu_operand k_mxu_push_32, 0x1
+    mxu_operand k_mxu_matmul_32, 0x0
 
     msa_push k_msa_push_32, 32
     msa_push k_msa_push_16, 16

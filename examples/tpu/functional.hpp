@@ -189,7 +189,8 @@ class Functional {
     msa_output_.clear();
     msa_format_ = 0;
     msa_shift_ = 0;
-    mxu_weight_.clear();
+    mxu_staged_.clear();
+    mxu_active_.clear();
     mxu_output_.clear();
     mxu_held_.clear();
     mxu_holds_ = MXU_NOTHING;
@@ -623,7 +624,9 @@ class Functional {
   // ---- The matrix unit: an array of 2 x lanes columns and as many weights a column. An operand is two registers
   // of words of 32 bits: a vmatprep holds the columns from `lanes` up, and the vmatpush (weights) or the vmatmul
   // (inputs) after it brings the columns below. A word holds one row as a single, or two rows of 16 bits, the
-  // earlier in its low half. The field at 19:15 is Mxu's: [1:0] what a word holds, [2] the operand or the half.
+  // earlier in its low half. The field at 19:15 is Mxu's: [1:0] what a word holds, [2] the operand, the latch or
+  // the half of the columns, [4:3] the half of the depth. Pushes fill a staged matrix and a vmatmul computes with
+  // the active one, which a vmatmul that latches makes a copy of the staged.
   enum MxuHeld : uint32_t { MXU_NOTHING, MXU_WEIGHTS, MXU_INPUTS };
   static float mxu_element(uint32_t word, uint32_t slot, uint32_t format) {
     if (format == 0) {
@@ -647,8 +650,7 @@ class Functional {
     return rows;
   }
   void mxu_size(const Host &host) {
-    if (mxu_weight_.size() == 2 * host.lanes()) return;
-    mxu_weight_.assign(2 * host.lanes(), {});
+    if (mxu_output_.size() == 2 * host.lanes()) return;
     mxu_output_.assign(2 * host.lanes(), {});
   }
   void mxu_prep(const Host &host, const Insn &insn) {
@@ -663,32 +665,44 @@ class Functional {
     mxu_holds_ = MXU_NOTHING;
     return std::move(mxu_held_);
   }
-  // A vmatpush adds a weight per row to every column; a column keeps its last 2 x lanes.
+  // A vmatpush stages a weight per row in every column, in one half of the depth: 1 the depths below `lanes`, which
+  // meet a vmatmul's half of an input, 2 those from `lanes` up, which meet a vmatprep's. What the half held moves
+  // down as many depths, past its last is gone, and the rows take its top in their order: row r at depth r of it.
   void mxu_push(const Host &host, const Insn &insn) {
     mxu_size(host);
     const std::vector<std::vector<float>> lower = mxu_rows(host, insn, "vmatpush");
+    const uint32_t half = (vcix_accel::rs1(insn) & Mxu::DEPTH) >> 3;
+    if (half == 0) fail("vmatpush: field %u names no half of the depth: [4:3] is 1 or 2", vcix_accel::rs1(insn));
+    if (half == 3) fail("vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled");
     const std::vector<std::vector<float>> upper = mxu_take("vmatpush", MXU_WEIGHTS, lower[0].size());
     const uint32_t lanes = host.lanes();
-    for (uint32_t column = 0; column < 2 * lanes; column++)
-      for (size_t row = 0; row < lower[0].size(); row++) {
-        if (mxu_weight_[column].size() == 2 * lanes) mxu_weight_[column].pop_front();
-        mxu_weight_[column].push_back(column < lanes ? lower[column][row] : upper[column - lanes][row]);
-      }
+    const size_t rows = lower[0].size(), top = half == 1 ? 0 : lanes;
+    if (mxu_staged_.empty()) mxu_staged_.assign(2 * lanes, std::vector<float>(2 * lanes));
+    for (uint32_t column = 0; column < 2 * lanes; column++) {
+      float *weight = &mxu_staged_[column][top];
+      for (size_t depth = lanes; depth-- > rows;) weight[depth] = weight[depth - rows];
+      for (size_t row = 0; row < rows && row < lanes; row++)
+        weight[row] = column < lanes ? lower[column][row] : upper[column - lanes][row];
+    }
   }
-  // A vmatmul computes at once: a row is one input vector of 2 x lanes, and a column's output is its weights times it.
+  // A vmatmul computes at once: a row is one input vector of 2 x lanes, and a column's output is its active weights
+  // times it, element k by the weight at depth k. One that latches first makes the staged weights the active.
   void mxu_matmul(const Host &host, const Insn &insn) {
     mxu_size(host);
     const std::vector<std::vector<float>> lower = mxu_rows(host, insn, "vmatmul");
     const std::vector<std::vector<float>> upper = mxu_take("vmatmul", MXU_INPUTS, lower[0].size());
-    if (mxu_weight_[0].empty()) fail("vmatmul: no weight was pushed before it");
+    if (vcix_accel::rs1(insn) & Mxu::LATCH) {
+      if (mxu_staged_.empty()) fail("vmatmul: no weight was pushed before it");
+      mxu_active_ = mxu_staged_;
+    }
+    if (mxu_active_.empty()) fail("vmatmul: no weights were latched before it, and it does not latch");
     const uint32_t lanes = host.lanes();
     std::vector<float> input(2 * lanes);
     for (size_t row = 0; row < lower[0].size(); row++) {
       for (uint32_t k = 0; k < 2 * lanes; k++) input[k] = k < lanes ? lower[k][row] : upper[k - lanes][row];
       for (uint32_t column = 0; column < 2 * lanes; column++) {
         float output = 0;
-        uint32_t k = 0;
-        for (float weight : mxu_weight_[column]) output += input[k++] * weight;
+        for (uint32_t k = 0; k < 2 * lanes; k++) output += input[k] * mxu_active_[column][k];
         mxu_output_[column].push_back(output);
       }
     }
@@ -1006,7 +1020,10 @@ class Functional {
   Queues msa_weight_, msa_output_;  // per lane: its column of the matrix, and what it computed
   uint32_t msa_format_ = 0, msa_shift_ = 0;  // as the last weight push said
 
-  Queues mxu_weight_, mxu_output_;  // per column, of 2 x lanes: its weights, and what it computed
+  // Per column, of 2 x lanes: its weight at each depth as the pushes left them, and as the last latch took them;
+  // each empty until the first push or latch.
+  std::vector<std::vector<float>> mxu_staged_, mxu_active_;
+  Queues mxu_output_;  // per column, what it computed
   std::vector<std::vector<float>> mxu_held_;  // per lane, the rows of the upper half a vmatprep brought
   MxuHeld mxu_holds_ = MXU_NOTHING;
 

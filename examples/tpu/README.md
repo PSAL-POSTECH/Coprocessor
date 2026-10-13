@@ -66,8 +66,8 @@ instructions.
 | Instruction | Encoding | Field at 19:15 | What it does |
 |---|---|---|---|
 | `vmatprep` | `sf.vc.iv` 2 | [1:0] format, [2] 0 for weights and 1 for inputs | holds the columns from `vpu_num_lanes` up of the operand whose other half the next instruction brings |
-| `vmatpush` | `sf.vc.iv` 1 | [1:0] format | with what a `vmatprep` of weights held, one weight per row for each of the 2 x `vpu_num_lanes` columns; a column keeps its last 2 x `vpu_num_lanes` |
-| `vmatmul` | `sf.vc.iv` 0 | [1:0] format | with what a `vmatprep` of inputs held, the rows of an input: a row is 2 x `vpu_num_lanes` numbers, and every column computes its weights times it |
+| `vmatpush` | `sf.vc.iv` 1 | [1:0] format, [4:3] 1 for the first half of the depth and 2 for the second | with what a `vmatprep` of weights held, one weight per row for each of the 2 x `vpu_num_lanes` columns, staged in that half of the depth |
+| `vmatmul` | `sf.vc.iv` 0 | [1:0] format, [2] 1 to latch | with what a `vmatprep` of inputs held, the rows of an input: a row is 2 x `vpu_num_lanes` numbers, and every column computes its active weights times it; one that latches first makes the staged weights the active |
 | `vpop` | `sf.vc.v.i` 2 | [2] 0 the lower half of the columns, 1 the upper | `vl` rows of one half of the columns, as singles |
 
 An element is a word of 32 bits. Format 0 is a single; 1 is two halves and 3
@@ -76,17 +76,41 @@ two bfloat16, the earlier row in the low half of the word, so a register of
 operand before it, or of another number of rows, ends the run, as does a
 `vpop` of more rows than its half holds.
 
+Weights. A column has a weight at each depth k, 0 to 2 x `vpu_num_lanes` - 1,
+and element k of an input row is multiplied by it: the depths below
+`vpu_num_lanes` meet the half of the row a `vmatmul` brings, the rest the
+half its `vmatprep` held. The unit holds two such matrices, the staged and
+the active. A `vmatpush` writes the staged only, in the half of the depth its
+[4:3] names, 1 the first and 2 the second, the v6e's `vmatpush1` and
+`vmatpush2`: what that half held moves down as many depths as the push has
+rows, what passes the half's last depth is gone, and the rows take the top of
+the half in their order, row r at its depth r. The other half is untouched.
+So the last push of a half is at its lowest depths, and a tile pushed as the
+v6e pushes it, 16 rows at a time with the deepest first (k 112 to 127 first,
+k 0 to 15 last, in each half), is staged as the matrix it is. A `vmatmul`
+computes with the active weights; with [2] of its field set it first copies
+the staged whole into the active, as the v6e's `vmatmul` marked `.vlgmr`
+does, and the staged stay as they were. So the next tile may be pushed
+between the `vmatmul`s of the one in use, as the v6e's bundles do, and a tile
+of 128 deep pushes only the first half and brings zeros under the
+`vmatprep` of its inputs, as XLA does for K = 128, while the second half
+keeps what it held. The staged weights are zeros at the first push. A
+`vmatmul` that latches with nothing pushed ends the run, as does one that
+computes before any latch; so does a `vmatpush` whose [4:3] is 0, or 3: the
+v6e's `vmatpush3`, which a dot of N = 128 uses with the two halves of the
+depth apart, is not modelled.
+
 Timing: one instruction per cycle; a `vmatprep` and a `vmatpush` enter
 nothing. The rows of a `vmatmul` wait in the input queue, and
 `tpu_mxu_rows_per_cycle` of them a cycle enter a delay line of
 `tpu_mxu_delay_cycles` slots: a cell has that many accumulators, 2 on the
 v6e, where a word brings two rows of one column. A row that comes out is in
 both halves' output queues, a `vpop` takes it from its own, and the line
-stops while either is full. What the v6e's bundles do not say is not
-modelled: `vmatpush1` and `vmatpush2` are one `vmatpush`, a weight takes
-effect when pushed, and the 162 cycles from a `vmatmul` to its first `vpop`
-in those bundles are a schedule's, which a machine description may give as
-`tpu_mxu_delay_cycles`; the default is the systolic array's width + depth - 1.
+stops while either is full. A latch costs nothing more: the bundles do not
+say what it costs. What else they do not say is not modelled either: the
+162 cycles from a `vmatmul` to its first `vpop` in those bundles are a
+schedule's, which a machine description may give as `tpu_mxu_delay_cycles`;
+the default is the systolic array's width + depth - 1.
 
 ## The functional face
 
