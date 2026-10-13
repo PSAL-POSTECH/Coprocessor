@@ -65,16 +65,27 @@ instructions.
 
 | Instruction | Encoding | Field at 19:15 | What it does |
 |---|---|---|---|
-| `vmatprep` | `sf.vc.iv` 2 | [1:0] format, [2] 0 for weights and 1 for inputs | holds the columns from `vpu_num_lanes` up of the operand whose other half the next instruction brings |
+| `vmatprep` | `sf.vc.iv` 2 | [1:0] format, [2] 0 for weights and 1 for inputs | holds the columns from `vpu_num_lanes` up of that operand, until the next `vmatpush` (weights) or `vmatmul` (inputs) brings the other half |
 | `vmatpush` | `sf.vc.iv` 1 | [1:0] format, [4:3] 1 for the first half of the depth and 2 for the second | with what a `vmatprep` of weights held, one weight per row for each of the 2 x `vpu_num_lanes` columns, staged in that half of the depth |
 | `vmatmul` | `sf.vc.iv` 0 | [1:0] format, [2] 1 to latch | with what a `vmatprep` of inputs held, the rows of an input: a row is 2 x `vpu_num_lanes` numbers, and every column computes its active weights times it; one that latches first makes the staged weights the active |
 | `vpop` | `sf.vc.v.i` 2 | [2] 0 the lower half of the columns, 1 the upper | `vl` rows of one half of the columns, as singles |
 
 An element is a word of 32 bits. Format 0 is a single; 1 is two halves and 3
 two bfloat16, the earlier row in the low half of the word, so a register of
-8 words is 16 rows. A `vmatpush` or a `vmatmul` with no `vmatprep` of its
-operand before it, or of another number of rows, ends the run, as does a
-`vpop` of more rows than its half holds.
+8 words is 16 rows.
+
+The unit holds an upper half of the weights and one of the inputs, apart: a
+`vmatprep` of the weights is taken by the next `vmatpush`, one of the inputs
+by the next `vmatmul`, and what comes between, the other operand's
+instructions included, leaves it. So the v6e's orders run as its bundles
+issue them (bundle: op): `43 vmatprep.subr / 44 vmatprep.mubr / 45 vmatpush2`,
+the inputs' half waiting under seven more pairs of `vmatprep.subr` and
+`vmatpush2` until `64 vmatmul.mubr.vlgmr`; and `63 vmatprep.subr / 64
+vmatmul.vlgmr / 65 vmatpush1`, the weights' half waiting under the
+`vmatmul`. A `vmatpush` or a `vmatmul` with no half of its operand held, or
+one of another number of rows, ends the run; so does a `vmatprep` of an
+operand whose held half nothing has taken yet, rather than drop it; and so
+does a `vpop` of more rows than its half holds.
 
 Weights. A column has a weight at each depth k, 0 to 2 x `vpu_num_lanes` - 1,
 and element k of an input row is multiplied by it: the depths below

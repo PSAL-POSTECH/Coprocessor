@@ -126,7 +126,7 @@ MXU="$BUILD/libtpu_mxu.so"
 [ -e "$MXU" ] || { echo "$MXU: not found" >&2; exit 2; }
 MODEL=$MXU on_model mxu -- mxu; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-echo "  operands as two registers, words of singles, halves and bfloat16, weights staged a half of the depth at a time and latched, popped a half at a time: $(tail -n1 "$OUT/mxu.out") (exit $rc)"
+echo "  operands as two registers, words of singles, halves and bfloat16, weights staged a half of the depth at a time and latched, each operand's upper half held apart in the v6e's orders, popped a half at a time: $(tail -n1 "$OUT/mxu.out") (exit $rc)"
 # refused_mxu <which> <text>
 refused_mxu() {
   local rc
@@ -142,6 +142,8 @@ refused_mxu weights "tpu: vmatmul: no weight was pushed before it"
 refused_mxu latch "tpu: vmatmul: no weights were latched before it, and it does not latch"
 refused_mxu depth "tpu: vmatpush: field 3 names no half of the depth: [4:3] is 1 or 2"
 refused_mxu push3 "tpu: vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled"
+refused_mxu prep-weights "tpu: vmatprep: the upper half of the weights a vmatprep held before it was taken by no vmatpush"
+refused_mxu prep-inputs "tpu: vmatprep: the upper half of the inputs a vmatprep held before it was taken by no vmatmul"
 refused_mxu format "tpu: vmatprep: format 2 names nothing a word holds"
 refused_mxu words "tpu: vmatpush: its elements are words of 32 bits, not of 16"
 

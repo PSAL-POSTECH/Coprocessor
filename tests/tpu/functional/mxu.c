@@ -1,7 +1,7 @@
 // The matrix unit of libtpu_mxu.so: an array of 2 x LANES columns, an operand as two registers (a vmatprep, then
-// the vmatpush or the vmatmul), a word of one single or two rows of 16 bits, weights staged a half of the depth at
-// a time and made active by a vmatmul that latches, a result popped a half of the columns at a time. Checked
-// against a formula. Usage: mxu [what the model refuses]
+// the vmatpush or the vmatmul, each operand's held apart), a word of one single or two rows of 16 bits, weights
+// staged a half of the depth at a time and made active by a vmatmul that latches, a result popped a half of the
+// columns at a time. Checked against a formula. Usage: mxu [what the model refuses]
 #include "common.h"
 
 // sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2: the encodings the matrix unit has. The number is the instruction's field.
@@ -45,14 +45,24 @@ static void place(float (*matrix)[WIDTH], unsigned rows, unsigned first, unsigne
       else *(uint16_t *)spad(lane, IN + 2 * row) = half_of(bits);
     }
 }
-// An operand: its upper half under a vmatprep with `prep` in its field, then its lower half with `field` in its.
-static void operand(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned prep,
-                    unsigned field) {
+// The upper half of an operand under a vmatprep with `prep` in its field, which the unit holds until its operand's
+// next vmatpush or vmatmul.
+static void prep(float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned field) {
   const unsigned long words = format == SINGLE ? rows : rows / 2;
   place(matrix, rows, LANES, format);
-  if (k_vmatprep(spad(0, IN), 0, words, format | prep, 0) != words) puts("a vmatprep did not take every word");
+  if (k_vmatprep(spad(0, IN), 0, words, format | field, 0) != words) puts("a vmatprep did not take every word");
+}
+// The lower half of an operand with `field` in its field, which takes the upper half held for its operand.
+static void bring(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned field) {
+  const unsigned long words = format == SINGLE ? rows : rows / 2;
   place(matrix, rows, 0, format);
   if (lower(spad(0, IN), 0, words, format | field, 0) != words) puts("an operand did not take every word");
+}
+// An operand: its upper half under a vmatprep, then its lower half.
+static void operand(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned upper,
+                    unsigned field) {
+  prep(matrix, rows, format, upper);
+  bring(lower, matrix, rows, format, field);
 }
 
 // What the array holds, a weight at each depth of each column: the staged weights, and the active ones, which the
@@ -60,10 +70,13 @@ static void operand(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, u
 static float staged[WIDTH][WIDTH], active[WIDTH][WIDTH];
 // `count` rows of weights to one half of the depth: what the half held moves down `count` depths, what passes its
 // last is gone, and the rows take its top in their order. The other half is as it was.
-static void push(float (*rows)[WIDTH], unsigned count, unsigned format, unsigned half) {
+static void stage(float (*rows)[WIDTH], unsigned count, unsigned half) {
   float (*top)[WIDTH] = staged + (half == PUSH2 ? LANES : 0);
   memmove(top + count, top, (LANES - count) * sizeof *top);
   memcpy(top, rows, count * sizeof *rows);
+}
+static void push(float (*rows)[WIDTH], unsigned count, unsigned format, unsigned half) {
+  stage(rows, count, half);
   operand(k_vmatpush, rows, count, format, 0, half);
 }
 // One half of the depth of a tile as the v6e pushes it, a slab at a time and the deepest first: the last slab
@@ -118,6 +131,14 @@ static int refused(const char *which) {
     operand(k_vmatpush, one, 2, BF16, 0, 0);
   } else if (!strcmp(which, "push3")) {     // both bits of [4:3]: the v6e's vmatpush3
     operand(k_vmatpush, one, 2, BF16, 0, PUSH1 | PUSH2);
+  } else if (!strcmp(which, "prep-weights")) {  // a vmatprep of weights while one is held, untaken
+    prep(one, 2, BF16, 0);
+    prep(one, 2, BF16, INPUTS);
+    prep(one, 2, BF16, 0);
+  } else if (!strcmp(which, "prep-inputs")) {   // a vmatprep of inputs while one is held, untaken
+    prep(one, 2, BF16, INPUTS);
+    operand(k_vmatpush, one, 2, BF16, 0, PUSH1);
+    prep(one, 2, BF16, INPUTS);
   } else if (!strcmp(which, "format")) {    // format 2, which names nothing
     k_vmatprep(spad(0, IN), 0, 1, 2, 0);
   } else if (!strcmp(which, "words")) {     // elements of 16 bits
@@ -170,6 +191,25 @@ int main(int argc, char **argv) {
     push(slab, SLAB, format, PUSH2);
     matmul(a, 4, format, LATCH);
     wrong += check(a, 0, 4);
+    // The two orders of the v6e's bundles (bundle: op). 43 vmatprep.subr / 44 vmatprep.mubr / 45 vmatpush2: the
+    // inputs' upper half waits under the weights' pushes, here every push of the second half, until 64
+    // vmatmul.mubr.vlgmr takes it. 63 vmatprep.subr / 64 vmatmul.vlgmr / 65 vmatpush1: the next tile's weights wait
+    // under that vmatmul, which computes with the tile before, and the vmatpush1 after it takes them.
+    push_half(b[0], format, PUSH1);
+    for (unsigned at = LANES / SLAB; at-- > 0;) {
+      prep(b[0] + LANES + at * SLAB, SLAB, format, 0);
+      if (at == LANES / SLAB - 1) prep(a + 4, 2, format, INPUTS);
+      stage(b[0] + LANES + at * SLAB, SLAB, PUSH2);
+      bring(k_vmatpush, b[0] + LANES + at * SLAB, SLAB, format, PUSH2);
+    }
+    prep(b[2] + LANES - SLAB, SLAB, format, 0);
+    memcpy(active, staged, sizeof active);
+    bring(k_vmatmul, a + 4, 2, format, LATCH);
+    stage(b[2] + LANES - SLAB, SLAB, PUSH1);
+    bring(k_vmatpush, b[2] + LANES - SLAB, SLAB, format, PUSH1);
+    wrong += check(a, 4, 2);
+    matmul(a + 6, 2, format, LATCH);
+    wrong += check(a, 6, 2);
   }
   printf("mxu: %u of %u elements as the formula says\n", checked - wrong, checked);
   return wrong != 0;

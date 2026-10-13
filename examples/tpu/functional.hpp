@@ -192,8 +192,7 @@ class Functional {
     mxu_staged_.clear();
     mxu_active_.clear();
     mxu_output_.clear();
-    mxu_held_.clear();
-    mxu_holds_ = MXU_NOTHING;
+    for (MxuHalf &held : mxu_held_) held = {};
   }
 
   void execute(const Host &host, const Insn &insn) {
@@ -622,12 +621,13 @@ class Functional {
   }
 
   // ---- The matrix unit: an array of 2 x lanes columns and as many weights a column. An operand is two registers
-  // of words of 32 bits: a vmatprep holds the columns from `lanes` up, and the vmatpush (weights) or the vmatmul
-  // (inputs) after it brings the columns below. A word holds one row as a single, or two rows of 16 bits, the
-  // earlier in its low half. The field at 19:15 is Mxu's: [1:0] what a word holds, [2] the operand, the latch or
+  // of words of 32 bits: a vmatprep holds the columns from `lanes` up, each operand's apart, and the next vmatpush
+  // (weights) or vmatmul (inputs) brings the columns below. A word holds one row as a single, or two rows of 16 bits,
+  // the earlier in its low half. The field at 19:15 is Mxu's: [1:0] what a word holds, [2] the operand, the latch or
   // the half of the columns, [4:3] the half of the depth. Pushes fill a staged matrix and a vmatmul computes with
   // the active one, which a vmatmul that latches makes a copy of the staged.
-  enum MxuHeld : uint32_t { MXU_NOTHING, MXU_WEIGHTS, MXU_INPUTS };
+  enum MxuOperand : uint32_t { MXU_WEIGHTS, MXU_INPUTS };
+  static constexpr const char *mxu_operand[] = {"weights", "inputs"}, *mxu_taker[] = {"vmatpush", "vmatmul"};
   static float mxu_element(uint32_t word, uint32_t slot, uint32_t format) {
     if (format == 0) {
       float value;
@@ -653,17 +653,24 @@ class Functional {
     if (mxu_output_.size() == 2 * host.lanes()) return;
     mxu_output_.assign(2 * host.lanes(), {});
   }
+  // A vmatprep holds the upper half of its operand until the next vmatpush or vmatmul of that operand takes it; what
+  // comes between, the other operand's included, leaves it. A second before the first is taken ends the run.
   void mxu_prep(const Host &host, const Insn &insn) {
-    mxu_held_ = mxu_rows(host, insn, "vmatprep");
-    mxu_holds_ = vcix_accel::rs1(insn) & Mxu::SECOND ? MXU_INPUTS : MXU_WEIGHTS;
+    const MxuOperand operand = vcix_accel::rs1(insn) & Mxu::SECOND ? MXU_INPUTS : MXU_WEIGHTS;
+    std::vector<std::vector<float>> rows = mxu_rows(host, insn, "vmatprep");
+    MxuHalf &held = mxu_held_[operand];
+    if (held.held)
+      fail("vmatprep: the upper half of the %s a vmatprep held before it was taken by no %s", mxu_operand[operand],
+           mxu_taker[operand]);
+    held = {true, std::move(rows)};
   }
-  // The upper half a vmatprep left, which must be of this operand and of as many rows.
-  std::vector<std::vector<float>> mxu_take(const char *what, MxuHeld operand, size_t rows) {
-    if (mxu_holds_ != operand) fail("%s: no vmatprep of its upper half came before it", what);
-    if (mxu_held_[0].size() != rows)
-      fail("%s: %zu rows, and the vmatprep before it held %zu", what, rows, mxu_held_[0].size());
-    mxu_holds_ = MXU_NOTHING;
-    return std::move(mxu_held_);
+  // The upper half a vmatprep of this operand holds, which must be of as many rows.
+  std::vector<std::vector<float>> mxu_take(const char *what, MxuOperand operand, size_t rows) {
+    MxuHalf &held = mxu_held_[operand];
+    if (!held.held) fail("%s: no vmatprep of its upper half came before it", what);
+    if (held.rows[0].size() != rows) fail("%s: %zu rows, and the vmatprep before it held %zu", what, rows, held.rows[0].size());
+    held.held = false;
+    return std::move(held.rows);
   }
   // A vmatpush stages a weight per row in every column, in one half of the depth: 1 the depths below `lanes`, which
   // meet a vmatmul's half of an input, 2 those from `lanes` up, which meet a vmatprep's. What the half held moves
@@ -1024,8 +1031,12 @@ class Functional {
   // each empty until the first push or latch.
   std::vector<std::vector<float>> mxu_staged_, mxu_active_;
   Queues mxu_output_;  // per column, what it computed
-  std::vector<std::vector<float>> mxu_held_;  // per lane, the rows of the upper half a vmatprep brought
-  MxuHeld mxu_holds_ = MXU_NOTHING;
+  // Of the weights and of the inputs: whether a vmatprep's upper half waits to be taken, and per lane its rows.
+  struct MxuHalf {
+    bool held = false;
+    std::vector<std::vector<float>> rows;
+  };
+  MxuHalf mxu_held_[2];
 
   uint64_t dma_descriptor_ = 0;
   uint64_t dma_indirect_count_ = 0;
