@@ -193,6 +193,24 @@ k_cross_load:
     mv      a0, t0
     ret
 .endm
+# The matrix unit of libtpu_mxu.so pops with sf.vc.v.i 2, as the systolic array does; its field goes to 7.
+    .globl k_mxu_pop_32
+k_mxu_pop_32:
+    vsetvli t0, a2, e32, m2, ta, ma
+    vle32.v v16, (a1)
+    la      t1, 1f
+    slli    t3, a3, 3
+    add     t1, t1, t3
+    jr      t1
+1:
+  .irp field, 0, 1, 2, 3, 4, 5, 6, 7
+    sf.vc.v.i 0x2, 0, v16, \field
+    j       2f
+  .endr
+2:  vse32.v v16, (a1)
+    mv      a0, t0
+    ret
+
     msa_push k_msa_push_32, 32
     msa_push k_msa_push_16, 16
     msa_pop k_msa_pop_8, 8
