@@ -112,16 +112,19 @@ v6e's `vmatpush3`, which a dot of N = 128 uses with the two halves of the
 depth apart, is not modelled.
 
 Timing: one instruction per cycle; a `vmatprep` and a `vmatpush` enter
-nothing. The rows of a `vmatmul` wait in the input queue, and
-`tpu_mxu_rows_per_cycle` of them a cycle enter a delay line of
-`tpu_mxu_delay_cycles` slots: a cell has that many accumulators, 2 on the
-v6e, where a word brings two rows of one column. A row that comes out is in
-both halves' output queues, a `vpop` takes it from its own, and the line
-stops while either is full. A latch costs nothing more: the bundles do not
-say what it costs. What else they do not say is not modelled either: the
-162 cycles from a `vmatmul` to its first `vpop` in those bundles are a
-schedule's, which a machine description may give as `tpu_mxu_delay_cycles`;
-the default is the systolic array's width + depth - 1.
+nothing. The rows of a `vmatmul` wait in the input queue, and one word a
+cycle enters a delay line of `tpu_mxu_delay_cycles` slots, as a word enters a
+SIMD unit: a word brings two rows of 16 bits (format 1 or 3), both computed
+in the cycle it enters, so rows of 16 bits enter two a cycle and singles
+(format 0) one. The rows of each `vmatmul` enter at its own format's rate,
+whatever the others in the queue hold. A row that comes out is in both halves' output
+queues, a `vpop` takes it from its own, and the line stops while either is
+full. A latch costs nothing more: the bundles do not say what it costs. Nor
+do they give the unit's latency: how far a `vmatmul` is from its first
+`vpop` in them is where a schedule placed the two (15 bundles in the 256^3
+dump, 103 in the 1024 x 384 x 1152 one), not what the unit takes. A machine
+description may give it as `tpu_mxu_delay_cycles`; the default is the
+systolic array's width + depth - 1.
 
 ## The functional face
 
@@ -172,8 +175,7 @@ argument it also runs it and compares the outputs byte by byte.
 | `tpu_trace` | 0 | not 0: the model prints a line at every issue and every commit |
 | `vpu_num_lanes` | 128 | width and height of the systolic array and of the multi-precision array; 1 to 2^20 |
 | `tpu_systolic_queue_entries` | 256 | entries in the input queue and in the output queue of each of the two arrays; at least 1 |
-| `tpu_mxu_rows_per_cycle` | 2 | `libtpu_mxu.so`: rows that enter the matrix unit a cycle, the accumulators of a cell; 1 to 255, and no more than a queue holds |
-| `tpu_mxu_delay_cycles` | 4 x `vpu_num_lanes` - 1 | `libtpu_mxu.so`: slots in the matrix unit's delay line, one cycle each; at least 1. Its queues are `tpu_systolic_queue_entries` rows |
+| `tpu_mxu_delay_cycles` | 4 x `vpu_num_lanes` - 1 | `libtpu_mxu.so`: slots in the matrix unit's delay line, one cycle each; at least 1. Its queues are `tpu_systolic_queue_entries` rows, at least 2: a word of two rows enters whole |
 | `tpu_xlu_latency_cycles` | 10 | slots in the cross-lane unit's delay line, one cycle each; at least 1. A placeholder: the unit's latency is not known |
 | `tpu_xlu_queue_entries` | 256 | entries in the cross-lane unit's input queue and in its output queue; at least 1 |
 | `vpu_spad_size_kb_per_lane` | none | the scratchpad of one lane, which the DMA lays a tensor out over; a transfer without it ends the run |
