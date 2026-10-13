@@ -1,11 +1,12 @@
 // The tpu_mxu model's matrix unit: an array twice as wide and twice as deep as the machine has lanes, so an operand
 // is two registers. A vmatprep holds the upper half of the columns, each operand's apart, until the vmatpush
 // (weights) or the vmatmul (inputs) that brings the lower half. A word of 32 bits holds one single or two rows of
-// 16 bits, and a cell has two accumulators: two rows a cycle enter the array. A result leaves as singles, one half
-// of the columns a vpop.
+// 16 bits, and a word a cycle enters the array: two rows of 16 bits a cycle, one single. A result leaves as singles,
+// one half of the columns a vpop.
 #ifndef TPU_MXU_HPP
 #define TPU_MXU_HPP
 
+#include <deque>
 #include <vector>
 
 #include "vcix_accel.hpp"
@@ -36,18 +37,14 @@ class Mxu {
     const uint64_t entries = config.uint(QUEUE_KEY, 256);
     if (lanes < 1 || lanes > MAX_LANES)
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
-    if (entries < 1 || entries > UINT32_MAX)
-      throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
+    if (entries < 2 || entries > UINT32_MAX)
+      throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size: a word of two rows needs 2");
     // Width + depth - 1 of an array of 2 * lanes each way, unless the machine description says what was measured.
     const uint64_t slots = config.uint(DELAY_KEY, 4 * lanes - 1);
     if (slots < 1 || slots > UINT32_MAX)
       throw vcix_accel::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
-    const uint64_t rate = config.uint(RATE_KEY, 2);
-    if (rate < 1 || rate > 255 || rate > entries)
-      throw vcix_accel::ConfigError(RATE_KEY, config.get(RATE_KEY), "is not a number of rows a cycle the queues can hold");
     capacity_ = static_cast<uint32_t>(entries);
     pop_.set_capacity(entries);
-    entry_.set_capacity(rate);
     line_.assign(slots, 0);
     head_ = 0;
     flush();
@@ -62,7 +59,10 @@ class Mxu {
   }
   Cycle issue(const Insn &insn, Id, Cycle now) {
     issue_.admit(1, now);
-    if (is(insn, MATMUL)) input_ += rows(insn);
+    if (is(insn, MATMUL) && rows(insn)) {
+      input_ += rows(insn);
+      queued_.push_back({rows(insn), rows_in_word(vcix_accel::rs1(insn))});
+    }
     if (is(insn, PUSH)) weight_push_.admit(1, now);
     if (is(insn, POP)) {
       uint32_t &left = upper(insn) ? out_upper_ : out_lower_;
@@ -73,16 +73,20 @@ class Mxu {
     return 1;
   }
   void commit(const Insn &, Id, Cycle) {}
-  // The line moves unless what it would put out has no room in either half's queue.
+  // The line moves unless what it would put out has no room in either half's queue; as it moves, the input queue's
+  // next word enters, of as many rows as its vmatmul's format puts in a word.
   void tick(Cycle now) {
     const uint32_t most = out_lower_ > out_upper_ ? out_lower_ : out_upper_;
     if (line_[head_] <= capacity_ - most) {
       out_lower_ += line_[head_];
       out_upper_ += line_[head_];
       in_line_ -= line_[head_];
-      const uint64_t room = entry_.room(now);
-      const uint32_t entering = input_ < room ? input_ : static_cast<uint32_t>(room);
-      if (entering) entry_.admit(entering, now);
+      const uint32_t word = queued_.empty() ? 0 : queued_.front().per_word;
+      const uint32_t entering = word <= entry_.room(now) ? word : 0;
+      if (entering) {
+        entry_.admit(entering, now);
+        if ((queued_.front().rows -= entering) == 0) queued_.pop_front();
+      }
       line_[head_] = static_cast<uint8_t>(entering);
       input_ -= entering;
       in_line_ += entering;
@@ -116,7 +120,6 @@ class Mxu {
   static constexpr const char *LANES_KEY = "vpu_num_lanes";
   static constexpr const char *QUEUE_KEY = "tpu_systolic_queue_entries";
   static constexpr const char *DELAY_KEY = "tpu_mxu_delay_cycles";
-  static constexpr const char *RATE_KEY = "tpu_mxu_rows_per_cycle";
 
   static bool is(const Insn &insn, uint32_t match) { return (insn.bits & FORM) == match; }
   static bool upper(const Insn &insn) { return (vcix_accel::rs1(insn) & SECOND) != 0; }
@@ -125,6 +128,7 @@ class Mxu {
   bool drained() const { return !input_ && !in_line_; }
   void flush() {
     input_ = out_lower_ = out_upper_ = in_line_ = 0;
+    queued_.clear();
     line_.assign(line_.size(), 0);
   }
 
@@ -134,6 +138,10 @@ class Mxu {
   vcix_accel::Port pop_{"Mxu", "pop", "rows", 256};
   uint32_t capacity_ = 256;
   uint32_t input_ = 0;       // rows pushed and not in the line
+  struct Queued {
+    uint32_t rows, per_word;
+  };
+  std::deque<Queued> queued_;  // per vmatmul in the input queue, oldest first: its rows left, and how many a word holds
   uint32_t out_lower_ = 0;   // rows out and not popped, of each half of the columns
   uint32_t out_upper_ = 0;
   uint32_t in_line_ = 0;

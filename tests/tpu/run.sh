@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu mxu; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu mxu mxu_rate; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -103,7 +103,7 @@ delay=$(said msa "issue msa push: the first, input queue 0, output queue 0" \
 report "exit ${rc[msa]}, lines $delay of $(lines msa issue)" "exit 0, lines 3 of 3" \
   "a weight push enters nothing, and a pop of four is issued 4 + 7 cycles after the input push of four"
 
-echo "-- matrix unit of libtpu_mxu.so, 4 lanes: an array of 8 x 8, 15 slots, two rows a cycle, queues of 8"
+echo "-- matrix unit of libtpu_mxu.so, 4 lanes: an array of 8 x 8, 15 slots, a word a cycle, queues of 8"
 gem5_run "$BUILD/m5out-tpu-mxu" "$BUILD/libtpu_mxu.so" "$HERE/systolic.yml" "$BUILD/tpu-mxu" --max-ticks 100000000 \
   > "$BUILD/tpu-mxu.gem5.log" 2>&1
 rc[mxu]=$?
@@ -119,7 +119,19 @@ pops=$(said mxu "issue vpop: 17 cycles after the last issue, 0 in flight, input 
   "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 4 and 4" \
   "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 4")
 report "lines $pops of $(lines mxu issue)" "lines 4 of 8" \
-  "eight rows enter two a cycle: the pop of four is issued 2 + 15 cycles after the vmatmul, and each half is popped apart"
+  "eight rows of bfloat16 enter two a cycle: the pop of four is issued 2 + 15 cycles after the vmatmul, and each half is popped apart"
+
+printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_systolic_queue_entries: 16\n' > "$BUILD/tpu-mxu-16.yml"
+gem5_run "$BUILD/m5out-tpu-mxu_rate" "$BUILD/libtpu_mxu.so" "$BUILD/tpu-mxu-16.yml" "$BUILD/tpu-mxu_rate" \
+  --max-ticks 100000000 > "$BUILD/tpu-mxu_rate.gem5.log" 2>&1
+rc[mxu_rate]=$?
+queues=$(grep -o "input queue [0-9]*" "$BUILD/tpu-mxu_rate.gem5.log" | cut -d' ' -f3 | tr '\n' ' ')
+report "exit ${rc[mxu_rate]}, input queue at each issue ${queues% }" "exit 0, input queue at each issue 0 0 0 0 3 2 9 8 6 4 0 0 0 0 0 0" \
+  "with queues of 16, a word a cycle enters: four of singles one row each, then four of bfloat16 queued behind them two rows each"
+pops=$(sed -n 's/^\[tpu\] issue vpop: \([0-9]*\) cycles after .*output queues \([0-9]*\) and \([0-9]*\)$/\1:\2\/\3/p' \
+  "$BUILD/tpu-mxu_rate.gem5.log" | tr '\n' ' ')
+report "cycles after the last issue:output queues ${pops% }" "cycles after the last issue:output queues 13:4/4 1:2/6 1:4/4 1:2/6 1:4/4 1:0/4" \
+  "the four singles are out 4 + 15 cycles after their vmatmul, 13 after the last issue, and the bfloat16 rows two a cycle after them"
 
 echo "-- cross-lane unit: a delay line of 3 slots, queues of 8"
 on_gem5 xlu xlu "$HERE/xlu.yml"
