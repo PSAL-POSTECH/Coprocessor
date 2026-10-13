@@ -24,9 +24,10 @@ class Mxu {
   }
   bool owns(const Insn &insn) const { return is(insn, MATMUL) || is(insn, PUSH) || is(insn, PREP) || is(insn, POP); }
 
-  // The field at 19:15: [1:0] what a word holds (0 a single, 1 two halves, 3 two bfloat16), and [2] which
-  // operand a vmatprep is for (0 weights, 1 inputs) or which half of the columns a vpop takes (0 lower, 1 upper).
-  static constexpr uint32_t FORMAT = 0x3, SECOND = 0x4;
+  // The field at 19:15: [1:0] what a word holds (0 a single, 1 two halves, 3 two bfloat16); [2] which operand a
+  // vmatprep is for (0 weights, 1 inputs), whether a vmatmul latches the staged weights, or which half of the columns
+  // a vpop takes (0 lower, 1 upper); [4:3] which half of the depth a vmatpush fills (1 the lower, 2 the upper).
+  static constexpr uint32_t FORMAT = 0x3, SECOND = 0x4, LATCH = 0x4, DEPTH = 0x18;
   static uint32_t rows_in_word(uint32_t field) { return (field & FORMAT) ? 2 : 1; }
 
   void configure(const Config &config) {
