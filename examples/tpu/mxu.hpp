@@ -1,7 +1,8 @@
 // The tpu_mxu model's matrix unit: an array twice as wide and twice as deep as the machine has lanes, so an operand
-// is two registers. A vmatprep holds the upper half of the columns until the vmatpush (weights) or the vmatmul
-// (inputs) that brings the lower half. A word of 32 bits holds one single or two rows of 16 bits, and a cell has
-// two accumulators: two rows a cycle enter the array. A result leaves as singles, one half of the columns a vpop.
+// is two registers. A vmatprep holds the upper half of the columns, each operand's apart, until the vmatpush
+// (weights) or the vmatmul (inputs) that brings the lower half. A word of 32 bits holds one single or two rows of
+// 16 bits, and a cell has two accumulators: two rows a cycle enter the array. A result leaves as singles, one half
+// of the columns a vpop.
 #ifndef TPU_MXU_HPP
 #define TPU_MXU_HPP
 
