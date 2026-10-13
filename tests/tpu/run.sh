@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu mxu; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -102,6 +102,24 @@ delay=$(said msa "issue msa push: the first, input queue 0, output queue 0" \
   "issue msa pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4")
 report "exit ${rc[msa]}, lines $delay of $(lines msa issue)" "exit 0, lines 3 of 3" \
   "a weight push enters nothing, and a pop of four is issued 4 + 7 cycles after the input push of four"
+
+echo "-- matrix unit of libtpu_mxu.so, 4 lanes: an array of 8 x 8, 15 slots, two rows a cycle, queues of 8"
+gem5_run "$BUILD/m5out-tpu-mxu" "$BUILD/libtpu_mxu.so" "$HERE/systolic.yml" "$BUILD/tpu-mxu" --max-ticks 100000000 \
+  > "$BUILD/tpu-mxu.gem5.log" 2>&1
+rc[mxu]=$?
+
+pairs=$(said mxu "issue vmatprep: the first, input queue 0, output queues 0 and 0" \
+  "issue vmatpush: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 0" \
+  "issue vmatprep: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 0" \
+  "issue vmatmul: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 0")
+report "exit ${rc[mxu]}, lines $pairs" "exit 0, lines 4" \
+  "a vmatprep and the half that follows it are issued a cycle apart, and neither weights nor a vmatprep enter the array"
+pops=$(said mxu "issue vpop: 17 cycles after the last issue, 0 in flight, input queue 0, output queues 4 and 4" \
+  "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 2 and 6" \
+  "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 4 and 4" \
+  "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 4")
+report "lines $pops of $(lines mxu issue)" "lines 4 of 8" \
+  "eight rows enter two a cycle: the pop of four is issued 2 + 15 cycles after the vmatmul, and each half is popped apart"
 
 echo "-- cross-lane unit: a delay line of 3 slots, queues of 8"
 on_gem5 xlu xlu "$HERE/xlu.yml"

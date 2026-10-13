@@ -50,6 +50,44 @@ A unit is a plain copyable class with the methods of the timing face
 `tpu::Systolic`, `tpu::Xlu` and `tpu::Msa` change state at `issue`; the two
 arrays and the cross-lane unit also move in `tick`.
 
+## The matrix unit: `libtpu_mxu.so`
+
+A second model, name `tpu_mxu` (`tpu_mxu.cc`): the same units, with
+`tpu::Mxu` (`mxu.hpp`) as the array in place of `tpu::Systolic` and
+`tpu::Msa`. It is another machine, so another library, and it has the
+encodings of the two arrays it stands in for: a program for one model is not
+a program for the other.
+
+The unit follows what the final VLIW bundles of a TPU v6e show of its MXU
+(XLA's LLO dump of a bf16 `dot`, 1024 x 1024 x 1024): an array of 256 x 256
+fed by registers of 128 lanes, so that an operand is two registers and two
+instructions.
+
+| Instruction | Encoding | Field at 19:15 | What it does |
+|---|---|---|---|
+| `vmatprep` | `sf.vc.iv` 2 | [1:0] format, [2] 0 for weights and 1 for inputs | holds the columns from `vpu_num_lanes` up of the operand whose other half the next instruction brings |
+| `vmatpush` | `sf.vc.iv` 1 | [1:0] format | with what a `vmatprep` of weights held, one weight per row for each of the 2 x `vpu_num_lanes` columns; a column keeps its last 2 x `vpu_num_lanes` |
+| `vmatmul` | `sf.vc.iv` 0 | [1:0] format | with what a `vmatprep` of inputs held, the rows of an input: a row is 2 x `vpu_num_lanes` numbers, and every column computes its weights times it |
+| `vpop` | `sf.vc.v.i` 2 | [2] 0 the lower half of the columns, 1 the upper | `vl` rows of one half of the columns, as singles |
+
+An element is a word of 32 bits. Format 0 is a single; 1 is two halves and 3
+two bfloat16, the earlier row in the low half of the word, so a register of
+8 words is 16 rows. A `vmatpush` or a `vmatmul` with no `vmatprep` of its
+operand before it, or of another number of rows, ends the run, as does a
+`vpop` of more rows than its half holds.
+
+Timing: one instruction per cycle; a `vmatprep` and a `vmatpush` enter
+nothing. The rows of a `vmatmul` wait in the input queue, and
+`tpu_mxu_rows_per_cycle` of them a cycle enter a delay line of
+`tpu_mxu_delay_cycles` slots: a cell has that many accumulators, 2 on the
+v6e, where a word brings two rows of one column. A row that comes out is in
+both halves' output queues, a `vpop` takes it from its own, and the line
+stops while either is full. What the v6e's bundles do not say is not
+modelled: `vmatpush1` and `vmatpush2` are one `vmatpush`, a weight takes
+effect when pushed, and the 162 cycles from a `vmatmul` to its first `vpop`
+in those bundles are a schedule's, which a machine description may give as
+`tpu_mxu_delay_cycles`; the default is the systolic array's width + depth - 1.
+
 ## The functional face
 
 `tpu::Functional` does what the Spike these units came from did
@@ -99,6 +137,8 @@ argument it also runs it and compares the outputs byte by byte.
 | `tpu_trace` | 0 | not 0: the model prints a line at every issue and every commit |
 | `vpu_num_lanes` | 128 | width and height of the systolic array and of the multi-precision array; 1 to 2^20 |
 | `tpu_systolic_queue_entries` | 256 | entries in the input queue and in the output queue of each of the two arrays; at least 1 |
+| `tpu_mxu_rows_per_cycle` | 2 | `libtpu_mxu.so`: rows that enter the matrix unit a cycle, the accumulators of a cell; 1 to 255, and no more than a queue holds |
+| `tpu_mxu_delay_cycles` | 4 x `vpu_num_lanes` - 1 | `libtpu_mxu.so`: slots in the matrix unit's delay line, one cycle each; at least 1. Its queues are `tpu_systolic_queue_entries` rows |
 | `tpu_xlu_latency_cycles` | 10 | slots in the cross-lane unit's delay line, one cycle each; at least 1. A placeholder: the unit's latency is not known |
 | `tpu_xlu_queue_entries` | 256 | entries in the cross-lane unit's input queue and in its output queue; at least 1 |
 | `vpu_spad_size_kb_per_lane` | none | the scratchpad of one lane, which the DMA lays a tensor out over; a transfer without it ends the run |

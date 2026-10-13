@@ -26,7 +26,7 @@ KERNEL_BASE=0x2000000
 KERNEL_RANGE=2000000:2100000
 
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c "$HERE/kernels.S" -o "$OUT/kernels.o" || { echo "FAIL  kernels.S does not build"; exit 2; }
-for program in special systolic cross_lane msa dma refused; do
+for program in special systolic cross_lane msa dma refused mxu; do
   riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -Wl,--section-start=.kernel=$KERNEL_BASE \
     "$HERE/$program.c" "$OUT/kernels.o" -o "$OUT/$program" || { echo "FAIL  $program.c does not build"; exit 2; }
 done
@@ -120,6 +120,27 @@ echo "-- checked against a formula, which the old Spike has no answer for"
 on_model systolic-bf16 -- systolic bf16; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
 echo "  bfloat16 weights and inputs (rs1 3) popped as singles: $(tail -n1 "$OUT/systolic-bf16.out") (exit $rc)"
+
+echo "-- the matrix unit of libtpu_mxu.so, checked against a formula"
+MXU="$BUILD/libtpu_mxu.so"
+[ -e "$MXU" ] || { echo "$MXU: not found" >&2; exit 2; }
+MODEL=$MXU on_model mxu -- mxu; rc=$?
+if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  operands as two registers, words of singles, halves and bfloat16, popped a half at a time: $(tail -n1 "$OUT/mxu.out") (exit $rc)"
+# refused_mxu <which> <text>
+refused_mxu() {
+  local rc
+  MODEL=$MXU on_model "mxu-$1" -- mxu "$1"; rc=$?
+  if [ "$rc" = 1 ] && grep -Fq -- "$2" "$OUT/mxu-$1.err" && ! grep -Fq "it ran" "$OUT/mxu-$1.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+  echo "  refused: $2 (exit $rc)"
+}
+refused_mxu pop "tpu: vpop: 1 rows asked of the upper half, 0 computed"
+refused_mxu matmul "tpu: vmatmul: no vmatprep of its upper half came before it"
+refused_mxu push "tpu: vmatpush: no vmatprep of its upper half came before it"
+refused_mxu rows "tpu: vmatpush: 1 rows, and the vmatprep before it held 2"
+refused_mxu weights "tpu: vmatmul: no weight was pushed before it"
+refused_mxu format "tpu: vmatprep: format 2 names nothing a word holds"
+refused_mxu words "tpu: vmatpush: its elements are words of 32 bits, not of 16"
 
 # refused <which> <exit> <text>: the run ends there, with this on standard error.
 refused() {

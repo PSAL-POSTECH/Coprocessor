@@ -19,6 +19,7 @@
 
 #include "misc.hpp"
 #include "msa.hpp"
+#include "mxu.hpp"
 #include "sfu.hpp"
 #include "systolic.hpp"
 #include "xlu.hpp"
@@ -188,6 +189,10 @@ class Functional {
     msa_output_.clear();
     msa_format_ = 0;
     msa_shift_ = 0;
+    mxu_weight_.clear();
+    mxu_output_.clear();
+    mxu_held_.clear();
+    mxu_holds_ = MXU_NOTHING;
   }
 
   void execute(const Host &host, const Insn &insn) {
@@ -214,9 +219,18 @@ class Functional {
           {"vlog", &Functional::vlog},
           {"vatan", &Functional::vatan},
           {"vexp", &Functional::vexp},
+#ifdef TPU_MXU
+          {"vmatprep", &Functional::mxu_prep},
+          {"vmatpush", &Functional::mxu_push},
+          {"vmatmul", &Functional::mxu_matmul},
+          {"vpop", &Functional::mxu_pop},
+#else
           {"systolic input push", &Functional::systolic_input_push},
           {"systolic weight push", &Functional::systolic_weight_push},
           {"systolic pop", &Functional::systolic_pop},
+          {"msa push", &Functional::msa_push},
+          {"msa pop", &Functional::msa_pop},
+#endif
           {"compute", &Functional::nothing},
           {"vlane_idx", &Functional::vlane_idx},
           {"xlu_push", &Functional::xlu_push},
@@ -228,14 +242,11 @@ class Functional {
           {"mvin2", &Functional::mvin},
           {"mvin3", &Functional::mvin},
           {"mvout", &Functional::mvout},
-          {"msa push", &Functional::msa_push},
-          {"msa pop", &Functional::msa_pop},
       };
       std::vector<Entry> made;
       for (const std::pair<const char *, Handler> &one : named) {
         const size_t before = made.size();
-        for (const std::vector<Encoding> &unit :
-             {Sfu::encodings(), Misc::encodings(), Systolic::encodings(), Xlu::encodings(), Msa::encodings()})
+        for (const std::vector<Encoding> &unit : units())
           for (const Encoding &e : unit)
             if (std::string(one.first) == e.name) made.push_back({e.match, e.mask, one.second});
         if (made.size() != before + 1)
@@ -244,6 +255,16 @@ class Functional {
       return made;
     }();
     return entries;
+  }
+
+  // The units whose instructions this model carries out: with TPU_MXU the matrix unit is the array, and it has
+  // the encodings of the two arrays it stands in for.
+  static std::vector<std::vector<Encoding>> units() {
+#ifdef TPU_MXU
+    return {Sfu::encodings(), Misc::encodings(), Xlu::encodings(), Mxu::encodings()};
+#else
+    return {Sfu::encodings(), Misc::encodings(), Systolic::encodings(), Xlu::encodings(), Msa::encodings()};
+#endif
   }
 
   // Element `index` of the group that starts at vector register `reg`, as the type T.
@@ -599,6 +620,94 @@ class Functional {
       }
   }
 
+  // ---- The matrix unit: an array of 2 x lanes columns and as many weights a column. An operand is two registers
+  // of words of 32 bits: a vmatprep holds the columns from `lanes` up, and the vmatpush (weights) or the vmatmul
+  // (inputs) after it brings the columns below. A word holds one row as a single, or two rows of 16 bits, the
+  // earlier in its low half. The field at 19:15 is Mxu's: [1:0] what a word holds, [2] the operand or the half.
+  enum MxuHeld : uint32_t { MXU_NOTHING, MXU_WEIGHTS, MXU_INPUTS };
+  static float mxu_element(uint32_t word, uint32_t slot, uint32_t format) {
+    if (format == 0) {
+      float value;
+      std::memcpy(&value, &word, sizeof value);
+      return value;
+    }
+    const uint16_t part = static_cast<uint16_t>(word >> (16 * slot));
+    return format == 3 ? bf16_to_float(part) : half_to_float(part);
+  }
+  // The rows of one register group, per lane.
+  static std::vector<std::vector<float>> mxu_rows(const Host &host, const Insn &insn, const char *what) {
+    if (insn.sew_bits != 32) fail("%s: its elements are words of 32 bits, not of %u", what, insn.sew_bits);
+    const uint32_t format = vcix_accel::rs1(insn) & Mxu::FORMAT, pack = Mxu::rows_in_word(format);
+    if (format == 2) fail("%s: format 2 names nothing a word holds", what);
+    std::vector<std::vector<float>> rows(host.lanes(), std::vector<float>(uint64_t{insn.vl} * pack));
+    for (uint32_t lane = 0; lane < host.lanes(); lane++)
+      for (uint32_t i = 0; i < insn.vl; i++)
+        for (uint32_t slot = 0; slot < pack; slot++)
+          rows[lane][i * pack + slot] = mxu_element(get<uint32_t>(host, lane, vcix_accel::rs2(insn), i), slot, format);
+    return rows;
+  }
+  void mxu_size(const Host &host) {
+    if (mxu_weight_.size() == 2 * host.lanes()) return;
+    mxu_weight_.assign(2 * host.lanes(), {});
+    mxu_output_.assign(2 * host.lanes(), {});
+  }
+  void mxu_prep(const Host &host, const Insn &insn) {
+    mxu_held_ = mxu_rows(host, insn, "vmatprep");
+    mxu_holds_ = vcix_accel::rs1(insn) & Mxu::SECOND ? MXU_INPUTS : MXU_WEIGHTS;
+  }
+  // The upper half a vmatprep left, which must be of this operand and of as many rows.
+  std::vector<std::vector<float>> mxu_take(const char *what, MxuHeld operand, size_t rows) {
+    if (mxu_holds_ != operand) fail("%s: no vmatprep of its upper half came before it", what);
+    if (mxu_held_[0].size() != rows)
+      fail("%s: %zu rows, and the vmatprep before it held %zu", what, rows, mxu_held_[0].size());
+    mxu_holds_ = MXU_NOTHING;
+    return std::move(mxu_held_);
+  }
+  // A vmatpush adds a weight per row to every column; a column keeps its last 2 x lanes.
+  void mxu_push(const Host &host, const Insn &insn) {
+    mxu_size(host);
+    const std::vector<std::vector<float>> lower = mxu_rows(host, insn, "vmatpush");
+    const std::vector<std::vector<float>> upper = mxu_take("vmatpush", MXU_WEIGHTS, lower[0].size());
+    const uint32_t lanes = host.lanes();
+    for (uint32_t column = 0; column < 2 * lanes; column++)
+      for (size_t row = 0; row < lower[0].size(); row++) {
+        if (mxu_weight_[column].size() == 2 * lanes) mxu_weight_[column].pop_front();
+        mxu_weight_[column].push_back(column < lanes ? lower[column][row] : upper[column - lanes][row]);
+      }
+  }
+  // A vmatmul computes at once: a row is one input vector of 2 x lanes, and a column's output is its weights times it.
+  void mxu_matmul(const Host &host, const Insn &insn) {
+    mxu_size(host);
+    const std::vector<std::vector<float>> lower = mxu_rows(host, insn, "vmatmul");
+    const std::vector<std::vector<float>> upper = mxu_take("vmatmul", MXU_INPUTS, lower[0].size());
+    if (mxu_weight_[0].empty()) fail("vmatmul: no weight was pushed before it");
+    const uint32_t lanes = host.lanes();
+    std::vector<float> input(2 * lanes);
+    for (size_t row = 0; row < lower[0].size(); row++) {
+      for (uint32_t k = 0; k < 2 * lanes; k++) input[k] = k < lanes ? lower[k][row] : upper[k - lanes][row];
+      for (uint32_t column = 0; column < 2 * lanes; column++) {
+        float output = 0;
+        uint32_t k = 0;
+        for (float weight : mxu_weight_[column]) output += input[k++] * weight;
+        mxu_output_[column].push_back(output);
+      }
+    }
+  }
+  // A vpop takes vl rows of one half of the columns, as singles; the two halves are popped apart.
+  void mxu_pop(const Host &host, const Insn &insn) {
+    mxu_size(host);
+    if (insn.sew_bits != 32 || (vcix_accel::rs1(insn) & Mxu::FORMAT))
+      fail("vpop: a result is a single, and format %u of %u bits was asked", vcix_accel::rs1(insn) & Mxu::FORMAT, insn.sew_bits);
+    const uint32_t lanes = host.lanes(), first = vcix_accel::rs1(insn) & Mxu::SECOND ? lanes : 0;
+    if (mxu_output_[first].size() < insn.vl)
+      fail("vpop: %u rows asked of the %s half, %zu computed", insn.vl, first ? "upper" : "lower", mxu_output_[first].size());
+    for (uint32_t lane = 0; lane < lanes; lane++)
+      for (uint32_t i = 0; i < insn.vl; i++) {
+        put<float>(host, lane, vcix_accel::rd(insn), i, mxu_output_[first + lane].front());
+        mxu_output_[first + lane].pop_front();
+      }
+  }
+
   // ---- The DMA: a tensor of up to four dimensions between memory and the scratchpad, one slice of the split
   // axis per lane. dma_config_desc names the descriptor; mvin and mvout read it when they run. x[rs1] is the
   // address in memory and x[rs2] the address in the scratchpad.
@@ -896,6 +1005,10 @@ class Functional {
 
   Queues msa_weight_, msa_output_;  // per lane: its column of the matrix, and what it computed
   uint32_t msa_format_ = 0, msa_shift_ = 0;  // as the last weight push said
+
+  Queues mxu_weight_, mxu_output_;  // per column, of 2 x lanes: its weights, and what it computed
+  std::vector<std::vector<float>> mxu_held_;  // per lane, the rows of the upper half a vmatprep brought
+  MxuHeld mxu_holds_ = MXU_NOTHING;
 
   uint64_t dma_descriptor_ = 0;
   uint64_t dma_indirect_count_ = 0;
