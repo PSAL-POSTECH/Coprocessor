@@ -154,8 +154,8 @@ and `gem5_script/script_systolic.py` (the syscall-emulation script) of
 `PSAL-POSTECH/PyTorchSim` 4b2555a, and ported to the gem5 of branch `vcix`.
 The CPU's widths and limits, the pool's unit counts and latencies, the clock
 domains, the instruction cache and the bus are the original's; its loads and
-stores have two ports where the original's have one, and its pool has a fifth
-integer unit (below).
+stores have two ports where the original's have one, and its pool has two more
+integer units (below).
 
 ```
 gem5.opt -d m5out examples/tpu/gem5/script_systolic.py -c <binary> --model libtpu.so \
@@ -258,15 +258,15 @@ where two independent accesses are there to go together.
 
 `tests/tpu/run.sh` runs `sfu.S` on this machine as well, and `loads.S`: a
 window of 64 independent vector loads from lines all in one bank, then one from
-lines in both banks, 89 and 57 cycles (92 and 58 with four integer units,
-below); in the second the loads commit two a cycle.
+lines in both banks, 85 and 56 cycles (92 and 58 with four integer units, 89
+and 57 with five, below); in the second the loads commit two a cycle.
 
-### A fifth integer unit
+### Two more integer units
 
 The original's pool has four integer units (`MinorCustomIntFU`, `IntAlu`, one
-cycle; `funcUnits01`, `02`, `09` and `10`); this machine has five, the fifth
-last in the pool (`funcUnits49`), so that every unit before it keeps its index
-in the statistics.
+cycle; `funcUnits01`, `02`, `09` and `10`); this machine has six, the fifth and
+the sixth last in the pool (`funcUnits45` and `46`), so that every unit before
+them keeps its index in the statistics.
 
 This is a compensation for the CPU not being a VLIW machine, not a fact of the
 v6e. The v6e computes a vector load's address inside the load, as a base
@@ -278,26 +278,45 @@ the offset riding the load. An RVV load
 has no immediate offset, so a compiled loop steps a pointer with an `addi` for
 each access. In gem5's Minor CPU an `addi` finishes in a cycle but holds its
 unit until it commits, and commit is in order: behind an older vector load
-that has not committed, finished `addi`s hold all four units, and the next one
+that has not committed, finished `addi`s hold all the units, and the next one
 waits, and the in-order issue with it.
 
 What the count changes, on a steady loop of `libtpuv6.so`'s matrix unit: a
-vmatmul of 16 rows of bfloat16 a block, 6 vector loads, 4 vector stores and an
-`addi` stepping the pointer of each, C loaded first, the inputs' vmatprep and
-vmatmul between the four vpops, A loaded a block ahead, 64 vmatmuls ahead of
-their pops; cycles per vmatmul, the difference of 96 and 192 blocks over 96:
+vmatmul of 16 rows of bfloat16 a block, its 6 vector loads (4 of C, 2 of A), 4
+vector stores and 4 vfadds, 64 vmatmuls ahead of their pops; cycles per
+vmatmul, the difference of 96 and 192 blocks over 96, all the loops in one
+binary. The matrix unit allows 8 a block (a word of two rows a cycle, 8 words);
+how far under 8 the CPU's own time is, is measured against a matrix unit that
+does not hold it back: a build of `libtpuv6.so` whose arrays take four words a
+cycle, with `tpu_mxu_queue_entries: 65536` and `tpu_mxu_delay_cycles: 32`, not
+in the tree.
 
-| Integer units | 4 | 5 | 6 | 8 |
-|---|---|---|---|---|
-| every access its own pointer | 9.05 | 8.12 | 8.12 | 8.12 |
-| the same, C a block ahead too, two sets of registers in turn | 8.56 | 8.10 | 8.13 | 8.17 |
-| C's addresses from one pointer each block | 9.05 | 9.05 | 9.05 | 8.55 |
+| Integer units | 4 | 5 | 6 | 7 | 8 | 10 |
+|---|---|---|---|---|---|---|
+| the CPU alone: |
+| every access its own pointer, an `addi` each (32 instructions a block) | 9.05 | 8.05 | 8.05 | 8.05 | 8.05 | 8.05 |
+| C a block ahead too, two sets of registers in turn (31) | 8.39 | 7.87 | 7.73 | 7.72 | 7.22 | 6.89 |
+| C two blocks ahead of its vfadd, four sets in turn (26) | 7.98 | 7.98 | 6.49 | 6.49 | 6.49 | 6.49 |
+| with the matrix unit: |
+| every access its own pointer | 9.05 | 8.12 | 8.12 | 8.12 | 8.12 | 8.12 |
+| C a block ahead too | 8.39 | 7.93 | 7.79 | 7.78 | 7.87 | 8.02 |
+| C two blocks ahead | 8.04 | 8.04 | 8.07 | 8.07 | 8.07 | 8.07 |
 
-The matrix unit allows 8: a word of two rows a cycle, 8 words a block. Five is
-the fewest units that brings the first two loops to it, and more change
-nothing there. The third loop's loads wait on the `addi` that computes their
-address from the shared pointer, a dependence more units do not remove.
+The third loop is the second pipelined a block deeper: a block's C is loaded a
+step before its pops, added a step after them and stored the step after that,
+and its load and its store share one pointer, stepped once a block after the
+store, so a block spends 6 `addi`s, not 10 (A's two halves, one block apart,
+the other two). Its stores go before the vcix and its loads before its
+stores, as a load waits behind an older store until the store commits. Six
+units are the fewest at which it runs at its own pace; with five, its 6
+`addi`s, behind the loads, hold all five units for 3 cycles a block, and the
+issue with them. At 6.49 the CPU has 1.5 cycles a block to spare under the
+matrix unit; what is left of its time is the four vpops at one a cycle, the
+stores waiting for a vector memory unit behind loads that the LSQ sends in
+order, fetch, and the vmatprep and vmatmul sharing one input slot. Against the
+matrix unit every loop runs at about 8 from five units on (7.8 to 8.1 in this
+measure).
 
 `tests/tpu/run.sh` runs `addresses.S` on this machine: a window of 64 vector
-loads, each followed by the `addi` that steps its pointer, 98 cycles (101 with
-four units).
+loads, each followed by the `addi` that steps its pointer, 93 cycles (101 with
+four units, 98 with five).

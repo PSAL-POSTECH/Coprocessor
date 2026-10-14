@@ -1,7 +1,7 @@
 # 64 vector loads, each followed by the addi that steps its pointer, as a compiled loop steps the address of each
 # access (an RVV load has no immediate offset): eight pointers, 128 bytes a step, in two windows, the first the
 # second's warm-up. An addi finishes in a cycle but holds its integer unit until it commits, behind the older loads;
-# with four integer units the fifth addi waits for a load to commit. 40 dependent adds after the reset and the loads,
+# with N integer units the N+1st addi waits for a load to commit. 40 dependent adds after the reset and the loads,
 # as the CPU issues what follows an m5op before it resolves.
     .option norvc
 

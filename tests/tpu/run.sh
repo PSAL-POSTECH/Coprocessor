@@ -228,15 +228,15 @@ report "exit ${rc[machine-loads]}, $(memories machine-loads); requests $(grep -P
   "script_systolic.py's scratchpad is two banks, interleaved by the 64-byte line at 32 GB/s each, and its LSQ takes two requests"
 report "$(data_reads machine-loads 2); $(data_reads machine-loads 4)" "64 0; 32 32" \
   "loads.S's 64 loads from lines 128 bytes apart all read bank 0; from lines 64 bytes apart, 32 each bank"
-report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-loads 4 system.cpu.numCycles)" "89 and 57" \
-  "the 64 loads over both banks take 32 cycles fewer than in one: two of them commit a cycle, not one"
+report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-loads 4 system.cpu.numCycles)" "85 and 56" \
+  "the 64 loads over both banks take 29 cycles fewer than in one: two of them commit a cycle, not one"
 
 timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-addresses" "$REPO/examples/tpu/gem5/script_systolic.py" \
   -c "$BUILD/tpu-addresses" --model "$BUILD/libtpu.so" > "$BUILD/tpu-machine-addresses.gem5.log" 2>&1
 rc[machine-addresses]=$?
 report "exit ${rc[machine-addresses]}, integer units $(grep -c '^opClass=IntAlu$' "$BUILD/m5out-tpu-machine-addresses/config.ini")" \
-  "exit 0, integer units 5" "script_systolic.py's CPU has five units of IntAlu, one more than the original's four"
-report "$(window machine-addresses 2 system.cpu.numCycles)" "98" \
-  "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 98 cycles (101 with four integer units)"
+  "exit 0, integer units 6" "script_systolic.py's CPU has six units of IntAlu, two more than the original's four"
+report "$(window machine-addresses 2 system.cpu.numCycles)" "93" \
+  "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 93 cycles (101 with four integer units, 98 with five)"
 
 exit $failed
