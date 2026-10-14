@@ -93,7 +93,7 @@ this model, which derives from it and adds the two arrays: their handlers
 (`array_handlers()`), the units whose encodings those are (`array_units()`),
 and their state. The core builds one table from both, so `execute` looks an
 instruction up once whichever unit has it. `mxu_functional.hpp` is
-`tpu::MxuFunctional`, the face of `examples/tpuv6` and `examples/tpuv3`, which
+`tpu::MxuFunctional`, the face of `examples/tpuv6e` and `examples/tpuv3`, which
 derives from the same core and adds the matrix unit of `mxu.hpp`.
 
 Where the old Spike trapped, asserted or read past a buffer, the model ends
@@ -244,7 +244,7 @@ a slot of its own. Two ports is a step toward that, not the v6e: here loads and
 stores share the two requests and the two banks, a third load waits, and two
 accesses to the same bank take turns.
 
-What it changes, on a steady loop of `libtpuv6.so`'s matrix unit (a vmatmul of
+What it changes, on a steady loop of `libtpuv6e.so`'s matrix unit (a vmatmul of
 16 rows a block, its 6 vector loads and 4 vector stores; cycles per vmatmul,
 the difference of 96 and 192 blocks over 96; measured with four integer units):
 
@@ -282,13 +282,13 @@ unit until it commits, and commit is in order: behind an older vector load
 that has not committed, finished `addi`s hold all the units, and the next one
 waits, and the in-order issue with it.
 
-What the count changes, on a steady loop of `libtpuv6.so`'s matrix unit: a
+What the count changes, on a steady loop of `libtpuv6e.so`'s matrix unit: a
 vmatmul of 16 rows of bfloat16 a block, its 6 vector loads (4 of C, 2 of A), 4
 vector stores and 4 vfadds, 64 vmatmuls ahead of their pops; cycles per
 vmatmul, the difference of 96 and 192 blocks over 96, all the loops in one
 binary. The matrix unit allows 8 a block (a word of two rows a cycle, 8 words);
 how far under 8 the CPU's own time is, is measured against a matrix unit that
-does not hold it back: a build of `libtpuv6.so` whose arrays take four words a
+does not hold it back: a build of `libtpuv6e.so` whose arrays take four words a
 cycle, with `tpu_mxu_queue_entries: 65536` and `tpu_mxu_delay_cycles: 32`, not
 in the tree.
 

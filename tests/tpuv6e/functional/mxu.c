@@ -1,4 +1,4 @@
-// The matrix unit of libtpuv6.so: an array of 2 x LANES columns, an operand as two registers (a vmatprep, then
+// The matrix unit of libtpuv6e.so: an array of 2 x LANES columns, an operand as two registers (a vmatprep, then
 // the vmatpush or the vmatmul, each operand's held apart), a word of one single or two rows of 16 bits, weights
 // staged a half of the depth at a time and made active by a vmatmul that latches, a result popped a half of the
 // columns at a time. Checked against a formula. Usage: mxu [arrays | what the model refuses]

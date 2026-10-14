@@ -1,4 +1,4 @@
-// Example: a TPU v6e as one model, libtpuv6.so: the tpu example's special-function, misc and cross-lane units, and
+// Example: a TPU v6e as one model, libtpuv6e.so: the tpu example's special-function, misc and cross-lane units, and
 // its matrix unit (tpu/mxu.hpp) in the v6e's shape, in place of the systolic array and the multi-precision array.
 #include "vcix_accel.hpp"
 
@@ -19,12 +19,12 @@ struct Shape {
   static constexpr bool WORD_A_CYCLE = true;
 };
 
-class Tpuv6 final : public tpu::Machine<tpu::MxuFunctional<Shape>, tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
+class Tpuv6e final : public tpu::Machine<tpu::MxuFunctional<Shape>, tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
  public:
-  Tpuv6() : Machine("TPUV6_SFU", "TPUV6_MISC", "TPUV6_XLU", "TPUV6_MXU") {}
-  const char *name() const override { return "tpuv6"; }
+  Tpuv6e() : Machine("TPUV6E_SFU", "TPUV6E_MISC", "TPUV6E_XLU", "TPUV6E_MXU") {}
+  const char *name() const override { return "tpuv6e"; }
 };
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Tpuv6)
+VCIX_ACCEL_REGISTER(Tpuv6e)
