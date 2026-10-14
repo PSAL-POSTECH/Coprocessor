@@ -19,10 +19,10 @@ each built with the name its statistics report:
 ## The matrix unit
 
 The unit's encodings, fields, weights, queues and delay line are described in
-`examples/tpuv6/README.md` ("The matrix unit"). The `Shape` in `tpuv3.cc`
+`examples/tpuv6e/README.md` ("The matrix unit"). The `Shape` in `tpuv3.cc`
 sets what differs between models:
 
-| | tpuv3 | tpuv6 | The v3's value |
+| | tpuv3 | tpuv6e | The v3's value |
 |---|---|---|---|
 | `REGISTERS`: an operand's registers; the array is this x `vpu_num_lanes` each way | 1 | 2 | 128 x 128 on 128 lanes |
 | `SLOTS`: `vmatprep`, `vmatpush` and `vmatmul` a cycle, all arrays | 1 | 2 | a placeholder |
@@ -66,9 +66,9 @@ and 128 lanes, `mxu_rate.S` on queues of 8 and 16), the units' names and
 order (`ports.cc` and gem5's dump), and a refused queue size.
 `functional/run.sh` checks what the unit computes on Spike against a formula
 (`mxu.c`, on 4 and 8 lanes) and what it refuses, on the machine of
-`tests/tpu/functional` with the kernels of `tests/tpuv6/functional`.
+`tests/tpu/functional` with the kernels of `tests/tpuv6e/functional`.
 
-`tpu_mxu_bound_to_lanes` is tested here for both models: `libtpuv6.so` bound
+`tpu_mxu_bound_to_lanes` is tested here for both models: `libtpuv6e.so` bound
 on 4 and 128 lanes on gem5 and on 4 and 8 lanes on Spike, where its output is
 `libtpuv3.so`'s; `libtpuv3.so` on 8 lanes with and without the key; the key at
 2 refused.

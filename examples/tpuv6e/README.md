@@ -1,6 +1,6 @@
-# tpuv6
+# tpuv6e
 
-A TPU v6e on the two custom opcodes: one model (`libtpuv6.so`, name `tpuv6`).
+A TPU v6e on the two custom opcodes: one model (`libtpuv6e.so`, name `tpuv6e`).
 It is the tpu example's machine with another array: the special-function unit,
 the one-cycle instructions and the cross-lane unit of `examples/tpu`, and the
 matrix unit `tpu::Mxu` (`examples/tpu/mxu.hpp`), in the v6e's shape, in place
@@ -10,23 +10,23 @@ stands in for: a program for one model is not a program for the other.
 
 ## Units
 
-`tpuv6.cc` is a `tpu::Machine` (`examples/tpu/machine.hpp`) of four units,
+`tpuv6e.cc` is a `tpu::Machine` (`examples/tpu/machine.hpp`) of four units,
 each built with the name its statistics report:
 
 | Unit | File | Reported as |
 |---|---|---|
-| `tpu::Sfu` | `examples/tpu/sfu.hpp` | `TPUV6_SFU` |
-| `tpu::Misc` | `examples/tpu/misc.hpp` | `TPUV6_MISC` |
-| `tpu::Xlu` | `examples/tpu/xlu.hpp` | `TPUV6_XLU` |
-| `tpu::Mxu<Shape>` | `examples/tpu/mxu.hpp` | `TPUV6_MXU` |
+| `tpu::Sfu` | `examples/tpu/sfu.hpp` | `TPUV6E_SFU` |
+| `tpu::Misc` | `examples/tpu/misc.hpp` | `TPUV6E_MISC` |
+| `tpu::Xlu` | `examples/tpu/xlu.hpp` | `TPUV6E_XLU` |
+| `tpu::Mxu<Shape>` | `examples/tpu/mxu.hpp` | `TPUV6E_MXU` |
 
 All four are the tpu example's units, included as `tpu/<unit>.hpp` (the build
 adds `examples` to the include path); the first three are timed as its README
 says, the matrix unit as below, and only the name they report is this
-model's. `Shape`, in `tpuv6.cc`, is the matrix unit's: an operand of two
+model's. `Shape`, in `tpuv6e.cc`, is the matrix unit's: an operand of two
 registers (`REGISTERS`), two MXU slots a cycle (`SLOTS`) and a word a cycle
 into an array (`WORD_A_CYCLE`). The ports, and so the statistics,
-are in this order: gem5 reports `vcix.TPUV6_MXU.admitted` and so on (before,
+are in this order: gem5 reports `vcix.TPUV6E_MXU.admitted` and so on (before,
 as `libtpu_mxu.so`, `vcix.Mxu.*`, `vcix.Sfu.*`, `vcix.Misc.*`, `vcix.Xlu.*`).
 The encodings' names, and so `vcix.committed.<encoding>`, did not change.
 
@@ -111,7 +111,7 @@ cycle as its CPU issues, through the one accelerator unit of
 bound the issue. The rows of a `vmatmul` wait in its array's input
 queue, and one word a cycle enters the array's delay line of
 `tpu_mxu_delay_cycles` slots, as a word enters a SIMD unit -- a word into
-each array a cycle, so the unit's input port, `TPUV6_MXU.input`, takes 2 x
+each array a cycle, so the unit's input port, `TPUV6E_MXU.input`, takes 2 x
 `tpu_mxu_units` rows a cycle: a word brings two rows of 16 bits (format 1 or
 3), both computed in the cycle it enters, so rows of 16 bits enter two a
 cycle and singles (format 0) one. The rows of each `vmatmul` enter at its own
@@ -167,7 +167,7 @@ With `tpu_trace`:
 
 ## Tests
 
-`tests/tpuv6/run.sh` checks the matrix unit's timing on gem5 (`mxu.S`,
+`tests/tpuv6e/run.sh` checks the matrix unit's timing on gem5 (`mxu.S`,
 `mxu_rate.S`, `mxu_arrays.S` on two arrays, and `mxu_slots.S`, a `vpop` and a
 `vmatmul` in one cycle, also on `script_systolic.py`), the units' names and order in the statistics (`ports.cc`, with
 no simulator, and gem5's dump), and a refused machine description;

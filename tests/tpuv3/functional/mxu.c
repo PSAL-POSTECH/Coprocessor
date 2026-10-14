@@ -7,7 +7,7 @@
 #define WIDTH LANES
 #endif
 
-// sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2, of tests/tpuv6/functional/kernels.S. The number is the instruction's field.
+// sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2, of tests/tpuv6e/functional/kernels.S. The number is the instruction's field.
 kernel_with k_mxu_matmul_32, k_mxu_push_32, k_mxu_prep_32, k_mxu_pop_32;
 
 #define IN 0ul

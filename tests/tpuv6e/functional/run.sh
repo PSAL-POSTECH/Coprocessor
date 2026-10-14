@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# The functional face of the tpuv6 example, on Spike: its matrix unit checked against a formula, which the Spike the
+# The functional face of the tpuv6e example, on Spike: its matrix unit checked against a formula, which the Spike the
 # tpu units came from has no answer for, and what it refuses. The machine is tests/tpu/functional's, also with
 # tpu_mxu_units: 2, and so is common.h, which mxu.c includes.
-# Called by tests/tpuv6/run.sh. Usage: tests/tpuv6/functional/run.sh <build-dir> <spike> <pk>
+# Called by tests/tpuv6e/run.sh. Usage: tests/tpuv6e/functional/run.sh <build-dir> <spike> <pk>
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../../../setup/versions.env
@@ -10,8 +10,8 @@ source "$HERE/../../../setup/versions.env"
 [ $# -ge 3 ] || { sed -n '2,5p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 BUILD=$(cd "$1" && pwd) || exit 2
 SPIKE=$2 PK=$3
-MODEL="$BUILD/libtpuv6.so"
-OUT="$BUILD/tpuv6-functional"
+MODEL="$BUILD/libtpuv6e.so"
+OUT="$BUILD/tpuv6e-functional"
 MACHINE="$HERE/../../tpu/functional"
 for needed in "$MODEL" "$SPIKE" "$PK" "$MACHINE/machine.yml" "$MACHINE/common.h"; do
   [ -e "$needed" ] || { echo "$needed: not found" >&2; exit 2; }

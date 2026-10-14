@@ -1,5 +1,5 @@
-// The tpuv6 model's statistics, read through the C table with no simulator: the units it holds, under the names it
-// gives them, in the order a reader that indexes the list depends on. Usage: tpuv6_ports libtpuv6.so
+// The tpuv6e model's statistics, read through the C table with no simulator: the units it holds, under the names it
+// gives them, in the order a reader that indexes the list depends on. Usage: tpuv6e_ports libtpuv6e.so
 #include <dlfcn.h>
 
 #include <cstdio>
@@ -11,7 +11,7 @@
 
 int main(int argc, char **argv) {
   if (argc != 2) {
-    fprintf(stderr, "usage: %s libtpuv6.so\n", argv[0]);
+    fprintf(stderr, "usage: %s libtpuv6e.so\n", argv[0]);
     return 2;
   }
   void *lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -34,9 +34,9 @@ int main(int argc, char **argv) {
   }
 
   // Four entries per unit at its primary port, units in the order the model holds them, then the commits.
-  const char *expected[][2] = {{"TPUV6_SFU", "entry"}, {"TPUV6_MISC", "issue"}, {"TPUV6_XLU", "input"}, {"TPUV6_MXU", "input"}};
+  const char *expected[][2] = {{"TPUV6E_SFU", "entry"}, {"TPUV6E_MISC", "issue"}, {"TPUV6E_XLU", "input"}, {"TPUV6E_MXU", "input"}};
   const size_t units = sizeof expected / sizeof expected[0];
-  bool ok = !strcmp(m->name, "tpuv6") && m->num_stats(self) == 4 * units + m->num_encodings;
+  bool ok = !strcmp(m->name, "tpuv6e") && m->num_stats(self) == 4 * units + m->num_encodings;
   for (size_t u = 0; ok && u < units; u++)
     for (uint32_t kind = 0; kind < 4; kind++) {
       const vcix_stat *s = m->stat(self, 4 * u + kind);
@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
     const vcix_stat *s = m->stat(self, 4 * units + e);
     ok = !strcmp(s->unit, "committed") && !strcmp(s->name, m->encodings[e].name) && s->kind == VCIX_STAT_COUNT;
   }
-  printf("%s  model tpuv6: 4 units at their primary ports (TPUV6_SFU.entry, TPUV6_MISC.issue, TPUV6_XLU/TPUV6_MXU.input), "
+  printf("%s  model tpuv6e: 4 units at their primary ports (TPUV6E_SFU.entry, TPUV6E_MISC.issue, TPUV6E_XLU/TPUV6E_MXU.input), "
          "no other port, then one commit count per encoding\n",
          ok ? "PASS" : "FAIL");
   m->destroy(self);

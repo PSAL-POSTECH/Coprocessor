@@ -1,5 +1,5 @@
 // Shared by the programs of this directory: where the scratchpad is, and how a result leaves the program.
-// tests/tpuv6/functional includes it too, for the same machine.yml.
+// tests/tpuv6e/functional includes it too, for the same machine.yml.
 #ifndef TPU_FUNCTIONAL_COMMON_H
 #define TPU_FUNCTIONAL_COMMON_H
 

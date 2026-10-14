@@ -1,4 +1,4 @@
-# The matrix unit of libtpuv6.so issues a vpop and a vmatmul of the same array in one cycle, as the v6e's bundles do
+# The matrix unit of libtpuv6e.so issues a vpop and a vmatmul of the same array in one cycle, as the v6e's bundles do
 # (vpop.mxu1 with vmatmul.mxu1): two inputs of four words of bfloat16, the first's lower pop of four ahead of the
 # second's vmatmul, which issues in the cycle the pop does, then the rest of the pops, both halves by turns.
     .option norvc
