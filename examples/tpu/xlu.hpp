@@ -1,8 +1,9 @@
-// The tpu model's cross-lane unit: one element a cycle enters its delay line, one instruction a cycle the unit.
-// The pushes between two pops are one tile, as in tpu::Functional: the first push after a pop forgets the tile before.
+// A TPU's cross-lane unit: one element a cycle enters its delay line, one instruction a cycle the unit.
+// The pushes between two pops are one tile, as in tpu::FunctionalCore: the first push after a pop forgets the tile before.
 #ifndef TPU_XLU_HPP
 #define TPU_XLU_HPP
 
+#include <cstdio>
 #include <vector>
 
 #include "vcix_accel.hpp"
@@ -18,6 +19,11 @@ class Xlu {
   using Encoding = vcix_accel::Encoding;
   using Id = vcix_accel::Id;
   using Insn = vcix_accel::Insn;
+
+  // `name` is the unit as its statistics report it; the model that holds the unit says it.
+  explicit Xlu(const char *name)
+      : stream_{name, "input", "elements", vcix_accel::Port::PRIMARY, DEFAULT_LATENCY, DEFAULT_ENTRIES},
+        issue_{name, "issue", "instructions", 1} {}
 
   static std::vector<Encoding> encodings() {
     return {{PUSH, FORM, "xlu_push"}, {PUSH_PATTERN, FORM, "xlu_push_pattern"}, {POP, FORM, "xlu_pop"}};
@@ -62,6 +68,8 @@ class Xlu {
 
   uint32_t input_entries() const { return stream_.input_entries(); }
   uint32_t output_entries() const { return stream_.output_entries(); }
+  // What the [tpu] trace adds to an issue.
+  void trace_queues(const Insn &) const { std::printf(", input queue %u, output queue %u", input_entries(), output_entries()); }
 
  private:
   static constexpr uint32_t FORM = 0xFE00707F;
@@ -77,8 +85,8 @@ class Xlu {
   static bool is(const Insn &insn, uint32_t match) { return (insn.bits & FORM) == match; }
   static bool is_push(const Insn &insn) { return is(insn, PUSH) || is(insn, PUSH_PATTERN); }
 
-  Stream stream_{"Xlu", "input", "elements", vcix_accel::Port::PRIMARY, DEFAULT_LATENCY, DEFAULT_ENTRIES};
-  vcix_accel::Port issue_{"Xlu", "issue", "instructions", 1};
+  Stream stream_;
+  vcix_accel::Port issue_;
   // A pop was issued since the last push: the next push starts a tile.
   bool popped_ = false;
 };

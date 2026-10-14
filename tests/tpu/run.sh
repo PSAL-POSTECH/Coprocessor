@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu mxu mxu_rate mxu_arrays; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -102,49 +102,6 @@ delay=$(said msa "issue msa push: the first, input queue 0, output queue 0" \
   "issue msa pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4")
 report "exit ${rc[msa]}, lines $delay of $(lines msa issue)" "exit 0, lines 3 of 3" \
   "a weight push enters nothing, and a pop of four is issued 4 + 7 cycles after the input push of four"
-
-echo "-- matrix unit of libtpu_mxu.so, 4 lanes: an array of 8 x 8, 15 slots, a word a cycle, queues of 8"
-gem5_run "$BUILD/m5out-tpu-mxu" "$BUILD/libtpu_mxu.so" "$HERE/systolic.yml" "$BUILD/tpu-mxu" --max-ticks 100000000 \
-  > "$BUILD/tpu-mxu.gem5.log" 2>&1
-rc[mxu]=$?
-
-pairs=$(said mxu "issue vmatprep: the first, input queue 0, output queues 0 and 0" \
-  "issue vmatpush: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 0" \
-  "issue vmatprep: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 0" \
-  "issue vmatmul: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 0")
-report "exit ${rc[mxu]}, lines $pairs" "exit 0, lines 4" \
-  "a vmatprep and the half that follows it are issued a cycle apart, and neither weights nor a vmatprep enter the array"
-pops=$(said mxu "issue vpop: 17 cycles after the last issue, 0 in flight, input queue 0, output queues 4 and 4" \
-  "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 2 and 6" \
-  "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 4 and 4" \
-  "issue vpop: 1 cycles after the last issue, 0 in flight, input queue 0, output queues 0 and 4")
-report "lines $pops of $(lines mxu issue)" "lines 4 of 8" \
-  "eight rows of bfloat16 enter two a cycle: the pop of four is issued 2 + 15 cycles after the vmatmul, and each half is popped apart"
-
-printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_systolic_queue_entries: 16\n' > "$BUILD/tpu-mxu-16.yml"
-gem5_run "$BUILD/m5out-tpu-mxu_rate" "$BUILD/libtpu_mxu.so" "$BUILD/tpu-mxu-16.yml" "$BUILD/tpu-mxu_rate" \
-  --max-ticks 100000000 > "$BUILD/tpu-mxu_rate.gem5.log" 2>&1
-rc[mxu_rate]=$?
-queues=$(grep -o "input queue [0-9]*" "$BUILD/tpu-mxu_rate.gem5.log" | cut -d' ' -f3 | tr '\n' ' ')
-report "exit ${rc[mxu_rate]}, input queue at each issue ${queues% }" "exit 0, input queue at each issue 0 0 0 0 3 2 9 8 6 4 0 0 0 0 0 0" \
-  "with queues of 16, a word a cycle enters: four of singles one row each, then four of bfloat16 queued behind them two rows each"
-pops=$(sed -n 's/^\[tpu\] issue vpop: \([0-9]*\) cycles after .*output queues \([0-9]*\) and \([0-9]*\)$/\1:\2\/\3/p' \
-  "$BUILD/tpu-mxu_rate.gem5.log" | tr '\n' ' ')
-report "cycles after the last issue:output queues ${pops% }" "cycles after the last issue:output queues 13:4/4 1:2/6 1:4/4 1:2/6 1:4/4 1:0/4" \
-  "the four singles are out 4 + 15 cycles after their vmatmul, 13 after the last issue, and the bfloat16 rows two a cycle after them"
-
-printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_systolic_queue_entries: 8\ntpu_mxu_units: 2\n' > "$BUILD/tpu-mxu-arrays.yml"
-gem5_run "$BUILD/m5out-tpu-mxu_arrays" "$BUILD/libtpu_mxu.so" "$BUILD/tpu-mxu-arrays.yml" "$BUILD/tpu-mxu_arrays" \
-  --max-ticks 100000000 > "$BUILD/tpu-mxu_arrays.gem5.log" 2>&1
-rc[mxu_arrays]=$?
-arrays=$(said mxu_arrays "issue vmatmul: 1 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 0 and 0" \
-  "issue vmatmul: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 0 and 0" \
-  "issue vpop: 16 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 4 and 4" \
-  "issue vpop: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 4 and 4" \
-  "issue vpop: 1 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 4 and 8" \
-  "issue vpop: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 4 and 8")
-report "exit ${rc[mxu_arrays]}, lines $arrays of $(lines mxu_arrays issue)" "exit 0, lines 6 of 12" \
-  "with tpu_mxu_units: 2, each array has its own queues and line: two vmatmuls a cycle apart enter together, and each array's pop comes 2 + 15 cycles after its own vmatmul"
 
 echo "-- cross-lane unit: a delay line of 3 slots, queues of 8"
 on_gem5 xlu xlu "$HERE/xlu.yml"
@@ -223,9 +180,9 @@ for name in vlane_idx compute dma_config_desc dma_index_key mvin mvin2 mvin3 mvo
 done
 report "exit ${rc[machine-misc]}, at most and in all $(misc_per_cycle machine-misc)" "exit 0, at most and in all 2 8" \
   "script_systolic.py issues one_cycle.S's eight tpu::Misc instructions at most two a cycle, though the CPU issues 12"
-report "capacity $(machine_stat machine-misc Misc.capacity), admitted $(machine_stat machine-misc Misc.admitted) of $committed committed" \
+report "capacity $(machine_stat machine-misc MISC.capacity), admitted $(machine_stat machine-misc MISC.admitted) of $committed committed" \
   "capacity 2, admitted 8 of 8 committed" \
-  "Misc, at its primary port issue, takes 2 a cycle and admits each committed custom-2 and DMA instruction of tpu::Misc once"
+  "MISC, at its primary port issue, takes 2 a cycle and admits each committed custom-2 and DMA instruction of tpu::Misc once"
 
 printf 'tpu_trace: 1\ntpu_misc_issue_width: 3\n' > "$BUILD/tpu-misc-3.yml"
 printf 'tpu_misc_issue_width: 0\n' > "$BUILD/tpu-misc-0.yml"
@@ -235,7 +192,7 @@ for width in 3 0; do
     > "$BUILD/tpu-machine-misc-$width.gem5.log" 2>&1
   rc[machine-misc-$width]=$?
 done
-report "exit ${rc[machine-misc-3]}, capacity $(machine_stat machine-misc-3 Misc.capacity), at most and in all $(misc_per_cycle machine-misc-3)" \
+report "exit ${rc[machine-misc-3]}, capacity $(machine_stat machine-misc-3 MISC.capacity), at most and in all $(misc_per_cycle machine-misc-3)" \
   "exit 0, capacity 3, at most and in all 3 8" "gem5 follows tpu_misc_issue_width: 3 from the machine description"
 why=$(grep -Fc "tpu: machine description: tpu_misc_issue_width: '0' is not an issue width: at least 1" \
   "$BUILD/tpu-machine-misc-0.gem5.log")

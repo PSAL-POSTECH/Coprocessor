@@ -16,7 +16,9 @@ endfunction()
 
 vcix_accel_add_model(print_args examples/print_args/print_args.cc)
 vcix_accel_add_model(tpu examples/tpu/tpu.cc)
-vcix_accel_add_model(tpu_mxu examples/tpu/tpu_mxu.cc)
+vcix_accel_add_model(tpuv6 examples/tpuv6/tpuv6.cc)
+# examples/tpuv6 reuses the tpu example's units, as tpu/<unit>.hpp.
+target_include_directories(tpuv6 PRIVATE examples)
 vcix_accel_add_model(pipelined tests/pipeline/pipelined.cc)
 vcix_accel_add_model(reports tests/contract/reports.cc)
 vcix_accel_add_model(timing tests/contract/timing.cc)
@@ -51,6 +53,9 @@ target_link_libraries(port_stats PRIVATE vcix_accel)
 # tests/tpu: the tpu units' ports, read through the table with no simulator.
 add_executable(tpu_ports tests/tpu/ports.cc)
 target_link_libraries(tpu_ports PRIVATE vcix_accel ${CMAKE_DL_LIBS})
+# tests/tpuv6: the tpuv6 model's units as its statistics list them, with no simulator.
+add_executable(tpuv6_ports tests/tpuv6/ports.cc)
+target_link_libraries(tpuv6_ports PRIVATE vcix_accel ${CMAKE_DL_LIBS})
 
 add_executable(timing_probe tools/timing_probe.cc)
 target_link_libraries(timing_probe PRIVATE vcix_accel ${CMAKE_DL_LIBS})

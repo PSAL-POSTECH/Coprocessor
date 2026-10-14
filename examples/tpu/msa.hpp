@@ -3,6 +3,7 @@
 #ifndef TPU_MSA_HPP
 #define TPU_MSA_HPP
 
+#include <cstdio>
 #include <vector>
 
 #include "vcix_accel.hpp"
@@ -18,6 +19,13 @@ class Msa {
   using Encoding = vcix_accel::Encoding;
   using Id = vcix_accel::Id;
   using Insn = vcix_accel::Insn;
+
+  // `name` is the unit as its statistics report it; the model that holds the unit says it.
+  explicit Msa(const char *name)
+      : stream_{name, "input", "rows", vcix_accel::Port::PRIMARY, 255, 256},
+        issue_{name, "issue", "instructions", 1},
+        weight_push_{name, "weight_push", "instructions", 1},
+        pop_{name, "pop", "rows", 256} {}
 
   static std::vector<Encoding> encodings() { return {{PUSH, FORM, "msa push"}, {POP, FORM, "msa pop"}}; }
   bool owns(const Insn &insn) const { return is(insn, PUSH) || is(insn, POP); }
@@ -64,6 +72,8 @@ class Msa {
 
   uint32_t input_entries() const { return stream_.input_entries(); }
   uint32_t output_entries() const { return stream_.output_entries(); }
+  // What the [tpu] trace adds to an issue.
+  void trace_queues(const Insn &) const { std::printf(", input queue %u, output queue %u", input_entries(), output_entries()); }
 
  private:
   // funct6, vm and funct3 of custom-2: sf.vc.iv 2 and sf.vc.v.i 3.
@@ -79,10 +89,10 @@ class Msa {
   static bool is(const Insn &insn, uint32_t match) { return (insn.bits & FORM) == match; }
   static bool is_input(const Insn &insn) { return is(insn, PUSH) && !(vcix_accel::rs1(insn) & WEIGHT); }
 
-  Stream stream_{"Msa", "input", "rows", vcix_accel::Port::PRIMARY, 255, 256};
-  vcix_accel::Port issue_{"Msa", "issue", "instructions", 1};
-  vcix_accel::Port weight_push_{"Msa", "weight_push", "instructions", 1};
-  vcix_accel::Port pop_{"Msa", "pop", "rows", 256};
+  Stream stream_;
+  vcix_accel::Port issue_;
+  vcix_accel::Port weight_push_;
+  vcix_accel::Port pop_;
 };
 
 }  // namespace tpu

@@ -3,6 +3,7 @@
 #ifndef TPU_SYSTOLIC_HPP
 #define TPU_SYSTOLIC_HPP
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,13 @@ class Systolic {
   using Encoding = vcix_accel::Encoding;
   using Id = vcix_accel::Id;
   using Insn = vcix_accel::Insn;
+
+  // `name` is the unit as its statistics report it; the model that holds the unit says it.
+  explicit Systolic(const char *name)
+      : stream_{name, "input", "rows", vcix_accel::Port::PRIMARY, 255, 256},
+        issue_{name, "issue", "instructions", 1},
+        weight_push_{name, "weight_push", "instructions", 1},
+        pop_{name, "pop", "rows", 256} {}
 
   static std::vector<Encoding> encodings() {
     return {{INPUT_PUSH, FORM, "systolic input push"},
@@ -67,6 +75,8 @@ class Systolic {
 
   uint32_t input_entries() const { return stream_.input_entries(); }
   uint32_t output_entries() const { return stream_.output_entries(); }
+  // What the [tpu] trace adds to an issue.
+  void trace_queues(const Insn &) const { std::printf(", input queue %u, output queue %u", input_entries(), output_entries()); }
   uint32_t slots() const { return stream_.slots(); }
   uint32_t queue_capacity() const { return stream_.queue_capacity(); }
 
@@ -82,10 +92,10 @@ class Systolic {
 
   static bool is(const Insn &insn, uint32_t match) { return (insn.bits & FORM) == match; }
 
-  Stream stream_{"Systolic", "input", "rows", vcix_accel::Port::PRIMARY, 255, 256};
-  vcix_accel::Port issue_{"Systolic", "issue", "instructions", 1};
-  vcix_accel::Port weight_push_{"Systolic", "weight_push", "instructions", 1};
-  vcix_accel::Port pop_{"Systolic", "pop", "rows", 256};
+  Stream stream_;
+  vcix_accel::Port issue_;
+  vcix_accel::Port weight_push_;
+  vcix_accel::Port pop_;
 };
 
 }  // namespace tpu

@@ -334,6 +334,8 @@ examples/tpu/             a model made of units: the timing of a TPU's special-f
                           instruction computes
 examples/tpu/gem5/        the machine the tpu example is measured on: PyTorchSim's
                           gem5 CPU and memory configuration
+examples/tpuv6/           a TPU v6e: the tpu example's units with a matrix unit
+                          as the array, its own model and library
 examples/gem5_se.py       the gem5 fixture the example and the tests run on
 examples/machine_description.py
                           how a gem5 config script reads the machine description
@@ -346,6 +348,8 @@ tests/pipeline/           a pipelined model overlaps instructions on gem5
 tests/print_args/         the example reaches the model once per instruction
 tests/tpu/                the tpu example's timing on gem5; functional/: what it
                           computes on Spike, against the Spike its units came from
+tests/tpuv6/              the tpuv6 example's timing on gem5; functional/: what
+                          its matrix unit computes on Spike, against a formula
 setup/                    the pinned environment: versions.env, the scripts
                           that build it, and the image
 scripts/                  build this repository; how each simulator is started
