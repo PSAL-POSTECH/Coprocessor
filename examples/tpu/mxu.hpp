@@ -1,5 +1,5 @@
-// A TPU model's matrix unit: `tpu_mxu_units` arrays of Shape::REGISTERS x lanes each way, an operand that many
-// registers. Shape also sets the issue slots and whether a word or a row enters a cycle.
+// A TPU model's matrix unit: `tpu_mxu_units` arrays of Shape::REGISTERS x lanes each way (lanes x lanes under
+// tpu_mxu_bound_to_lanes: 1), an operand that many registers. Shape also sets the issue slots and the rows a cycle.
 #ifndef TPU_MXU_HPP
 #define TPU_MXU_HPP
 
@@ -44,15 +44,20 @@ class Mxu {
     return is(insn, POP) ? vcix_accel::rs2(insn) : vcix_accel::rd(insn);
   }
   static constexpr uint64_t MAX_ARRAYS = 32;  // what a field of 5 bits names
-  // The registers of an operand, so the array's side in lanes; the timing and the functional face both ask here.
-  static uint32_t registers(const Config &) { return Shape::REGISTERS; }
+  // Registers per operand: Shape::REGISTERS, or 1 (lanes x lanes) under tpu_mxu_bound_to_lanes: 1.
+  static uint32_t registers(const Config &config) {
+    const uint64_t bound = config.uint(BOUND_KEY, 0);
+    if (bound > 1)
+      throw vcix_accel::ConfigError(BOUND_KEY, config.get(BOUND_KEY),
+                                    "is not 0 (the model's array) or 1 (an array of lanes x lanes)");
+    return bound ? 1 : Shape::REGISTERS;
+  }
 
   // The delay line defaults to the array's width + depth - 1 slots.
   void configure(const Config &config) {
     const uint64_t lanes = config.uint(LANES_KEY, 128);
     const uint64_t entries = config.uint(QUEUE_KEY, 256);
     const uint64_t arrays = config.uint(ARRAYS_KEY, 1);
-    registers_ = registers(config);
     if (lanes < 1 || lanes > MAX_LANES)
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 2 || entries > UINT32_MAX)
@@ -60,6 +65,7 @@ class Mxu {
     if (arrays < 1 || arrays > MAX_ARRAYS)
       throw vcix_accel::ConfigError(ARRAYS_KEY, config.get(ARRAYS_KEY),
                                     "is not a number of arrays an instruction's field of 5 bits can name: 1 to 32");
+    registers_ = registers(config);
     const uint64_t slots = config.uint(DELAY_KEY, 2 * registers_ * lanes - 1);
     if (slots < 1 || slots > UINT32_MAX)
       throw vcix_accel::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
@@ -154,6 +160,7 @@ class Mxu {
   static constexpr const char *QUEUE_KEY = "tpu_mxu_queue_entries";
   static constexpr const char *DELAY_KEY = "tpu_mxu_delay_cycles";
   static constexpr const char *ARRAYS_KEY = "tpu_mxu_units";
+  static constexpr const char *BOUND_KEY = "tpu_mxu_bound_to_lanes";
   static constexpr uint32_t PER_CYCLE = Shape::WORD_A_CYCLE ? 2 : 1;
 
   struct Queued {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The functional face of the tpuv3 example, on Spike: its matrix unit, of one register an operand, checked against a
-# formula on 4 lanes and on 8, and what it refuses. The machine is tests/tpu/functional's (common.h, which mxu.c
-# includes); the kernels are tests/tpuv6/functional's. Usage: tests/tpuv3/functional/run.sh <build-dir> <spike> <pk>
+# The functional face of the tpuv3 example, on Spike: its matrix unit, of one register an operand, against a formula
+# on 4 lanes and on 8, and libtpuv6.so bound to the lanes on both; what it refuses. tests/tpu/functional's machine
+# and common.h, tests/tpuv6/functional's kernels. Usage: tests/tpuv3/functional/run.sh <build-dir> <spike> <pk>
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../../../setup/versions.env
@@ -44,12 +44,12 @@ formula() {
   if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
   echo "  $5: $(tail -n1 "$OUT/$1.out") (exit $rc)"
 }
-# refused <name> <model> <which> <text>: the run of mxu-4 ends there, with this on standard error.
+# refused <name> <model> <machine.yml> <which> <text>: the run of mxu-4 ends there, with this on standard error.
 refused() {
   local rc
-  on_model "$1" "$2" "$MACHINE/machine.yml" -- mxu-4 ${3:+"$3"}; rc=$?
-  if [ "$rc" = 1 ] && grep -Fq -- "$4" "$OUT/$1.err" && ! grep -Fq "it ran" "$OUT/$1.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-  echo "  refused: $4 (exit $rc)"
+  on_model "$1" "$2" "$3" -- mxu-4 ${4:+"$4"}; rc=$?
+  if [ "$rc" = 1 ] && grep -Fq -- "$5" "$OUT/$1.err" && ! grep -Fq "it ran" "$OUT/$1.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+  echo "  refused, $2: $5 (exit $rc)"
 }
 
 echo "-- the matrix unit, checked against a formula"
@@ -57,10 +57,22 @@ formula mxu-4 tpuv3 "$MACHINE/machine.yml" mxu-4 \
   "4 lanes, an array of 4 x 4: an operand one register, words of singles, halves and bfloat16, weights staged and latched"
 formula mxu-8 tpuv3 "$OUT/machine-8.yml" mxu-8 "8 lanes, an array of 8 x 8"
 
+echo "-- libtpuv6.so with tpu_mxu_bound_to_lanes: 1, an array of lanes x lanes: the same program, the same results"
+{ cat "$MACHINE/machine.yml"; echo "tpu_mxu_bound_to_lanes: 1"; } > "$OUT/machine-bound.yml"
+{ cat "$OUT/machine-8.yml"; echo "tpu_mxu_bound_to_lanes: 1"; } > "$OUT/machine-8-bound.yml"
+formula tpuv6-bound-4 tpuv6 "$OUT/machine-bound.yml" mxu-4 "4 lanes, an array of 4 x 4"
+formula tpuv6-bound-8 tpuv6 "$OUT/machine-8-bound.yml" mxu-8 "8 lanes, an array of 8 x 8"
+for width in 4 8; do
+  if cmp -s "$OUT/mxu-$width.out" "$OUT/tpuv6-bound-$width.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+  echo "  $width lanes: libtpuv6.so bound writes what libtpuv3.so does, byte for byte"
+done
+
 echo "-- what the matrix unit does not carry out"
-refused prep tpuv3 prep "tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half"
-refused push2 tpuv3 push2 "tpu: vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not"
-refused pop-upper tpuv3 pop-upper "tpu: vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not"
-refused on-tpuv6 tpuv6 "" "tpu: vmatpush: no vmatprep of its upper half came before it"
+refused prep tpuv3 "$MACHINE/machine.yml" prep "tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half"
+refused push2 tpuv3 "$MACHINE/machine.yml" push2 "tpu: vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not"
+refused pop-upper tpuv3 "$MACHINE/machine.yml" pop-upper "tpu: vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not"
+refused on-tpuv6 tpuv6 "$MACHINE/machine.yml" "" "tpu: vmatpush: no vmatprep of its upper half came before it"
+refused tpuv6-bound-prep tpuv6 "$OUT/machine-bound.yml" prep \
+  "tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half"
 
 exit $failed

@@ -140,9 +140,10 @@ exit 1.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `vpu_num_lanes` | 128 | the matrix unit is 2 x this wide and deep; 1 to 2^19 |
+| `vpu_num_lanes` | 128 | the matrix unit is 2 x this wide and deep (this, bound to the lanes); 1 to 2^19 |
+| `tpu_mxu_bound_to_lanes` | 0 | 1: the matrix unit is `vpu_num_lanes` x `vpu_num_lanes`, an operand one register, as in `examples/tpuv3`, so the lanes size it (8 lanes, 8 x 8); the slots and a word a cycle stay this model's. 0: the model's own, 2 x the lanes |
 | `tpu_mxu_queue_entries` | 256 | rows in each array's input queue and in each half's output queue; at least 2: a word of two rows enters whole |
-| `tpu_mxu_delay_cycles` | 4 x `vpu_num_lanes` - 1 | slots in each array's delay line, one cycle each; at least 1 |
+| `tpu_mxu_delay_cycles` | the array's width + depth - 1: 4 x `vpu_num_lanes` - 1 (2 x, bound) | slots in each array's delay line, one cycle each; at least 1 |
 | `tpu_mxu_units` | 1 | how many arrays the matrix unit has, each with its own queues, delay line and weights; 1 to 32, what an instruction's field of 5 bits names |
 | `tpu_sfu_latency_cycles` | 10 | as in `examples/tpu` |
 | `tpu_misc_issue_width` | 2 | as in `examples/tpu` |
