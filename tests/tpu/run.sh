@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu loads; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu loads addresses; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -228,7 +228,15 @@ report "exit ${rc[machine-loads]}, $(memories machine-loads); requests $(grep -P
   "script_systolic.py's scratchpad is two banks, interleaved by the 64-byte line at 32 GB/s each, and its LSQ takes two requests"
 report "$(data_reads machine-loads 2); $(data_reads machine-loads 4)" "64 0; 32 32" \
   "loads.S's 64 loads from lines 128 bytes apart all read bank 0; from lines 64 bytes apart, 32 each bank"
-report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-loads 4 system.cpu.numCycles)" "92 and 58" \
-  "the 64 loads over both banks take 34 cycles fewer than in one: two of them commit a cycle, not one"
+report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-loads 4 system.cpu.numCycles)" "89 and 57" \
+  "the 64 loads over both banks take 32 cycles fewer than in one: two of them commit a cycle, not one"
+
+timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-addresses" "$REPO/examples/tpu/gem5/script_systolic.py" \
+  -c "$BUILD/tpu-addresses" --model "$BUILD/libtpu.so" > "$BUILD/tpu-machine-addresses.gem5.log" 2>&1
+rc[machine-addresses]=$?
+report "exit ${rc[machine-addresses]}, integer units $(grep -c '^opClass=IntAlu$' "$BUILD/m5out-tpu-machine-addresses/config.ini")" \
+  "exit 0, integer units 5" "script_systolic.py's CPU has five units of IntAlu, one more than the original's four"
+report "$(window machine-addresses 2 system.cpu.numCycles)" "98" \
+  "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 98 cycles (101 with four integer units)"
 
 exit $failed
