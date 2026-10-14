@@ -46,6 +46,7 @@ a latch, the RHS transpose, int8, and the rounding of inputs to bfloat16.
 | Key | Default | Meaning |
 |---|---|---|
 | `vpu_num_lanes` | 128 | the array's width and depth; 1 to 2^19 |
+| `tpu_mxu_bound_to_lanes` | 0 | 1 makes the array lanes x lanes; this model's array is that either way |
 | `tpu_mxu_queue_entries` | 256 | rows each queue of an array holds (a placeholder); at least 2 |
 | `tpu_mxu_delay_cycles` | 2 x `vpu_num_lanes` - 1 | slots of the delay line |
 | `tpu_mxu_units` | 1 | arrays of the matrix unit |
@@ -66,3 +67,8 @@ order (`ports.cc` and gem5's dump), and a refused queue size.
 `functional/run.sh` checks what the unit computes on Spike against a formula
 (`mxu.c`, on 4 and 8 lanes) and what it refuses, on the machine of
 `tests/tpu/functional` with the kernels of `tests/tpuv6/functional`.
+
+`tpu_mxu_bound_to_lanes` is tested here for both models: `libtpuv6.so` bound
+on 4 and 128 lanes on gem5 and on 4 and 8 lanes on Spike, where its output is
+`libtpuv3.so`'s; `libtpuv3.so` on 8 lanes with and without the key; the key at
+2 refused.
