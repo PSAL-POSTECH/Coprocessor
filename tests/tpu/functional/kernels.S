@@ -154,7 +154,7 @@ k_cross_load:
     ret
 
 # The multi-precision array. a3 = the field of the instruction, 0 to 31 for a push and 0 to 3 for a pop.
-.macro msa_push name, sew
+.macro msa_push name, sew, array=0
     .globl \name
 \name:
     vsetvli t0, a2, e\sew, m2, ta, ma
@@ -165,11 +165,11 @@ k_cross_load:
     jr      t1
 1:
   .irp field, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
-    sf.vc.iv 0x2, 0, v8, \field
+    sf.vc.iv 0x2, \array, v8, \field
     j       2f
   .endr
   .irp field, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
-    sf.vc.iv 0x2, 0, v8, \field-32
+    sf.vc.iv 0x2, \array, v8, \field-32
     j       2f
   .endr
 2:  mv      a0, t0
@@ -193,9 +193,11 @@ k_cross_load:
     mv      a0, t0
     ret
 .endm
-# The matrix unit of libtpu_mxu.so pops with sf.vc.v.i 2, as the systolic array does; its field goes to 7.
-    .globl k_mxu_pop_32
-k_mxu_pop_32:
+# The matrix unit of libtpu_mxu.so pops with sf.vc.v.i 2, as the systolic array does; its field goes to 7. The
+# array it pops is sf.vc.v.i's rs2, which names no register: 0 unless said.
+.macro mxu_pop name, array=0
+    .globl \name
+\name:
     vsetvli t0, a2, e32, m2, ta, ma
     vle32.v v16, (a1)
     la      t1, 1f
@@ -204,15 +206,19 @@ k_mxu_pop_32:
     jr      t1
 1:
   .irp field, 0, 1, 2, 3, 4, 5, 6, 7
-    sf.vc.v.i 0x2, 0, v16, \field
+    sf.vc.v.i 0x2, \array, v16, \field
     j       2f
   .endr
 2:  vse32.v v16, (a1)
     mv      a0, t0
     ret
+.endm
+    mxu_pop k_mxu_pop_32
+    mxu_pop k_mxu_pop_32_a1, 1
 # Its vmatpush (sf.vc.iv 1) and vmatmul (sf.vc.iv 0) of words: a3 = the field, 0 to 31, whose [4:3] names the half
 # of the depth a vmatpush fills and whose [2] latches the weights at a vmatmul.
-.macro mxu_operand name, p
+# The array a vmatpush or a vmatmul is for is sf.vc.iv's rd, which names no register: 0 unless said.
+.macro mxu_operand name, p, array=0
     .globl \name
 \name:
     vsetvli t0, a2, e32, m2, ta, ma
@@ -223,11 +229,11 @@ k_mxu_pop_32:
     jr      t1
 1:
   .irp field, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
-    sf.vc.iv \p, 0, v8, \field
+    sf.vc.iv \p, \array, v8, \field
     j       2f
   .endr
   .irp field, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
-    sf.vc.iv \p, 0, v8, \field-32
+    sf.vc.iv \p, \array, v8, \field-32
     j       2f
   .endr
 2:  mv      a0, t0
@@ -235,8 +241,12 @@ k_mxu_pop_32:
 .endm
     mxu_operand k_mxu_push_32, 0x1
     mxu_operand k_mxu_matmul_32, 0x0
+    mxu_operand k_mxu_push_32_a1, 0x1, 1
+    mxu_operand k_mxu_matmul_32_a1, 0x0, 1
+    mxu_operand k_mxu_matmul_32_a2, 0x0, 2
 
     msa_push k_msa_push_32, 32
+    msa_push k_msa_push_32_a1, 32, 1
     msa_push k_msa_push_16, 16
     msa_pop k_msa_pop_8, 8
     msa_pop k_msa_pop_16, 16

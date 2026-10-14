@@ -98,8 +98,13 @@ class TpuMxu : public Model {
     else
       printf("the first");
     if (xlu_.owns(insn)) printf(", input queue %u, output queue %u", xlu_.input_entries(), xlu_.output_entries());
-    if (mxu_.owns(insn))
-      printf(", input queue %u, output queues %u and %u", mxu_.input_entries(), mxu_.lower_entries(), mxu_.upper_entries());
+    if (mxu_.owns(insn)) {
+      const uint32_t array = tpu::Mxu::array_of(insn);
+      if (mxu_.arrays() > 1) printf(", array %u", array);
+      if (array < mxu_.arrays())
+        printf(", input queue %u, output queues %u and %u", mxu_.input_entries(array), mxu_.lower_entries(array),
+               mxu_.upper_entries(array));
+    }
     printf("\n");
     fflush(stdout);
     issued_any_ = true;

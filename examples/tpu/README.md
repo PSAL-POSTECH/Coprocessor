@@ -61,7 +61,15 @@ a program for the other.
 The unit follows what the final VLIW bundles of a TPU v6e show of its MXU
 (XLA's LLO dump of a bf16 `dot`, 1024 x 1024 x 1024): an array of 256 x 256
 fed by registers of 128 lanes, so that an operand is two registers and two
-instructions.
+instructions. The machine has `tpu_mxu_units` such arrays (the v6e's bundles
+name two, `mxu0` and `mxu1`), each with its own held halves, staged and
+active weights, queues and delay line. An instruction names its array in a
+field the encodings leave free: bits 11:7 of `sf.vc.iv` (`rd`, which names
+no register) for a `vmatprep`, `vmatpush` or `vmatmul`, bits 24:20 of
+`sf.vc.v.i` (`rs2`, which names none) for a `vpop`; with one array both are
+0, and a program for one array runs unchanged on a machine of more. One for
+an array the machine does not have ends the run, by name, when Spike runs
+it; gem5 never accepts it.
 
 | Instruction | Encoding | Field at 19:15 | What it does |
 |---|---|---|---|
@@ -111,10 +119,12 @@ computes before any latch; so does a `vmatpush` whose [4:3] is 0, or 3: the
 v6e's `vmatpush3`, which a dot of N = 128 uses with the two halves of the
 depth apart, is not modelled.
 
-Timing: one instruction per cycle; a `vmatprep` and a `vmatpush` enter
-nothing. The rows of a `vmatmul` wait in the input queue, and one word a
-cycle enters a delay line of `tpu_mxu_delay_cycles` slots, as a word enters a
-SIMD unit: a word brings two rows of 16 bits (format 1 or 3), both computed
+Timing: one instruction per cycle, for all the arrays; a `vmatprep` and a
+`vmatpush` enter nothing. The rows of a `vmatmul` wait in its array's input
+queue, and one word a cycle enters the array's delay line of
+`tpu_mxu_delay_cycles` slots, as a word enters a SIMD unit -- a word into
+each array a cycle, so the unit's `input` port takes 2 x `tpu_mxu_units`
+rows a cycle: a word brings two rows of 16 bits (format 1 or 3), both computed
 in the cycle it enters, so rows of 16 bits enter two a cycle and singles
 (format 0) one. The rows of each `vmatmul` enter at its own format's rate,
 whatever the others in the queue hold. A row that comes out is in both halves' output
@@ -175,7 +185,8 @@ argument it also runs it and compares the outputs byte by byte.
 | `tpu_trace` | 0 | not 0: the model prints a line at every issue and every commit |
 | `vpu_num_lanes` | 128 | width and height of the systolic array and of the multi-precision array; 1 to 2^20 |
 | `tpu_systolic_queue_entries` | 256 | entries in the input queue and in the output queue of each of the two arrays; at least 1 |
-| `tpu_mxu_delay_cycles` | 4 x `vpu_num_lanes` - 1 | `libtpu_mxu.so`: slots in the matrix unit's delay line, one cycle each; at least 1. Its queues are `tpu_systolic_queue_entries` rows, at least 2: a word of two rows enters whole |
+| `tpu_mxu_delay_cycles` | 4 x `vpu_num_lanes` - 1 | `libtpu_mxu.so`: slots in each array's delay line, one cycle each; at least 1. Its queues are `tpu_systolic_queue_entries` rows, at least 2: a word of two rows enters whole |
+| `tpu_mxu_units` | 1 | `libtpu_mxu.so`: how many arrays the matrix unit has, each with its own queues, delay line and weights; 1 to 32, what an instruction's field of 5 bits names |
 | `tpu_xlu_latency_cycles` | 10 | slots in the cross-lane unit's delay line, one cycle each; at least 1. A placeholder: the unit's latency is not known |
 | `tpu_xlu_queue_entries` | 256 | entries in the cross-lane unit's input queue and in its output queue; at least 1 |
 | `vpu_spad_size_kb_per_lane` | none | the scratchpad of one lane, which the DMA lays a tensor out over; a transfer without it ends the run |

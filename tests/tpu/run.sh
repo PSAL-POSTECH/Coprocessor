@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu mxu mxu_rate; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu mxu mxu_rate mxu_arrays; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -132,6 +132,19 @@ pops=$(sed -n 's/^\[tpu\] issue vpop: \([0-9]*\) cycles after .*output queues \(
   "$BUILD/tpu-mxu_rate.gem5.log" | tr '\n' ' ')
 report "cycles after the last issue:output queues ${pops% }" "cycles after the last issue:output queues 13:4/4 1:2/6 1:4/4 1:2/6 1:4/4 1:0/4" \
   "the four singles are out 4 + 15 cycles after their vmatmul, 13 after the last issue, and the bfloat16 rows two a cycle after them"
+
+printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_systolic_queue_entries: 8\ntpu_mxu_units: 2\n' > "$BUILD/tpu-mxu-arrays.yml"
+gem5_run "$BUILD/m5out-tpu-mxu_arrays" "$BUILD/libtpu_mxu.so" "$BUILD/tpu-mxu-arrays.yml" "$BUILD/tpu-mxu_arrays" \
+  --max-ticks 100000000 > "$BUILD/tpu-mxu_arrays.gem5.log" 2>&1
+rc[mxu_arrays]=$?
+arrays=$(said mxu_arrays "issue vmatmul: 1 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 0 and 0" \
+  "issue vmatmul: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 0 and 0" \
+  "issue vpop: 16 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 4 and 4" \
+  "issue vpop: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 4 and 4" \
+  "issue vpop: 1 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 4 and 8" \
+  "issue vpop: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 4 and 8")
+report "exit ${rc[mxu_arrays]}, lines $arrays of $(lines mxu_arrays issue)" "exit 0, lines 6 of 12" \
+  "with tpu_mxu_units: 2, each array has its own queues and line: two vmatmuls a cycle apart enter together, and each array's pop comes 2 + 15 cycles after its own vmatmul"
 
 echo "-- cross-lane unit: a delay line of 3 slots, queues of 8"
 on_gem5 xlu xlu "$HERE/xlu.yml"
