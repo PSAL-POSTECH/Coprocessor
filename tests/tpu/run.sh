@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu loads; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -197,5 +197,38 @@ report "exit ${rc[machine-misc-3]}, capacity $(machine_stat machine-misc-3 MISC.
 why=$(grep -Fc "tpu: machine description: tpu_misc_issue_width: '0' is not an issue width: at least 1" \
   "$BUILD/tpu-machine-misc-0.gem5.log")
 report "exit ${rc[machine-misc-0]}, reason given $why" "exit 1, reason given 1" "gem5 stops on tpu_misc_issue_width: 0"
+
+# memories <run>: each memory of the scratchpad, from the run's config.ini: its address range at its bandwidth (ps a byte)
+memories() {
+  awk '/^\[/ { in_mem = ($0 ~ /^\[system\.mem_ctrls[0-9]*\]$/) } in_mem && /^bandwidth=/ { bw = substr($0, 11) }
+    in_mem && /^range=/ { out = out sep substr($0, 7) " at " bw; sep = ", " } END { print out }' "$BUILD/m5out-tpu-$1/config.ini"
+}
+
+# window <run> <dump> <name>: the value of the stat named <name> in the dump-th dump, 0 if the dump does not print it
+window() {
+  awk -v want="$3" -v n="$2" '/Begin Simulation Statistics/ { s++ } s == n && $1 == want { v = $2 } END { print v + 0 }' \
+    "$BUILD/m5out-tpu-$1/stats.txt"
+}
+
+# data_reads <run> <dump>: each memory's reads of data in the dump-th dump, in the order of config.ini
+data_reads() {
+  local memory reads=()
+  for memory in $(grep -o '^\[system\.mem_ctrls[0-9]*\]$' "$BUILD/m5out-tpu-$1/config.ini" | tr -d '[]'); do
+    reads+=("$(window "$1" "$2" "$memory.numReads::cpu.data")")
+  done
+  echo "${reads[*]}"
+}
+
+timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-loads" "$REPO/examples/tpu/gem5/script_systolic.py" \
+  -c "$BUILD/tpu-loads" --model "$BUILD/libtpu.so" > "$BUILD/tpu-machine-loads.gem5.log" 2>&1
+rc[machine-loads]=$?
+report "exit ${rc[machine-loads]}, $(memories machine-loads); requests $(grep -Po '^executeLSQRequestsQueueSize=\K.*' \
+  "$BUILD/m5out-tpu-machine-loads/config.ini")" \
+  "exit 0, 0:17179869184:0:64 at 29.000000, 0:17179869184:1:64 at 29.000000; requests 2" \
+  "script_systolic.py's scratchpad is two banks, interleaved by the 64-byte line at 32 GB/s each, and its LSQ takes two requests"
+report "$(data_reads machine-loads 2); $(data_reads machine-loads 4)" "64 0; 32 32" \
+  "loads.S's 64 loads from lines 128 bytes apart all read bank 0; from lines 64 bytes apart, 32 each bank"
+report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-loads 4 system.cpu.numCycles)" "92 and 58" \
+  "the 64 loads over both banks take 34 cycles fewer than in one: two of them commit a cycle, not one"
 
 exit $failed

@@ -229,5 +229,8 @@ class RiscvVPU(RiscvMinorCPU):
     executeLSQMaxStoreBufferStoresPerCycle = 8
     executeLSQTransfersQueueSize = 8
     executeLSQStoreBufferSize = 8
+    # Two loads or stores enter the LSQ's request (address translation) queue together; gem5's default and the
+    # original's is one.
+    executeLSQRequestsQueueSize = 2
 
     executeFuncUnits = MinorCustomFUPool()
