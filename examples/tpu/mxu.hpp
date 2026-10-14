@@ -1,12 +1,7 @@
-// The tpuv6 model's matrix unit: `tpu_mxu_units` arrays, each twice as wide and twice as deep as the machine has
-// lanes, so an operand is two registers. A vmatprep holds the upper half of the columns, each operand's and each
-// array's apart, until the vmatpush (weights) or the vmatmul (inputs) that brings the lower half. A word of 32 bits
-// holds one single or two rows of 16 bits, and a word a cycle enters an array: two rows of 16 bits a cycle, one
-// single. A result leaves as singles, one half of the columns a vpop. The array an instruction is for is a field
-// the encodings leave free: bits 11:7 of a vmatprep, vmatpush or vmatmul (sf.vc.iv's rd, which names no register)
-// and bits 24:20 of a vpop (sf.vc.v.i's rs2, which names none); with one array both are 0.
-#ifndef TPUV6_MXU_HPP
-#define TPUV6_MXU_HPP
+// A TPU model's matrix unit: `tpu_mxu_units` arrays of Shape::REGISTERS x lanes each way, an operand that many
+// registers. Shape also sets the issue slots and whether a word or a row enters a cycle.
+#ifndef TPU_MXU_HPP
+#define TPU_MXU_HPP
 
 #include <cstdio>
 #include <deque>
@@ -14,9 +9,12 @@
 
 #include "vcix_accel.hpp"
 
-namespace tpuv6 {
+namespace tpu {
 
+template <class Shape>
 class Mxu {
+  static_assert(Shape::REGISTERS == 1 || Shape::REGISTERS == 2, "an operand is one register, or an upper and a lower half");
+
  public:
   using Config = vcix_accel::Config;
   using Cycle = vcix_accel::Cycle;
@@ -26,8 +24,8 @@ class Mxu {
 
   // `name` is the unit as its statistics report it; the model that holds the unit says it.
   explicit Mxu(const char *name)
-      : entry_{name, "input", "rows", 2, vcix_accel::Port::PRIMARY},
-        issue_{name, "issue", "instructions", MXU_SLOTS},
+      : entry_{name, "input", "rows", PER_CYCLE, vcix_accel::Port::PRIMARY},
+        issue_{name, "issue", "instructions", Shape::SLOTS},
         pop_{name, "pop", "rows", 256},
         arrays_(1, Array(name)) {}
 
@@ -46,11 +44,15 @@ class Mxu {
     return is(insn, POP) ? vcix_accel::rs2(insn) : vcix_accel::rd(insn);
   }
   static constexpr uint64_t MAX_ARRAYS = 32;  // what a field of 5 bits names
+  // The registers of an operand, so the array's side in lanes; the timing and the functional face both ask here.
+  static uint32_t registers(const Config &) { return Shape::REGISTERS; }
 
+  // The delay line defaults to the array's width + depth - 1 slots.
   void configure(const Config &config) {
     const uint64_t lanes = config.uint(LANES_KEY, 128);
     const uint64_t entries = config.uint(QUEUE_KEY, 256);
     const uint64_t arrays = config.uint(ARRAYS_KEY, 1);
+    registers_ = registers(config);
     if (lanes < 1 || lanes > MAX_LANES)
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 2 || entries > UINT32_MAX)
@@ -58,21 +60,19 @@ class Mxu {
     if (arrays < 1 || arrays > MAX_ARRAYS)
       throw vcix_accel::ConfigError(ARRAYS_KEY, config.get(ARRAYS_KEY),
                                     "is not a number of arrays an instruction's field of 5 bits can name: 1 to 32");
-    // Width + depth - 1 of an array of 2 * lanes each way, unless the machine description says what was measured.
-    const uint64_t slots = config.uint(DELAY_KEY, 4 * lanes - 1);
+    const uint64_t slots = config.uint(DELAY_KEY, 2 * registers_ * lanes - 1);
     if (slots < 1 || slots > UINT32_MAX)
       throw vcix_accel::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
     capacity_ = static_cast<uint32_t>(entries);
-    entry_.set_capacity(2 * arrays);  // a word a cycle into each array
+    entry_.set_capacity(PER_CYCLE * arrays);
     pop_.set_capacity(entries);
     arrays_.assign(arrays, Array(entry_.unit()));
     for (Array &array : arrays_) array.line.assign(slots, 0);
     flush();
   }
 
-  // A cycle takes MXU_SLOTS of vmatprep, vmatpush and vmatmul over all the arrays and, of each array, one of the
-  // weights' (vmatprep of weights, vmatpush), one of the inputs' (vmatprep of inputs, vmatmul) and one vpop. One for
-  // an array the machine does not have is never accepted; the functional face ends the run with the reason.
+  // A cycle takes Shape::SLOTS of vmatprep, vmatpush and vmatmul over all arrays and, per array, one weight, one
+  // input and one vpop instruction. An instruction for an array the machine lacks is never accepted.
   bool can_accept(const Insn &insn, Cycle now) const {
     if (array_of(insn) >= arrays_.size()) return false;
     const Array &array = arrays_[array_of(insn)];
@@ -88,7 +88,7 @@ class Mxu {
     if (!is(insn, POP)) issue_.admit(1, now);
     if (is(insn, MATMUL) && rows(insn)) {
       array.input += rows(insn);
-      array.queued.push_back({rows(insn), rows_in_word(vcix_accel::rs1(insn))});
+      array.queued.push_back({rows(insn), Shape::WORD_A_CYCLE ? rows_in_word(vcix_accel::rs1(insn)) : 1});
     }
     if (is(insn, POP)) {
       uint32_t &left = upper(insn) ? array.out_upper : array.out_lower;
@@ -99,9 +99,7 @@ class Mxu {
     return 1;
   }
   void commit(const Insn &, Id, Cycle) {}
-  // Each array's line moves unless what it would put out has no room in either half's queue; as it moves, the
-  // array's input queue's next word enters, of as many rows as its vmatmul's format puts in a word. The arrays
-  // share the entry port, which takes a word for each of them a cycle.
+  // Each array's delay line moves unless its output has no room; the input queue's next word or row then enters.
   void tick(Cycle now) {
     uint32_t in_line = 0;
     for (Array &array : arrays_) {
@@ -133,13 +131,15 @@ class Mxu {
   uint32_t input_entries(uint32_t array = 0) const { return arrays_[array].input; }
   uint32_t lower_entries(uint32_t array = 0) const { return arrays_[array].out_lower; }
   uint32_t upper_entries(uint32_t array = 0) const { return arrays_[array].out_upper; }
-  // What the [tpu] trace adds to an issue: the array, when there is more than one, and its queues, when it has them.
+  // What the [tpu] trace adds to an issue: the array when there are several, and its queues.
   void trace_queues(const Insn &insn) const {
     const uint32_t array = array_of(insn);
     if (arrays() > 1) std::printf(", array %u", array);
-    if (array < arrays())
+    if (array < arrays() && registers_ > 1)
       std::printf(", input queue %u, output queues %u and %u", input_entries(array), lower_entries(array),
                   upper_entries(array));
+    else if (array < arrays())
+      std::printf(", input queue %u, output queue %u", input_entries(array), lower_entries(array));
   }
 
  private:
@@ -154,8 +154,7 @@ class Mxu {
   static constexpr const char *QUEUE_KEY = "tpu_mxu_queue_entries";
   static constexpr const char *DELAY_KEY = "tpu_mxu_delay_cycles";
   static constexpr const char *ARRAYS_KEY = "tpu_mxu_units";
-  // The v6e bundle's MXU slots, which its two MXUs share: the capacity line of its static per-bundle utilization.
-  static constexpr uint64_t MXU_SLOTS = 2;
+  static constexpr uint32_t PER_CYCLE = Shape::WORD_A_CYCLE ? 2 : 1;
 
   struct Queued {
     uint32_t rows, per_word;
@@ -170,7 +169,7 @@ class Mxu {
     vcix_accel::Port input_issue;   // a vmatprep of inputs or a vmatmul
     vcix_accel::Port pop_issue;     // a vpop
     uint32_t input = 0;        // rows pushed and not in the line
-    std::deque<Queued> queued;  // per vmatmul in the input queue, oldest first: its rows left, and how many a word holds
+    std::deque<Queued> queued;
     uint32_t out_lower = 0;    // rows out and not popped, of each half of the columns
     uint32_t out_upper = 0;
     uint32_t in_line = 0;
@@ -192,11 +191,12 @@ class Mxu {
   static uint32_t rows(const Insn &insn) { return insn.vl * rows_in_word(vcix_accel::rs1(insn)); }
   static uint32_t out(const Array &array, const Insn &insn) { return upper(insn) ? array.out_upper : array.out_lower; }
   static bool drained(const Array &array) { return !array.input && !array.in_line; }
+  // Moves one array's delay line a slot; a row out goes to both output queues when an operand is two registers.
   void step(Array &array, Cycle now) {
     const uint32_t most = array.out_lower > array.out_upper ? array.out_lower : array.out_upper;
     if (array.line[array.head] > capacity_ - most) return;
     array.out_lower += array.line[array.head];
-    array.out_upper += array.line[array.head];
+    if (registers_ > 1) array.out_upper += array.line[array.head];
     array.in_line -= array.line[array.head];
     const uint32_t word = array.queued.empty() ? 0 : array.queued.front().per_word;
     const uint32_t entering = word <= entry_.room(now) ? word : 0;
@@ -221,9 +221,10 @@ class Mxu {
   vcix_accel::Port issue_;
   vcix_accel::Port pop_;
   uint32_t capacity_ = 256;
+  uint32_t registers_ = Shape::REGISTERS;
   std::vector<Array> arrays_;
 };
 
-}  // namespace tpuv6
+}  // namespace tpu
 
 #endif

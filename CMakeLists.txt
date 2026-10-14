@@ -17,7 +17,7 @@ endfunction()
 vcix_accel_add_model(print_args examples/print_args/print_args.cc)
 vcix_accel_add_model(tpu examples/tpu/tpu.cc)
 vcix_accel_add_model(tpuv6 examples/tpuv6/tpuv6.cc)
-# examples/tpuv6 reuses the tpu example's units, as tpu/<unit>.hpp.
+# examples/tpuv6 is the tpu example's units, its matrix unit among them, as tpu/<unit>.hpp.
 target_include_directories(tpuv6 PRIVATE examples)
 vcix_accel_add_model(pipelined tests/pipeline/pipelined.cc)
 vcix_accel_add_model(reports tests/contract/reports.cc)

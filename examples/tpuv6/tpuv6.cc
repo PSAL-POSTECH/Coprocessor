@@ -1,18 +1,25 @@
 // Example: a TPU v6e as one model, libtpuv6.so: the tpu example's special-function, misc and cross-lane units, and
-// the matrix unit (mxu.hpp) as its array, in place of the systolic array and the multi-precision array.
+// its matrix unit (tpu/mxu.hpp) in the v6e's shape, in place of the systolic array and the multi-precision array.
 #include "vcix_accel.hpp"
 
 #include "tpu/machine.hpp"
 #include "tpu/misc.hpp"
+#include "tpu/mxu.hpp"
+#include "tpu/mxu_functional.hpp"
 #include "tpu/sfu.hpp"
 #include "tpu/xlu.hpp"
 
-#include "functional.hpp"
-#include "mxu.hpp"
-
 namespace {
 
-class Tpuv6 final : public tpu::Machine<tpuv6::Functional, tpu::Sfu, tpu::Misc, tpu::Xlu, tpuv6::Mxu> {
+// The v6e's MXU: 256 x 256 on 128 lanes, so an operand is two registers; two MXU slots a bundle, shared by its
+// MXUs; a word of two 16-bit rows a cycle.
+struct Shape {
+  static constexpr uint32_t REGISTERS = 2;
+  static constexpr uint64_t SLOTS = 2;
+  static constexpr bool WORD_A_CYCLE = true;
+};
+
+class Tpuv6 final : public tpu::Machine<tpu::MxuFunctional<Shape>, tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
  public:
   Tpuv6() : Machine("TPUV6_SFU", "TPUV6_MISC", "TPUV6_XLU", "TPUV6_MXU") {}
   const char *name() const override { return "tpuv6"; }
