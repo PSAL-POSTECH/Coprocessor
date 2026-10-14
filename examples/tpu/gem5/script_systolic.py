@@ -155,9 +155,12 @@ for unit in system.cpu.executeFuncUnits.funcUnits:
         unit.vcixConfigKeys = list(settings.keys())
         unit.vcixConfigValues = list(settings.values())
 
-# Memory range
+# Memory range: the scratchpad is two banks, interleaved by the 64-byte line, 64 GB/s in all (32 GB/s each); the
+# original's is one bank of 32 GB/s. The interleave is no finer than cache_line_size: an access of a whole line in
+# two banks has no destination on the bus (gem5's fatal "Unable to find destination for [0:0x40]" at 32 bytes).
 granule_sz = 64
-spad_num_bank = 1
+spad_num_bank = 2
+spad_bandwidth = "64GB/s"
 system.mem_ranges = [AddrRange(start=0, size="16GB")]
 
 system.membus = SpmXBar(
@@ -176,7 +179,7 @@ system.cpu.dcache_port = system.membus.cpu_side_ports
 system.cpu.createInterruptController()
 
 # Create and connect memory nodes
-multi_banked_spm = MultiBankMemorySystem(system.membus.mem_side_ports, system.mem_ranges[0], num_banks=spad_num_bank, granule_size=granule_sz)
+multi_banked_spm = MultiBankMemorySystem(system.membus.mem_side_ports, system.mem_ranges[0], num_banks=spad_num_bank, granule_size=granule_sz, total_bandwidth=spad_bandwidth)
 system.mem_ctrls = multi_banked_spm.get_ctrls()
 
 system.system_port = system.membus.cpu_side_ports

@@ -153,7 +153,8 @@ PyTorchSim measures its cycle binaries on, moved here from
 and `gem5_script/script_systolic.py` (the syscall-emulation script) of
 `PSAL-POSTECH/PyTorchSim` 4b2555a, and ported to the gem5 of branch `vcix`.
 The CPU's widths and limits, the pool's unit counts and latencies, the clock
-domains, the instruction cache, the bus and the memory are the original's.
+domains, the instruction cache and the bus are the original's; its loads and
+stores have two ports where the original's have one (below).
 
 ```
 gem5.opt -d m5out examples/tpu/gem5/script_systolic.py -c <binary> --model libtpu.so \
@@ -209,4 +210,52 @@ What the port changed:
    branch predictor is gem5's default, as before; that default is now a
    `BranchPredictor` around the same `TournamentBP`.
 
-`tests/tpu/run.sh` runs `sfu.S` on this machine as well.
+### Two load/store ports
+
+The original moves one vector register a cycle between the CPU and the
+scratchpad: `RiscvVPU` leaves `executeLSQRequestsQueueSize` at gem5's default,
+so one load or store at a time enters the LSQ, and the scratchpad is one bank
+of 32 GB/s, the 32 bytes of a 256-bit register a cycle at 1 GHz. This machine
+has two of each:
+
+| | The original | This machine |
+|---|---|---|
+| `RiscvVPU.executeLSQRequestsQueueSize` (`vpu_config.py`) | 1 | 2 |
+| scratchpad banks (`spad_num_bank`, `script_systolic.py`) | 1 | 2, interleaved by the 64-byte line |
+| scratchpad bandwidth, in all | 32 GB/s | 64 GB/s, 32 GB/s each bank |
+
+The banks interleave by the line, not finer: the bus carries whole 64-byte
+lines (`cache_line_size`), and a line split over two banks has no destination:
+at a 32-byte interleave gem5 stops before the program's first instruction with
+`fatal: Unable to find destination for [0:0x40] on system.membus`.
+
+Why two: the TPU v6e moves more than one register a cycle. XLA's static
+per-bundle utilization of a v6e kernel (the fusion of a 1024 x 384 x 1152
+matmul) gives the slots of a bundle as
+
+| MXU | XLU | VALU | VPOP | EUP | VLOAD | VLOAD:FILL | VSTORE | VSTORE:SPILL | SALU |
+|---|---|---|---|---|---|---|---|---|---|
+| 2 | 2 | 4 | 2 | 1 | 3 | 3 | 2 | 2 | 2 |
+
+that is, up to three loads and two stores of a vector register a cycle, each in
+a slot of its own. Two ports is a step toward that, not the v6e: here loads and
+stores share the two requests and the two banks, a third load waits, and two
+accesses to the same bank take turns.
+
+What it changes, on a steady loop of `libtpuv6.so`'s matrix unit (a vmatmul of
+16 rows a block, its 6 vector loads and 4 vector stores; cycles per vmatmul,
+the difference of 96 and 192 blocks over 96):
+
+| The loop | One port | Two ports |
+|---|---|---|
+| its loads of C first, each kind of instruction together | 12.79 | 10.78 |
+| in the order the compiler emits | 20.02 | 20.01 |
+
+The two loops are the same instructions. In the compiler's order each vfadd
+waits on the load just before it, and two ports change nothing there; they pay
+where two independent accesses are there to go together.
+
+`tests/tpu/run.sh` runs `sfu.S` on this machine as well, and `loads.S`: a
+window of 64 independent vector loads from lines all in one bank, then one from
+lines in both banks, 92 and 58 cycles; in the second the loads commit two a
+cycle.
