@@ -1,0 +1,4 @@
+# The tpuv3 model reports each issue and commit; 4 lanes, so a 4 x 4 matrix unit, with queues of 8.
+tpu_trace: 1
+vpu_num_lanes: 4
+tpu_mxu_queue_entries: 8
