@@ -27,9 +27,9 @@ class Mxu {
   // `name` is the unit as its statistics report it; the model that holds the unit says it.
   explicit Mxu(const char *name)
       : entry_{name, "input", "rows", 2, vcix_accel::Port::PRIMARY},
-        issue_{name, "issue", "instructions", 1},
-        weight_push_{name, "weight_push", "instructions", 1},
-        pop_{name, "pop", "rows", 256} {}
+        issue_{name, "issue", "instructions", MXU_SLOTS},
+        pop_{name, "pop", "rows", 256},
+        arrays_(1, Array(name)) {}
 
   static std::vector<Encoding> encodings() {
     return {{MATMUL, FORM, "vmatmul"}, {PUSH, FORM, "vmatpush"}, {PREP, FORM, "vmatprep"}, {POP, FORM, "vpop"}};
@@ -65,30 +65,31 @@ class Mxu {
     capacity_ = static_cast<uint32_t>(entries);
     entry_.set_capacity(2 * arrays);  // a word a cycle into each array
     pop_.set_capacity(entries);
-    arrays_.assign(arrays, Array{});
+    arrays_.assign(arrays, Array(entry_.unit()));
     for (Array &array : arrays_) array.line.assign(slots, 0);
     flush();
   }
 
-  // An instruction for an array the machine does not have is never accepted; the functional face ends the run
-  // with the reason, as Spike runs a program before gem5 times it.
+  // A cycle takes MXU_SLOTS of vmatprep, vmatpush and vmatmul over all the arrays and, of each array, one of the
+  // weights' (vmatprep of weights, vmatpush), one of the inputs' (vmatprep of inputs, vmatmul) and one vpop. One for
+  // an array the machine does not have is never accepted; the functional face ends the run with the reason.
   bool can_accept(const Insn &insn, Cycle now) const {
-    if (!issue_.room(now)) return false;
     if (array_of(insn) >= arrays_.size()) return false;
     const Array &array = arrays_[array_of(insn)];
-    if (is(insn, MATMUL)) return rows(insn) <= capacity_ - array.input;
-    if (is(insn, PUSH)) return weight_push_.room(now) != 0;
+    if (!slot(array, insn).room(now)) return false;
     if (is(insn, POP)) return insn.vl <= out(array, insn) || drained(array);
+    if (!issue_.room(now)) return false;
+    if (is(insn, MATMUL)) return rows(insn) <= capacity_ - array.input;
     return true;
   }
   Cycle issue(const Insn &insn, Id, Cycle now) {
-    issue_.admit(1, now);
     Array &array = arrays_[array_of(insn)];
+    slot(array, insn).admit(1, now);
+    if (!is(insn, POP)) issue_.admit(1, now);
     if (is(insn, MATMUL) && rows(insn)) {
       array.input += rows(insn);
       array.queued.push_back({rows(insn), rows_in_word(vcix_accel::rs1(insn))});
     }
-    if (is(insn, PUSH)) weight_push_.admit(1, now);
     if (is(insn, POP)) {
       uint32_t &left = upper(insn) ? array.out_upper : array.out_lower;
       const uint32_t taken = insn.vl < left ? insn.vl : left;
@@ -112,12 +113,21 @@ class Mxu {
   void reset() {
     entry_.reset();
     issue_.reset();
-    weight_push_.reset();
+    for (Array &array : arrays_) {
+      array.weight_issue.reset();
+      array.input_issue.reset();
+      array.pop_issue.reset();
+    }
     pop_.reset();
     flush();
   }
 
-  std::vector<const vcix_accel::Port *> ports() const { return {&entry_, &issue_, &weight_push_, &pop_}; }
+  std::vector<const vcix_accel::Port *> ports() const {
+    std::vector<const vcix_accel::Port *> all = {&entry_, &issue_};
+    for (const Array &array : arrays_) all.insert(all.end(), {&array.weight_issue, &array.input_issue, &array.pop_issue});
+    all.push_back(&pop_);
+    return all;
+  }
 
   uint32_t arrays() const { return static_cast<uint32_t>(arrays_.size()); }
   uint32_t input_entries(uint32_t array = 0) const { return arrays_[array].input; }
@@ -144,12 +154,21 @@ class Mxu {
   static constexpr const char *QUEUE_KEY = "tpu_mxu_queue_entries";
   static constexpr const char *DELAY_KEY = "tpu_mxu_delay_cycles";
   static constexpr const char *ARRAYS_KEY = "tpu_mxu_units";
+  // The v6e bundle's MXU slots, which its two MXUs share: the capacity line of its static per-bundle utilization.
+  static constexpr uint64_t MXU_SLOTS = 2;
 
   struct Queued {
     uint32_t rows, per_word;
   };
-  // One array: its input queue, its delay line and its two output queues.
+  // One array: its issue slots, one instruction a cycle each, its input queue, its delay line and its output queues.
   struct Array {
+    explicit Array(const char *unit)
+        : weight_issue{unit, "weight_issue", "instructions", 1},
+          input_issue{unit, "input_issue", "instructions", 1},
+          pop_issue{unit, "pop_issue", "instructions", 1} {}
+    vcix_accel::Port weight_issue;  // a vmatprep of weights or a vmatpush
+    vcix_accel::Port input_issue;   // a vmatprep of inputs or a vmatmul
+    vcix_accel::Port pop_issue;     // a vpop
     uint32_t input = 0;        // rows pushed and not in the line
     std::deque<Queued> queued;  // per vmatmul in the input queue, oldest first: its rows left, and how many a word holds
     uint32_t out_lower = 0;    // rows out and not popped, of each half of the columns
@@ -161,6 +180,15 @@ class Mxu {
 
   static bool is(const Insn &insn, uint32_t match) { return (insn.bits & FORM) == match; }
   static bool upper(const Insn &insn) { return (vcix_accel::rs1(insn) & SECOND) != 0; }
+  static bool of_inputs(const Insn &insn) {
+    return is(insn, MATMUL) || (is(insn, PREP) && (vcix_accel::rs1(insn) & SECOND));
+  }
+  static vcix_accel::Port &slot(Array &array, const Insn &insn) {
+    return is(insn, POP) ? array.pop_issue : of_inputs(insn) ? array.input_issue : array.weight_issue;
+  }
+  static const vcix_accel::Port &slot(const Array &array, const Insn &insn) {
+    return is(insn, POP) ? array.pop_issue : of_inputs(insn) ? array.input_issue : array.weight_issue;
+  }
   static uint32_t rows(const Insn &insn) { return insn.vl * rows_in_word(vcix_accel::rs1(insn)); }
   static uint32_t out(const Array &array, const Insn &insn) { return upper(insn) ? array.out_upper : array.out_lower; }
   static bool drained(const Array &array) { return !array.input && !array.in_line; }
@@ -191,10 +219,9 @@ class Mxu {
 
   vcix_accel::Port entry_;
   vcix_accel::Port issue_;
-  vcix_accel::Port weight_push_;
   vcix_accel::Port pop_;
   uint32_t capacity_ = 256;
-  std::vector<Array> arrays_ = std::vector<Array>(1);
+  std::vector<Array> arrays_;
 };
 
 }  // namespace tpuv6
