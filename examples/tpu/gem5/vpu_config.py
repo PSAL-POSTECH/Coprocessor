@@ -209,9 +209,10 @@ class MinorCustomFUPool(MinorFUPool):
         MinorVecDivider(),
         MinorVecReduce(),
 
-        # A fifth integer unit, which the original does not have: a compensation for RVV loads having no immediate
-        # offset, not a fact of the v6e (examples/tpu/README.md, "A fifth integer unit"). Last, so that every unit
-        # before it keeps its index in the statistics (funcUnits16 is the accelerator).
+        # A fifth and a sixth integer unit, which the original does not have: a compensation for RVV loads having no
+        # immediate offset, not a fact of the v6e (examples/tpu/README.md, "Two more integer units"). Last, so that
+        # every unit before them keeps its index in the statistics (funcUnits16 is the accelerator).
+        MinorCustomIntFU(),
         MinorCustomIntFU(),
     ]
 
