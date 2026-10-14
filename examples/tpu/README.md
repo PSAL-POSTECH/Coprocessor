@@ -177,6 +177,17 @@ PyTorchSim reads `system.cpu.numCycles` of every statistics dump in
 built with this script's functions (`machine`, `simulate`) and its own CPU and
 scratchpad.
 
+This is the generic machine, a model's stand-in, not a model's own. Run as
+gem5's script, it says so on stderr before it builds anything:
+
+```
+warning: examples/tpu/gem5 is the generic machine; time a model with its own machine, examples/<model>/gem5 (e.g. examples/tpuv6e/gem5)
+```
+
+It warns only when it is the script gem5 runs, not when
+`examples/tpuv6e/gem5/script_systolic.py` imports its functions, and nothing in
+`m5out` (`config.ini`, `stats.txt`) changes with it.
+
 What the port changed:
 
 1. **The accelerator units are one `MinorVcixAccelFU`.** `SystolicArray`

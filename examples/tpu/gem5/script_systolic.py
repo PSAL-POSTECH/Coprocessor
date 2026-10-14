@@ -207,6 +207,10 @@ def simulate(system):
     elapsed_seconds = end_time - start_time
     print(f"Simulation time: {elapsed_seconds:.6f} seconds")
 
+# Run as gem5's script, not imported by another machine's: this is the generic machine, which times a model only as a
+# stand-in. A warning on stderr says so; nothing the run writes to m5out changes.
 if __name__ == "__m5_main__":
+    print("warning: examples/tpu/gem5 is the generic machine; time a model with its own machine, "
+          "examples/<model>/gem5 (e.g. examples/tpuv6e/gem5)", file=sys.stderr)
     from vpu_config import RiscvVPU
     simulate(machine(arguments(), RiscvVPU, banked_scratchpad))
