@@ -26,7 +26,7 @@ KERNEL_BASE=0x2000000
 KERNEL_RANGE=2000000:2100000
 
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c "$HERE/kernels.S" -o "$OUT/kernels.o" || { echo "FAIL  kernels.S does not build"; exit 2; }
-for program in special systolic cross_lane msa dma refused mxu; do
+for program in special systolic cross_lane msa dma refused; do
   riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -Wl,--section-start=.kernel=$KERNEL_BASE \
     "$HERE/$program.c" "$OUT/kernels.o" -o "$OUT/$program" || { echo "FAIL  $program.c does not build"; exit 2; }
 done
@@ -35,7 +35,7 @@ done
 on_model() {
   local name=$1 options=(); shift
   while [ "$1" != -- ]; do options+=("$1"); shift; done; shift
-  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xvcixaccel --machine-config="${MACHINE:-$HERE/machine.yml}" \
+  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xvcixaccel --machine-config="$HERE/machine.yml" \
     --kernel-addr=$KERNEL_RANGE "${options[@]}" "$PK" "$OUT/$1" "${@:2}" < /dev/null > "$OUT/$name.out" 2> "$OUT/$name.err"
 }
 # The same machine, as the old Spike takes it.
@@ -120,40 +120,6 @@ echo "-- checked against a formula, which the old Spike has no answer for"
 on_model systolic-bf16 -- systolic bf16; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
 echo "  bfloat16 weights and inputs (rs1 3) popped as singles: $(tail -n1 "$OUT/systolic-bf16.out") (exit $rc)"
-
-echo "-- the matrix unit of libtpu_mxu.so, checked against a formula"
-MXU="$BUILD/libtpu_mxu.so"
-[ -e "$MXU" ] || { echo "$MXU: not found" >&2; exit 2; }
-MODEL=$MXU on_model mxu -- mxu; rc=$?
-if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-echo "  operands as two registers, words of singles, halves and bfloat16, weights staged a half of the depth at a time and latched, each operand's upper half held apart in the v6e's orders, popped a half at a time: $(tail -n1 "$OUT/mxu.out") (exit $rc)"
-# refused_mxu <which> <text>
-refused_mxu() {
-  local rc
-  MODEL=$MXU on_model "mxu-$1" -- mxu "$1"; rc=$?
-  if [ "$rc" = 1 ] && grep -Fq -- "$2" "$OUT/mxu-$1.err" && ! grep -Fq "it ran" "$OUT/mxu-$1.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-  echo "  refused: $2 (exit $rc)"
-}
-refused_mxu pop "tpu: vpop: 1 rows asked of the upper half, 0 computed"
-refused_mxu matmul "tpu: vmatmul: no vmatprep of its upper half came before it"
-refused_mxu push "tpu: vmatpush: no vmatprep of its upper half came before it"
-refused_mxu rows "tpu: vmatpush: 1 rows, and the vmatprep before it held 2"
-refused_mxu weights "tpu: vmatmul: no weight was pushed before it"
-refused_mxu latch "tpu: vmatmul: no weights were latched before it, and it does not latch"
-refused_mxu depth "tpu: vmatpush: field 3 names no half of the depth: [4:3] is 1 or 2"
-refused_mxu push3 "tpu: vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled"
-refused_mxu prep-weights "tpu: vmatprep: the upper half of the weights a vmatprep held before it was taken by no vmatpush"
-refused_mxu prep-inputs "tpu: vmatprep: the upper half of the inputs a vmatprep held before it was taken by no vmatmul"
-refused_mxu format "tpu: vmatprep: format 2 names nothing a word holds"
-refused_mxu words "tpu: vmatpush: its elements are words of 32 bits, not of 16"
-refused_mxu pop-array "tpu: vpop: array 1, and the machine has 1 (tpu_mxu_units)"
-
-echo "-- the matrix unit with tpu_mxu_units: 2"
-{ cat "$HERE/machine.yml"; echo "tpu_mxu_units: 2"; } > "$OUT/machine-mxu2.yml"
-MODEL=$MXU MACHINE="$OUT/machine-mxu2.yml" on_model mxu-arrays -- mxu arrays; rc=$?
-if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-echo "  two arrays, each its own tile and its own held halves, named in sf.vc.iv's rd and sf.vc.v.i's rs2, popped the other way round: $(tail -n1 "$OUT/mxu-arrays.out") (exit $rc)"
-MACHINE="$OUT/machine-mxu2.yml" refused_mxu array "tpu: vmatmul: array 2, and the machine has 2 (tpu_mxu_units)"
 
 # refused <which> <exit> <text>: the run ends there, with this on standard error.
 refused() {

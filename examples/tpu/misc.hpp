@@ -1,4 +1,4 @@
-// The tpu model's instructions with no timing of their own: one cycle each, tpu_misc_issue_width of them a cycle.
+// A TPU's instructions with no timing of their own: one cycle each, tpu_misc_issue_width of them a cycle.
 #ifndef TPU_MISC_HPP
 #define TPU_MISC_HPP
 
@@ -11,6 +11,9 @@ namespace tpu {
 
 class Misc {
  public:
+  // `name` is the unit as its statistics report it; the model that holds the unit says it.
+  explicit Misc(const char *name) : issue_{name, "issue", "instructions", 2, vcix_accel::Port::PRIMARY} {}
+
   static std::vector<vcix_accel::Encoding> encodings() { return {std::begin(ENCODINGS), std::end(ENCODINGS)}; }
   bool owns(const vcix_accel::Insn &insn) const {
     for (const vcix_accel::Encoding &e : ENCODINGS)
@@ -30,6 +33,8 @@ class Misc {
   void commit(const vcix_accel::Insn &, vcix_accel::Id, vcix_accel::Cycle) {}
   void tick(vcix_accel::Cycle) {}
   void reset() { issue_.reset(); }
+  // What the [tpu] trace adds to an issue: these instructions have no queue to show.
+  void trace_queues(const vcix_accel::Insn &) const {}
 
   std::vector<const vcix_accel::Port *> ports() const { return {&issue_}; }
 
@@ -48,7 +53,7 @@ class Misc {
   };
   static constexpr const char *WIDTH_KEY = "tpu_misc_issue_width";
 
-  vcix_accel::Port issue_{"Misc", "issue", "instructions", 2, vcix_accel::Port::PRIMARY};
+  vcix_accel::Port issue_;
 };
 
 }  // namespace tpu

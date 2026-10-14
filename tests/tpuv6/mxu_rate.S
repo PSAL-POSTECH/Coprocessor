@@ -1,4 +1,4 @@
-# The matrix unit of libtpu_mxu.so takes a word a cycle: a vmatmul of four words of singles and, queued behind it, a
+# The matrix unit of libtpuv6.so takes a word a cycle: a vmatmul of four words of singles and, queued behind it, a
 # vmatmul of four words of bfloat16, then two weights pushed, which enter nothing, a cycle each while the input queue
 # empties, and the six pops of the twelve rows, the lower and the upper half of the columns by turns. Sixteen
 # instructions, the 64 bytes of one cache line.

@@ -1,4 +1,4 @@
-# The matrix unit of libtpu_mxu.so with tpu_mxu_units: 2: each array's weights (one half of the depth) and each
+# The matrix unit of libtpuv6.so with tpu_mxu_units: 2: each array's weights (one half of the depth) and each
 # array's input of four words of two rows, the two vmatmuls a cycle apart, so that the second array's rows enter
 # while the first's do, and the pops of each, the lower and the upper half of the columns by turns. The array is
 # sf.vc.iv's rd and sf.vc.v.i's rs2.

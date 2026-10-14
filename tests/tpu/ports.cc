@@ -107,7 +107,7 @@ std::string n(uint64_t v) { return std::to_string(v); }
 // The list: four entries per unit at its primary port, units in the order the model asks them, then the commits.
 void list() {
   Run run;
-  const char *expected[][2] = {{"Sfu", "entry"}, {"Misc", "issue"}, {"Systolic", "input"}, {"Xlu", "input"}, {"Msa", "input"}};
+  const char *expected[][2] = {{"SFU", "entry"}, {"MISC", "issue"}, {"SYSTOLIC", "input"}, {"XLU", "input"}, {"MSA", "input"}};
   const size_t units = sizeof expected / sizeof expected[0];
   bool ok = m->num_stats(run.self()) == 4 * units + m->num_encodings;
   for (size_t u = 0; ok && u < units; u++)
@@ -119,7 +119,7 @@ void list() {
     const vcix_stat *s = m->stat(run.self(), 4 * units + e);
     ok = !strcmp(s->unit, "committed") && !strcmp(s->name, m->encodings[e].name) && s->kind == VCIX_STAT_COUNT;
   }
-  check(ok, "5 units at their primary ports (Sfu.entry, Misc.issue, Systolic/Xlu/Msa.input), no other port, then one "
+  check(ok, "5 units at their primary ports (SFU.entry, MISC.issue, SYSTOLIC/XLU/MSA.input), no other port, then one "
             "commit count per encoding");
 }
 
@@ -129,10 +129,10 @@ void one_row() {
   run.next();
   run.issue(INPUT_PUSH, 1);
   for (int c = 2; c <= 20; c++) run.next();
-  const uint64_t admitted = run.stat("Systolic", "input", VCIX_STAT_ADMITTED);
-  const uint64_t cycles = run.stat("Systolic", "input", VCIX_STAT_CYCLES);
-  const uint64_t occupancy = run.stat("Systolic", "input", VCIX_STAT_OCCUPANCY);
-  const uint64_t capacity = run.stat("Systolic", "input", VCIX_STAT_CAPACITY);
+  const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
+  const uint64_t cycles = run.stat("SYSTOLIC", "input", VCIX_STAT_CYCLES);
+  const uint64_t occupancy = run.stat("SYSTOLIC", "input", VCIX_STAT_OCCUPANCY);
+  const uint64_t capacity = run.stat("SYSTOLIC", "input", VCIX_STAT_CAPACITY);
   const uint64_t committed = run.stat("committed", "systolic input push", VCIX_STAT_COUNT);
   check(admitted == 1 && capacity == 1 && cycles == 20 && occupancy == 7 && committed == 1,
         "one input row over 20 cycles: admitted " + n(admitted) + " of capacity " + n(capacity) + " x cycles " +
@@ -141,9 +141,9 @@ void one_row() {
   run.issue(POP, 1);
   for (int c = 0; c < 20; c++) run.next();
   const uint64_t popped = run.stat("committed", "systolic pop", VCIX_STAT_COUNT);
-  const uint64_t still = run.stat("Systolic", "input", VCIX_STAT_ADMITTED);
-  const uint64_t others = run.stat("Sfu", "entry", VCIX_STAT_ADMITTED) + run.stat("Xlu", "input", VCIX_STAT_ADMITTED) +
-                          run.stat("Msa", "input", VCIX_STAT_ADMITTED) + run.stat("Misc", "issue", VCIX_STAT_ADMITTED);
+  const uint64_t still = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
+  const uint64_t others = run.stat("SFU", "entry", VCIX_STAT_ADMITTED) + run.stat("XLU", "input", VCIX_STAT_ADMITTED) +
+                          run.stat("MSA", "input", VCIX_STAT_ADMITTED) + run.stat("MISC", "issue", VCIX_STAT_ADMITTED);
   check(popped == 1 && still == 1 && others == 0,
         "its pop commits (" + n(popped) + ") and admits nothing at the input (" + n(still) +
             "), and no other unit admitted anything (" + n(others) + ")");
@@ -162,11 +162,11 @@ void continuous() {
       unpopped -= 2;
     else if (run.issue(INPUT_PUSH, 2))
       unpopped += 2;
-    const uint64_t admitted = run.stat("Systolic", "input", VCIX_STAT_ADMITTED);
+    const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
     bounded = bounded && admitted <= uint64_t(c);
     short_by = uint64_t(c) - admitted;
   }
-  const uint64_t admitted = run.stat("Systolic", "input", VCIX_STAT_ADMITTED);
+  const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
   const double utilization = double(admitted) / double(cycles);
   check(bounded && utilization > 0.99,
         "pushes and pops of two for " + n(cycles) + " cycles: input admitted " + n(admitted) +
@@ -182,19 +182,19 @@ void sfu_and_xlu() {
     run.next();
     all = run.issue(VEXP, 4) && all;
   }
-  const uint64_t admitted = run.stat("Sfu", "entry", VCIX_STAT_ADMITTED);
-  const uint64_t cycles = run.stat("Sfu", "entry", VCIX_STAT_CYCLES);
-  check(all && admitted == 1000 && cycles == 1000, "a vexp each of 1000 cycles: Sfu.entry admitted " + n(admitted) +
+  const uint64_t admitted = run.stat("SFU", "entry", VCIX_STAT_ADMITTED);
+  const uint64_t cycles = run.stat("SFU", "entry", VCIX_STAT_CYCLES);
+  check(all && admitted == 1000 && cycles == 1000, "a vexp each of 1000 cycles: SFU.entry admitted " + n(admitted) +
                                                        " in " + n(cycles) + " cycles, utilization 1");
 
   Run xlu;
   xlu.next();
   xlu.issue(XLU_PUSH, 5);
   for (int c = 2; c <= 30; c++) xlu.next();
-  const uint64_t elements = xlu.stat("Xlu", "input", VCIX_STAT_ADMITTED);
-  const uint64_t held = xlu.stat("Xlu", "input", VCIX_STAT_OCCUPANCY);
+  const uint64_t elements = xlu.stat("XLU", "input", VCIX_STAT_ADMITTED);
+  const uint64_t held = xlu.stat("XLU", "input", VCIX_STAT_OCCUPANCY);
   check(elements == 5 && held == 15,
-        "a push of 5 through 3 slots: Xlu.input admitted " + n(elements) + ", occupancy " + n(held) + " (5 x 3)");
+        "a push of 5 through 3 slots: XLU.input admitted " + n(elements) + ", occupancy " + n(held) + " (5 x 3)");
 
   Run msa;
   msa.next();
@@ -205,7 +205,7 @@ void sfu_and_xlu() {
   msa.issue(MSA_POP, 3);
   msa.next();
   for (int c = 0; c < 20; c++) msa.next();
-  check(msa.stat("Msa", "input", VCIX_STAT_ADMITTED) == 3 && msa.stat("committed", "msa push", VCIX_STAT_COUNT) == 2 &&
+  check(msa.stat("MSA", "input", VCIX_STAT_ADMITTED) == 3 && msa.stat("committed", "msa push", VCIX_STAT_COUNT) == 2 &&
             msa.stat("committed", "msa pop", VCIX_STAT_COUNT) == 1,
         "msa: a weight push enters nothing, an input push of 3 enters 3 rows, and both pushes and the pop commit");
 }
@@ -226,11 +226,11 @@ void misc() {
     two_a_cycle = two_a_cycle && now == 2;
   }
   for (int c = 0; c < 5; c++) run.next();
-  const uint64_t admitted = run.stat("Misc", "issue", VCIX_STAT_ADMITTED);
-  const uint64_t capacity = run.stat("Misc", "issue", VCIX_STAT_CAPACITY);
+  const uint64_t admitted = run.stat("MISC", "issue", VCIX_STAT_ADMITTED);
+  const uint64_t capacity = run.stat("MISC", "issue", VCIX_STAT_CAPACITY);
   const uint64_t committed = run.stat("committed", "mvin", VCIX_STAT_COUNT) + run.stat("committed", "vlane_idx", VCIX_STAT_COUNT);
   check(two_a_cycle && cycles == 5 && admitted == 10 && capacity == 2 && committed == 10,
-        "10 independent misc instructions: 2 a cycle for " + n(cycles) + " cycles, Misc.issue admitted " + n(admitted) +
+        "10 independent misc instructions: 2 a cycle for " + n(cycles) + " cycles, MISC.issue admitted " + n(admitted) +
             " of capacity " + n(capacity) + " (utilized cycles " + n(admitted / capacity) + "), committed " +
             n(committed) + "; expected 5, 10, 2 (5), 10");
 }

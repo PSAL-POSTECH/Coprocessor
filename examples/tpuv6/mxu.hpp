@@ -1,19 +1,20 @@
-// The tpu_mxu model's matrix unit: `tpu_mxu_units` arrays, each twice as wide and twice as deep as the machine has
+// The tpuv6 model's matrix unit: `tpu_mxu_units` arrays, each twice as wide and twice as deep as the machine has
 // lanes, so an operand is two registers. A vmatprep holds the upper half of the columns, each operand's and each
 // array's apart, until the vmatpush (weights) or the vmatmul (inputs) that brings the lower half. A word of 32 bits
 // holds one single or two rows of 16 bits, and a word a cycle enters an array: two rows of 16 bits a cycle, one
 // single. A result leaves as singles, one half of the columns a vpop. The array an instruction is for is a field
 // the encodings leave free: bits 11:7 of a vmatprep, vmatpush or vmatmul (sf.vc.iv's rd, which names no register)
 // and bits 24:20 of a vpop (sf.vc.v.i's rs2, which names none); with one array both are 0.
-#ifndef TPU_MXU_HPP
-#define TPU_MXU_HPP
+#ifndef TPUV6_MXU_HPP
+#define TPUV6_MXU_HPP
 
+#include <cstdio>
 #include <deque>
 #include <vector>
 
 #include "vcix_accel.hpp"
 
-namespace tpu {
+namespace tpuv6 {
 
 class Mxu {
  public:
@@ -22,6 +23,13 @@ class Mxu {
   using Encoding = vcix_accel::Encoding;
   using Id = vcix_accel::Id;
   using Insn = vcix_accel::Insn;
+
+  // `name` is the unit as its statistics report it; the model that holds the unit says it.
+  explicit Mxu(const char *name)
+      : entry_{name, "input", "rows", 2, vcix_accel::Port::PRIMARY},
+        issue_{name, "issue", "instructions", 1},
+        weight_push_{name, "weight_push", "instructions", 1},
+        pop_{name, "pop", "rows", 256} {}
 
   static std::vector<Encoding> encodings() {
     return {{MATMUL, FORM, "vmatmul"}, {PUSH, FORM, "vmatpush"}, {PREP, FORM, "vmatprep"}, {POP, FORM, "vpop"}};
@@ -115,9 +123,17 @@ class Mxu {
   uint32_t input_entries(uint32_t array = 0) const { return arrays_[array].input; }
   uint32_t lower_entries(uint32_t array = 0) const { return arrays_[array].out_lower; }
   uint32_t upper_entries(uint32_t array = 0) const { return arrays_[array].out_upper; }
+  // What the [tpu] trace adds to an issue: the array, when there is more than one, and its queues, when it has them.
+  void trace_queues(const Insn &insn) const {
+    const uint32_t array = array_of(insn);
+    if (arrays() > 1) std::printf(", array %u", array);
+    if (array < arrays())
+      std::printf(", input queue %u, output queues %u and %u", input_entries(array), lower_entries(array),
+                  upper_entries(array));
+  }
 
  private:
-  // funct6, vm and funct3 of custom-2: sf.vc.iv 0, 1 and 2, and sf.vc.v.i 2. The tpu model's two arrays have these.
+  // funct6, vm and funct3 of custom-2: sf.vc.iv 0, 1 and 2, and sf.vc.v.i 2, as the tpu model's two arrays have them.
   static constexpr uint32_t FORM = 0xFE00707F;
   static constexpr uint32_t MATMUL = 0x2200305B;
   static constexpr uint32_t PUSH = 0x2600305B;
@@ -125,7 +141,7 @@ class Mxu {
   static constexpr uint32_t POP = 0x0800305B;
   static constexpr uint64_t MAX_LANES = 1u << 19;
   static constexpr const char *LANES_KEY = "vpu_num_lanes";
-  static constexpr const char *QUEUE_KEY = "tpu_systolic_queue_entries";
+  static constexpr const char *QUEUE_KEY = "tpu_mxu_queue_entries";
   static constexpr const char *DELAY_KEY = "tpu_mxu_delay_cycles";
   static constexpr const char *ARRAYS_KEY = "tpu_mxu_units";
 
@@ -173,14 +189,14 @@ class Mxu {
     }
   }
 
-  vcix_accel::Port entry_{"Mxu", "input", "rows", 2, vcix_accel::Port::PRIMARY};
-  vcix_accel::Port issue_{"Mxu", "issue", "instructions", 1};
-  vcix_accel::Port weight_push_{"Mxu", "weight_push", "instructions", 1};
-  vcix_accel::Port pop_{"Mxu", "pop", "rows", 256};
+  vcix_accel::Port entry_;
+  vcix_accel::Port issue_;
+  vcix_accel::Port weight_push_;
+  vcix_accel::Port pop_;
   uint32_t capacity_ = 256;
   std::vector<Array> arrays_ = std::vector<Array>(1);
 };
 
-}  // namespace tpu
+}  // namespace tpuv6
 
 #endif

@@ -1,4 +1,4 @@
-// The matrix unit of libtpu_mxu.so: an array of 2 x LANES columns, an operand as two registers (a vmatprep, then
+// The matrix unit of libtpuv6.so: an array of 2 x LANES columns, an operand as two registers (a vmatprep, then
 // the vmatpush or the vmatmul, each operand's held apart), a word of one single or two rows of 16 bits, weights
 // staged a half of the depth at a time and made active by a vmatmul that latches, a result popped a half of the
 // columns at a time. Checked against a formula. Usage: mxu [arrays | what the model refuses]
@@ -7,13 +7,13 @@
 
 // sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2: the encodings the matrix unit has. The number is the instruction's field.
 // The _a1 and _a2 kernels name array 1 or 2 in the field the encodings leave free (sf.vc.iv's rd, sf.vc.v.i's rs2).
-kernel_with k_mxu_matmul_32, k_mxu_push_32, k_msa_push_32, k_mxu_pop_32, k_weight_16;
-kernel_with k_mxu_matmul_32_a1, k_mxu_push_32_a1, k_msa_push_32_a1, k_mxu_pop_32_a1, k_mxu_matmul_32_a2;
+kernel_with k_mxu_matmul_32, k_mxu_push_32, k_mxu_prep_32, k_mxu_pop_32, k_mxu_push_16;
+kernel_with k_mxu_matmul_32_a1, k_mxu_push_32_a1, k_mxu_prep_32_a1, k_mxu_pop_32_a1, k_mxu_matmul_32_a2;
 // The array the helpers below work on: its kernels, and the weights it holds as this program models them.
 static unsigned array_on;
 static kernel_with *const matmuls[] = {k_mxu_matmul_32, k_mxu_matmul_32_a1};
 static kernel_with *const pushes[] = {k_mxu_push_32, k_mxu_push_32_a1};
-static kernel_with *const preps[] = {k_msa_push_32, k_msa_push_32_a1};
+static kernel_with *const preps[] = {k_mxu_prep_32, k_mxu_prep_32_a1};
 static kernel_with *const pops[] = {k_mxu_pop_32, k_mxu_pop_32_a1};
 #define k_vmatmul (matmuls[array_on])
 #define k_vmatpush (pushes[array_on])
@@ -151,7 +151,7 @@ static int refused(const char *which) {
   } else if (!strcmp(which, "format")) {    // format 2, which names nothing
     k_vmatprep(spad(0, IN), 0, 1, 2, 0);
   } else if (!strcmp(which, "words")) {     // elements of 16 bits
-    k_weight_16(spad(0, IN), 0, 1, SINGLE, 0);
+    k_mxu_push_16(spad(0, IN), 0, 1, SINGLE, 0);
   } else if (!strcmp(which, "pop-array")) { // a vpop of array 1 on a machine of one array
     k_mxu_pop_32_a1(0, spad(0, OUT), 1, 0, 0);
   } else if (!strcmp(which, "array")) {     // a vmatmul for array 2 on a machine of two

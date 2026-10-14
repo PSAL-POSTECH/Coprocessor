@@ -1,4 +1,4 @@
-// The tpu model's special-function unit: one instruction per cycle, a fixed latency.
+// A TPU's special-function unit: one instruction per cycle, a fixed latency.
 #ifndef TPU_SFU_HPP
 #define TPU_SFU_HPP
 
@@ -11,6 +11,9 @@ namespace tpu {
 
 class Sfu {
  public:
+  // `name` is the unit as its statistics report it; the model that holds the unit says it.
+  explicit Sfu(const char *name) : entry_{name, "entry", "instructions", 1, vcix_accel::Port::PRIMARY} {}
+
   static std::vector<vcix_accel::Encoding> encodings() { return {std::begin(ENCODINGS), std::end(ENCODINGS)}; }
   bool owns(const vcix_accel::Insn &insn) const {
     for (const vcix_accel::Encoding &e : ENCODINGS)
@@ -29,6 +32,8 @@ class Sfu {
   void commit(const vcix_accel::Insn &, vcix_accel::Id, vcix_accel::Cycle) {}
   void tick(vcix_accel::Cycle) {}
   void reset() { entry_.reset(); }
+  // What the [tpu] trace adds to an issue: a pipeline has no queue to show.
+  void trace_queues(const vcix_accel::Insn &) const {}
 
   std::vector<const vcix_accel::Port *> ports() const { return {&entry_}; }
 
@@ -47,7 +52,7 @@ class Sfu {
   static constexpr const char *LATENCY_KEY = "tpu_sfu_latency_cycles";
 
   vcix_accel::Cycle latency_ = 10;
-  vcix_accel::Port entry_{"Sfu", "entry", "instructions", 1, vcix_accel::Port::PRIMARY};
+  vcix_accel::Port entry_;
 };
 
 }  // namespace tpu

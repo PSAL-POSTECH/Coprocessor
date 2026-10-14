@@ -1,4 +1,4 @@
-# The matrix unit of libtpu_mxu.so: the two halves of a weight operand, pushed to the first half of the depth, the
+# The matrix unit of libtpuv6.so: the two halves of a weight operand, pushed to the first half of the depth, the
 # two halves of an input of four words of two rows each, which latches the weights, and its four pops, the lower
 # and the upper half of the columns by turns.
     .option norvc
