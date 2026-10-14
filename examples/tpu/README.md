@@ -92,8 +92,9 @@ the DMA, with their state. `functional.hpp` is `tpu::Functional`, the face of
 this model, which derives from it and adds the two arrays: their handlers
 (`array_handlers()`), the units whose encodings those are (`array_units()`),
 and their state. The core builds one table from both, so `execute` looks an
-instruction up once whichever unit has it. `examples/tpuv6` derives its own
-face from the same core.
+instruction up once whichever unit has it. `mxu_functional.hpp` is
+`tpu::MxuFunctional`, the face of `examples/tpuv6`, which derives from the
+same core and adds the matrix unit of `mxu.hpp`.
 
 Where the old Spike trapped, asserted or read past a buffer, the model ends
 the run with a line on standard error (`tpu: ...`, exit 1): a special function

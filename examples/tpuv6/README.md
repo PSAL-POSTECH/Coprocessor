@@ -1,12 +1,12 @@
 # tpuv6
 
 A TPU v6e on the two custom opcodes: one model (`libtpuv6.so`, name `tpuv6`).
-It is the tpu example's machine with another array: the special-function
-unit, the one-cycle instructions and the cross-lane unit of `examples/tpu`,
-and the matrix unit `tpuv6::Mxu` (`mxu.hpp`) in place of the systolic array
-and the multi-precision array. It is another machine, so another library, and
-the matrix unit has the encodings of the two arrays it stands in for: a
-program for one model is not a program for the other.
+It is the tpu example's machine with another array: the special-function unit,
+the one-cycle instructions and the cross-lane unit of `examples/tpu`, and the
+matrix unit `tpu::Mxu` (`examples/tpu/mxu.hpp`), in the v6e's shape, in place
+of the systolic array and the multi-precision array. It is another machine, so
+another library, and the matrix unit has the encodings of the two arrays it
+stands in for: a program for one model is not a program for the other.
 
 ## Units
 
@@ -18,11 +18,14 @@ each built with the name its statistics report:
 | `tpu::Sfu` | `examples/tpu/sfu.hpp` | `TPUV6_SFU` |
 | `tpu::Misc` | `examples/tpu/misc.hpp` | `TPUV6_MISC` |
 | `tpu::Xlu` | `examples/tpu/xlu.hpp` | `TPUV6_XLU` |
-| `tpuv6::Mxu` | `mxu.hpp` | `TPUV6_MXU` |
+| `tpu::Mxu<Shape>` | `examples/tpu/mxu.hpp` | `TPUV6_MXU` |
 
-The first three are the tpu example's units, included as `tpu/<unit>.hpp`
-(the build adds `examples` to the include path) and timed as its README says;
-only the name they report is this model's. The ports, and so the statistics,
+All four are the tpu example's units, included as `tpu/<unit>.hpp` (the build
+adds `examples` to the include path); the first three are timed as its README
+says, the matrix unit as below, and only the name they report is this
+model's. `Shape`, in `tpuv6.cc`, is the matrix unit's: an operand of two
+registers (`REGISTERS`), two MXU slots a cycle (`SLOTS`) and a word a cycle
+into an array (`WORD_A_CYCLE`). The ports, and so the statistics,
 are in this order: gem5 reports `vcix.TPUV6_MXU.admitted` and so on (before,
 as `libtpu_mxu.so`, `vcix.Mxu.*`, `vcix.Sfu.*`, `vcix.Misc.*`, `vcix.Xlu.*`).
 The encodings' names, and so `vcix.committed.<encoding>`, did not change.
@@ -123,14 +126,15 @@ array's width + depth - 1.
 
 ## The functional face
 
-`tpuv6::Functional` (`functional.hpp`) derives from the tpu example's
-`tpu::FunctionalCore` (`examples/tpu/functional_core.hpp`), which carries out
-the special functions, `vlane_idx` and `compute`, the cross-lane unit and the
-DMA as `examples/tpu/README.md` says, and adds the matrix unit: the handlers
-of `vmatprep`, `vmatpush`, `vmatmul` and `vpop`, the unit whose encodings
-those are, and its state, per array (the staged and the active weights, the
-held upper halves, the results). A run it cannot carry out ends as the core's do, with a
-line on standard error that starts `tpu: ` and exit 1.
+`tpu::MxuFunctional<Shape>` (`examples/tpu/mxu_functional.hpp`) derives from
+the tpu example's `tpu::FunctionalCore` (`examples/tpu/functional_core.hpp`),
+which carries out the special functions, `vlane_idx` and `compute`, the
+cross-lane unit and the DMA as `examples/tpu/README.md` says, and adds the
+matrix unit: the handlers of `vmatprep`, `vmatpush`, `vmatmul` and `vpop`, the
+unit whose encodings those are, and its state, per array (the staged and the
+active weights, the held upper halves, the results). A run it cannot carry out
+ends as the core's do, with a line on standard error that starts `tpu: ` and
+exit 1.
 
 ## Keys read from the machine description
 
