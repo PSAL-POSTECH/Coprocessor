@@ -173,7 +173,9 @@ gem5.opt -d m5out examples/tpu/gem5/script_systolic.py -c <binary> --model libtp
 | `--cpu`, `--mem`, `--sparse` | accepted as before; `--cpu` is `RiscvVPU` by default, the other two were and are read by nothing |
 
 PyTorchSim reads `system.cpu.numCycles` of every statistics dump in
-`m5out/stats.txt` but the last.
+`m5out/stats.txt` but the last. `examples/tpuv6e/gem5` is the v6e's machine,
+built with this script's functions (`machine`, `simulate`) and its own CPU and
+scratchpad.
 
 What the port changed:
 

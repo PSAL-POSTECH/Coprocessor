@@ -107,7 +107,7 @@ bundle `0x90`: `vpop.mxu1`, `vmatmul.mxu1`, `vmatprep.mubr.mxu0`) and all three
 kinds at once (`0x167`: `vpop.mxu0`, `vmatmul.mxu0`, `vmatprep.subr.mxu0`).
 gem5 asks the model of each instruction whether it is accepted, as many a
 cycle as its CPU issues, through the one accelerator unit of
-`examples/tpu/gem5/script_systolic.py`, so these slots, not gem5's units,
+`examples/tpuv6e/gem5/script_systolic.py`, so these slots, not gem5's units,
 bound the issue. The rows of a `vmatmul` wait in its array's input
 queue, and one word a cycle enters the array's delay line of
 `tpu_mxu_delay_cycles` slots, as a word enters a SIMD unit -- a word into
@@ -135,6 +135,94 @@ unit whose encodings those are, and its state, per array (the staged and the
 active weights, the held upper halves, the results). A run it cannot carry out
 ends as the core's do, with a line on standard error that starts `tpu: ` and
 exit 1.
+
+## The gem5 machine
+
+`gem5/` is the machine PyTorchSim measures `libtpuv6e.so` on: the tpu
+example's machine (`examples/tpu/gem5`, its README says what it is and what
+its port from PyTorchSim changed) with the v6e's scratchpad ports and vector
+ALUs, and two compensations for the CPU not being a VLIW machine.
+`script_systolic.py` builds it with the functions of
+`examples/tpu/gem5/script_systolic.py`, and `vpu_config.py` takes its units
+from `examples/tpu/gem5/vpu_config.py`: only what differs is here. The options
+are that script's; the scratchpad needs a gem5 with `MultiPortScratchpad`,
+release `vcix-v0.3.3` or later (`setup/versions.env`).
+
+```
+gem5.opt -d m5out examples/tpuv6e/gem5/script_systolic.py -c <binary> --model libtpuv6e.so \
+    [--machine-config machine.yml] [--vlane N] [--vlen N]
+```
+
+Each count of the v6e is its slots a bundle in libtpu's static bundle profile
+of a v6e kernel, an 8192 x 4096 x 4096 bf16 matmul of 13475 bundles, which
+gives each kind as used/slots over the kernel:
+
+| | PyTorchSim's original | This machine | From |
+|---|---|---|---|
+| scratchpad | one bank of 32 GB/s behind the bus | `MultiPortScratchpad`: up to 3 loads, 2 stores and 4 accesses in all a cycle, at any address; each answered 1 cycle later | `VECTOR_LOAD_AND_MISC (19181/40425)`, `VECTOR_STORE_AND_MISC (8872/26950)`, `VECTOR_LOAD_AND_STORE_AND_MISC (28041/53900)`: 3, 2 and 4 a bundle. The latency of 1 is a choice: the bundles do not give it |
+| the CPU's data port | to the bus | to the scratchpad | behind the bus every access would share its one layer to the scratchpad, which refuses a second packet in the same bus cycle |
+| vector ALUs | 4 each of adder, multiplier, divider and reduction, and 4 of misc, each its own op classes | 4 `MinorVALU`s, each every one of those op classes | `VECTOR_ALU (16027/53900)`: 4 a bundle |
+| `executeLSQRequestsQueueSize` | 1 | 2 | a compensation, below |
+| integer units (`IntAlu`) | 4 | 6 | a compensation, below |
+
+The instruction cache and the system port still reach the scratchpad through
+the bus, on its second port, and their reads take a load port. Every unit
+before the fifth integer unit keeps its index in the statistics
+(`funcUnits16` is the accelerator); the VALUs are `funcUnits21`, `22`, `27`
+and `28`, the fifth and sixth integer units `29` and `30`.
+
+### Four VALUs
+
+A v6e bundle has 4 VALU slots and any vector ALU op takes any of them; the
+original's pool gives each kind its own units, so a stream of adds and
+multiplies issued 8 a cycle. Here the four VALUs take every vector ALU op
+class: a mixed stream issues 4 a cycle, whatever the mix. On a loop of 64
+independent vector ops (cycles an iteration, ops a cycle):
+
+| The loop | The original's pool | Four VALUs |
+|---|---|---|
+| vfadd only, vfmul only, vfmacc only | 16 (4.0) | 16 (4.0) |
+| vfadd and vfmul in turn | 11 (5.8) | 16 (4.0) |
+| add, mul, vmv, vslide, cvt, div, sqrt, sgnj | 11 (5.8) | 16 (4.0) |
+| vfredusum only | 16 (4.0) | 32 (2.0) |
+
+A reduction costs two VALU slots: this gem5 issues each as two micro-ops, a
+`VPinVdMicroInst` (op class `SimdMisc`) and the reduction itself, and both are
+VALU ops. The first is how gem5 decodes a reduction, not an op of the v6e;
+it shares its op class with `vmv`, so the pool cannot leave it out.
+
+### Two LSQ requests and two more integer units
+
+Both are compensations, not counts of the v6e. Minor sends the loads and
+stores in its LSQ's request (address translation) queue, one by default; two
+let two accesses go together, a step toward the v6e's 4 a cycle, not its
+count.
+
+The v6e computes a vector load's address inside the load, as a base register
+plus an immediate, and spends no scalar slot on it: in the final bundles of
+the fusion of a 1024 x 384 x 1152 matmul (`fusion-76`), a load is
+`vld [vmem:[%s27831_s1 + $0xec] ...]`; of its 1802 vector loads, 215 are
+`[%s + imm]`, 941 `[#allocation3 + imm]`, 640 a spill slot and 6 a bare base.
+An RVV load has no immediate offset, so a compiled loop steps a pointer with
+an `addi` for each access. In gem5's Minor CPU an `addi` finishes in a cycle
+but holds its unit until it commits, and commit is in order: behind an older
+vector load that has not committed, finished `addi`s hold all the units, and
+the next one waits, and the in-order issue with it. Six units are the fewest
+at which a steady matrix-unit loop of `libtpuv6e.so`, pipelined two blocks
+deep (a vmatmul of 16 rows of bfloat16 a block, its 6 vector loads, 4 vector
+stores and 4 vfadds, 6 `addi`s), runs at its own pace, 6.49 cycles a block
+against the matrix unit's 8; with four 7.98, with five 7.98 (measured on the
+tpu machine with two LSQ requests and a scratchpad of two banks; cycles per
+vmatmul, the difference of 96 and 192 blocks over 96, against a matrix unit
+that does not hold the loop back).
+
+### What the scratchpad changes
+
+On a 4096 x 4096 x 4096 bf16 matmul, PyTorchSim's tile of it (`a_w512c1024`)
+takes 7.72 cycles an input in its steady loop on this machine, where the
+matrix unit allows 8, and where the same CPU with a scratchpad of two banks
+of 32 GB/s behind the bus took 10.35: loads no longer stop the loop, the
+matrix unit does. The four VALUs do not change it.
 
 ## Keys read from the machine description
 
@@ -169,8 +257,12 @@ With `tpu_trace`:
 
 `tests/tpuv6e/run.sh` checks the matrix unit's timing on gem5 (`mxu.S`,
 `mxu_rate.S`, `mxu_arrays.S` on two arrays, and `mxu_slots.S`, a `vpop` and a
-`vmatmul` in one cycle, also on `script_systolic.py`), the units' names and order in the statistics (`ports.cc`, with
-no simulator, and gem5's dump), and a refused machine description;
+`vmatmul` in one cycle, also on the gem5 machine), the units' names and order in the statistics (`ports.cc`, with
+no simulator, and gem5's dump), the gem5 machine (its configuration; three
+loads, two stores and four accesses a cycle at the scratchpad, `scratchpad.S`;
+`tests/tpu`'s `loads.S` alike from any lines and `addresses.S`; 64
+independent vfadds and vfmuls 4 a cycle at the VALUs, `valu.S`), and a refused
+machine description;
 `functional/run.sh` checks what it computes on Spike against a formula
 (`mxu.c`, on one array and on two), and what it refuses. It runs on the machine of
 `tests/tpu/functional` (`machine.yml`, `common.h`).
