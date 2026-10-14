@@ -90,8 +90,22 @@ computes before any latch; so does a `vmatpush` whose [4:3] is 0, or 3: the
 v6e's `vmatpush3`, which a dot of N = 128 uses with the two halves of the
 depth apart, is not modelled.
 
-Timing: one instruction per cycle, for all the arrays; a `vmatprep` and a
-`vmatpush` enter nothing. The rows of a `vmatmul` wait in its array's input
+Timing: a cycle takes two of `vmatprep`, `vmatpush` and `vmatmul` over all
+the arrays and, of each array, one of the weights' (a `vmatprep` of weights or
+a `vmatpush`), one of the inputs' (a `vmatprep` of inputs or a `vmatmul`) and
+one `vpop`; a `vmatprep` and a `vmatpush` enter nothing. These are the v6e's
+slots: its static per-bundle utilization gives a bundle `MXU 2` and `VPOP 2`
+for its two MXUs, and in the final bundles of five dumps (256^3 and M = 1024,
+2048, 4096, 8192 of M x 384 x 1152; `.subr` and `vmatpush` the weights',
+`.mubr` the inputs') no MXU has two of the weights', two of the inputs' or two
+`vpop`s in a bundle and no bundle more than two of the first three over both
+MXUs, while one MXU takes a `vpop` with its `vmatmul` (1024 x 384 x 1152,
+bundle `0x90`: `vpop.mxu1`, `vmatmul.mxu1`, `vmatprep.mubr.mxu0`) and all three
+kinds at once (`0x167`: `vpop.mxu0`, `vmatmul.mxu0`, `vmatprep.subr.mxu0`).
+gem5 asks the model of each instruction whether it is accepted, as many a
+cycle as its CPU issues, through the one accelerator unit of
+`examples/tpu/gem5/script_systolic.py`, so these slots, not gem5's units,
+bound the issue. The rows of a `vmatmul` wait in its array's input
 queue, and one word a cycle enters the array's delay line of
 `tpu_mxu_delay_cycles` slots, as a word enters a SIMD unit -- a word into
 each array a cycle, so the unit's input port, `TPUV6_MXU.input`, takes 2 x
@@ -149,7 +163,8 @@ With `tpu_trace`:
 ## Tests
 
 `tests/tpuv6/run.sh` checks the matrix unit's timing on gem5 (`mxu.S`,
-`mxu_rate.S`, and `mxu_arrays.S` on two arrays), the units' names and order in the statistics (`ports.cc`, with
+`mxu_rate.S`, `mxu_arrays.S` on two arrays, and `mxu_slots.S`, a `vpop` and a
+`vmatmul` in one cycle, also on `script_systolic.py`), the units' names and order in the statistics (`ports.cc`, with
 no simulator, and gem5's dump), and a refused machine description;
 `functional/run.sh` checks what it computes on Spike against a formula
 (`mxu.c`, on one array and on two), and what it refuses. It runs on the machine of
