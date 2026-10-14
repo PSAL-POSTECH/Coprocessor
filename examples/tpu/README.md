@@ -154,7 +154,8 @@ and `gem5_script/script_systolic.py` (the syscall-emulation script) of
 `PSAL-POSTECH/PyTorchSim` 4b2555a, and ported to the gem5 of branch `vcix`.
 The CPU's widths and limits, the pool's unit counts and latencies, the clock
 domains, the instruction cache and the bus are the original's; its loads and
-stores have two ports where the original's have one (below).
+stores have two ports where the original's have one, and its pool has a fifth
+integer unit (below).
 
 ```
 gem5.opt -d m5out examples/tpu/gem5/script_systolic.py -c <binary> --model libtpu.so \
@@ -244,7 +245,7 @@ accesses to the same bank take turns.
 
 What it changes, on a steady loop of `libtpuv6.so`'s matrix unit (a vmatmul of
 16 rows a block, its 6 vector loads and 4 vector stores; cycles per vmatmul,
-the difference of 96 and 192 blocks over 96):
+the difference of 96 and 192 blocks over 96; measured with four integer units):
 
 | The loop | One port | Two ports |
 |---|---|---|
@@ -257,5 +258,46 @@ where two independent accesses are there to go together.
 
 `tests/tpu/run.sh` runs `sfu.S` on this machine as well, and `loads.S`: a
 window of 64 independent vector loads from lines all in one bank, then one from
-lines in both banks, 92 and 58 cycles; in the second the loads commit two a
-cycle.
+lines in both banks, 89 and 57 cycles (92 and 58 with four integer units,
+below); in the second the loads commit two a cycle.
+
+### A fifth integer unit
+
+The original's pool has four integer units (`MinorCustomIntFU`, `IntAlu`, one
+cycle; `funcUnits01`, `02`, `09` and `10`); this machine has five, the fifth
+last in the pool (`funcUnits49`), so that every unit before it keeps its index
+in the statistics.
+
+This is a compensation for the CPU not being a VLIW machine, not a fact of the
+v6e. The v6e computes a vector load's address inside the load, as a base
+register plus an immediate, and spends no scalar slot on it: in the final
+bundles of the fusion of a 1024 x 384 x 1152 matmul (`fusion-76`), a load is
+`vld [vmem:[%s27831_s1 + $0xec] ...]`; of its 1802 vector loads, 215 are
+`[%s + imm]`, 941 `[#allocation3 + imm]`, 640 a spill slot and 6 a bare base,
+the offset riding the load. An RVV load
+has no immediate offset, so a compiled loop steps a pointer with an `addi` for
+each access. In gem5's Minor CPU an `addi` finishes in a cycle but holds its
+unit until it commits, and commit is in order: behind an older vector load
+that has not committed, finished `addi`s hold all four units, and the next one
+waits, and the in-order issue with it.
+
+What the count changes, on a steady loop of `libtpuv6.so`'s matrix unit: a
+vmatmul of 16 rows of bfloat16 a block, 6 vector loads, 4 vector stores and an
+`addi` stepping the pointer of each, C loaded first, the inputs' vmatprep and
+vmatmul between the four vpops, A loaded a block ahead, 64 vmatmuls ahead of
+their pops; cycles per vmatmul, the difference of 96 and 192 blocks over 96:
+
+| Integer units | 4 | 5 | 6 | 8 |
+|---|---|---|---|---|
+| every access its own pointer | 9.05 | 8.12 | 8.12 | 8.12 |
+| the same, C a block ahead too, two sets of registers in turn | 8.56 | 8.10 | 8.13 | 8.17 |
+| C's addresses from one pointer each block | 9.05 | 9.05 | 9.05 | 8.55 |
+
+The matrix unit allows 8: a word of two rows a cycle, 8 words a block. Five is
+the fewest units that brings the first two loops to it, and more change
+nothing there. The third loop's loads wait on the `addi` that computes their
+address from the shared pointer, a dependence more units do not remove.
+
+`tests/tpu/run.sh` runs `addresses.S` on this machine: a window of 64 vector
+loads, each followed by the `addi` that steps its pointer, 98 cycles (101 with
+four units).
