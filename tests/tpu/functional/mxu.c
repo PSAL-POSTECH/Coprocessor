@@ -1,15 +1,24 @@
 // The matrix unit of libtpu_mxu.so: an array of 2 x LANES columns, an operand as two registers (a vmatprep, then
 // the vmatpush or the vmatmul, each operand's held apart), a word of one single or two rows of 16 bits, weights
 // staged a half of the depth at a time and made active by a vmatmul that latches, a result popped a half of the
-// columns at a time. Checked against a formula. Usage: mxu [what the model refuses]
+// columns at a time. Checked against a formula. Usage: mxu [arrays | what the model refuses]
+//   arrays: on a machine of tpu_mxu_units: 2, each array its own tile and its own held halves.
 #include "common.h"
 
 // sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2: the encodings the matrix unit has. The number is the instruction's field.
+// The _a1 and _a2 kernels name array 1 or 2 in the field the encodings leave free (sf.vc.iv's rd, sf.vc.v.i's rs2).
 kernel_with k_mxu_matmul_32, k_mxu_push_32, k_msa_push_32, k_mxu_pop_32, k_weight_16;
-#define k_vmatmul k_mxu_matmul_32
-#define k_vmatpush k_mxu_push_32
-#define k_vmatprep k_msa_push_32
-#define k_vpop k_mxu_pop_32
+kernel_with k_mxu_matmul_32_a1, k_mxu_push_32_a1, k_msa_push_32_a1, k_mxu_pop_32_a1, k_mxu_matmul_32_a2;
+// The array the helpers below work on: its kernels, and the weights it holds as this program models them.
+static unsigned array_on;
+static kernel_with *const matmuls[] = {k_mxu_matmul_32, k_mxu_matmul_32_a1};
+static kernel_with *const pushes[] = {k_mxu_push_32, k_mxu_push_32_a1};
+static kernel_with *const preps[] = {k_msa_push_32, k_msa_push_32_a1};
+static kernel_with *const pops[] = {k_mxu_pop_32, k_mxu_pop_32_a1};
+#define k_vmatmul (matmuls[array_on])
+#define k_vmatpush (pushes[array_on])
+#define k_vmatprep (preps[array_on])
+#define k_vpop (pops[array_on])
 
 #define IN 0ul
 #define OUT 4096ul
@@ -65,13 +74,13 @@ static void operand(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, u
   bring(lower, matrix, rows, format, field);
 }
 
-// What the array holds, a weight at each depth of each column: the staged weights, and the active ones, which the
+// What each array holds, a weight at each depth of each column: the staged weights, and the active ones, which the
 // last vmatmul that latched copied whole.
-static float staged[WIDTH][WIDTH], active[WIDTH][WIDTH];
+static float staged[2][WIDTH][WIDTH], active[2][WIDTH][WIDTH];
 // `count` rows of weights to one half of the depth: what the half held moves down `count` depths, what passes its
 // last is gone, and the rows take its top in their order. The other half is as it was.
 static void stage(float (*rows)[WIDTH], unsigned count, unsigned half) {
-  float (*top)[WIDTH] = staged + (half == PUSH2 ? LANES : 0);
+  float (*top)[WIDTH] = staged[array_on] + (half == PUSH2 ? LANES : 0);
   memmove(top + count, top, (LANES - count) * sizeof *top);
   memcpy(top, rows, count * sizeof *rows);
 }
@@ -86,7 +95,7 @@ static void push_half(float (*tile)[WIDTH], unsigned format, unsigned half) {
     push(tile + (half == PUSH2 ? LANES : 0) + slab * SLAB, SLAB, format, half);
 }
 static void matmul(float (*a)[WIDTH], unsigned rows, unsigned format, unsigned latch) {
-  if (latch) memcpy(active, staged, sizeof active);
+  if (latch) memcpy(active[array_on], staged[array_on], sizeof active[0]);
   operand(k_vmatmul, a, rows, format, INPUTS, latch);
 }
 // `rows` rows of the result, the lower half of the columns and then the upper, against a x the active weights.
@@ -98,7 +107,7 @@ static unsigned check(float (*a)[WIDTH], unsigned from, unsigned rows) {
     for (unsigned lane = 0; lane < LANES; lane++)
       for (unsigned row = 0; row < rows; row++) {
         float want = 0;
-        for (unsigned k = 0; k < WIDTH; k++) want += a[from + row][k] * active[k][half * LANES + lane];
+        for (unsigned k = 0; k < WIDTH; k++) want += a[from + row][k] * active[array_on][k][half * LANES + lane];
         const float got = *(float *)spad(lane, OUT + 4 * row);
         if (memcmp(&got, &want, sizeof got)) {
           if (!wrong) printf("row %u column %u: got %g, want %g\n", from + row, half * LANES + lane, (double)got, (double)want);
@@ -143,12 +152,60 @@ static int refused(const char *which) {
     k_vmatprep(spad(0, IN), 0, 1, 2, 0);
   } else if (!strcmp(which, "words")) {     // elements of 16 bits
     k_weight_16(spad(0, IN), 0, 1, SINGLE, 0);
+  } else if (!strcmp(which, "pop-array")) { // a vpop of array 1 on a machine of one array
+    k_mxu_pop_32_a1(0, spad(0, OUT), 1, 0, 0);
+  } else if (!strcmp(which, "array")) {     // a vmatmul for array 2 on a machine of two
+    k_mxu_matmul_32_a2(spad(0, IN), 0, 1, SINGLE, 0);
   }
   puts("it ran");
   return 0;
 }
 
+// On a machine of two arrays: each its own tile, pushed by turns a slab at a time, so that what one array holds
+// under a vmatprep the other does not take; both inputs' upper halves held before either vmatmul; and array 1's
+// results popped before array 0's.
+static int arrays(void) {
+  enum { M = 8 };
+  static float a[M][WIDTH], b[2][WIDTH][WIDTH];
+  unsigned wrong = 0;
+  for (unsigned row = 0; row < M; row++)
+    for (unsigned k = 0; k < WIDTH; k++) a[row][k] = value();
+  for (unsigned tile = 0; tile < 2; tile++)
+    for (unsigned k = 0; k < WIDTH; k++)
+      for (unsigned column = 0; column < WIDTH; column++) b[tile][k][column] = value();
+  for (unsigned half = PUSH1; half <= PUSH2; half += PUSH1)
+    for (unsigned at = LANES / SLAB; at-- > 0;) {
+      float (*slab[2])[WIDTH];
+      for (array_on = 0; array_on < 2; array_on++) {
+        slab[array_on] = b[array_on] + (half == PUSH2 ? LANES : 0) + at * SLAB;
+        prep(slab[array_on], SLAB, BF16, 0);           // both arrays' upper halves held, then taken the other way round
+      }
+      for (array_on = 2; array_on-- > 0;) {
+        stage(slab[array_on], SLAB, half);
+        bring(k_vmatpush, slab[array_on], SLAB, BF16, half);
+      }
+    }
+  for (array_on = 0; array_on < 2; array_on++) prep(a, M, BF16, INPUTS);
+  for (array_on = 0; array_on < 2; array_on++) {
+    memcpy(active[array_on], staged[array_on], sizeof active[0]);
+    bring(k_vmatmul, a, M, BF16, LATCH);
+  }
+  for (array_on = 2; array_on-- > 0;) wrong += check(a, 0, M);
+  // The next input to array 1 alone, between pushes of a new slab to array 0 that it does not latch.
+  array_on = 0;
+  push(b[1] + LANES - SLAB, SLAB, BF16, PUSH1);
+  array_on = 1;
+  matmul(a + 2, 4, BF16, 0);
+  wrong += check(a, 2, 4);
+  array_on = 0;
+  matmul(a + 4, 2, BF16, LATCH);
+  wrong += check(a, 4, 2);
+  printf("mxu arrays: %u of %u elements as the formula says\n", checked - wrong, checked);
+  return wrong != 0;
+}
+
 int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "arrays")) return arrays();
   if (argc == 2) return refused(argv[1]);
   enum { M = 16 };
   static float a[M][WIDTH], low[M][WIDTH], b[3][WIDTH][WIDTH], slab[SLAB][WIDTH];
@@ -203,7 +260,7 @@ int main(int argc, char **argv) {
       bring(k_vmatpush, b[0] + LANES + at * SLAB, SLAB, format, PUSH2);
     }
     prep(b[2] + LANES - SLAB, SLAB, format, 0);
-    memcpy(active, staged, sizeof active);
+    memcpy(active[array_on], staged[array_on], sizeof active[0]);
     bring(k_vmatmul, a + 4, 2, format, LATCH);
     stage(b[2] + LANES - SLAB, SLAB, PUSH1);
     bring(k_vmatpush, b[2] + LANES - SLAB, SLAB, format, PUSH1);

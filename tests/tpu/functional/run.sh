@@ -35,7 +35,7 @@ done
 on_model() {
   local name=$1 options=(); shift
   while [ "$1" != -- ]; do options+=("$1"); shift; done; shift
-  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xvcixaccel --machine-config="$HERE/machine.yml" \
+  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xvcixaccel --machine-config="${MACHINE:-$HERE/machine.yml}" \
     --kernel-addr=$KERNEL_RANGE "${options[@]}" "$PK" "$OUT/$1" "${@:2}" < /dev/null > "$OUT/$name.out" 2> "$OUT/$name.err"
 }
 # The same machine, as the old Spike takes it.
@@ -146,6 +146,14 @@ refused_mxu prep-weights "tpu: vmatprep: the upper half of the weights a vmatpre
 refused_mxu prep-inputs "tpu: vmatprep: the upper half of the inputs a vmatprep held before it was taken by no vmatmul"
 refused_mxu format "tpu: vmatprep: format 2 names nothing a word holds"
 refused_mxu words "tpu: vmatpush: its elements are words of 32 bits, not of 16"
+refused_mxu pop-array "tpu: vpop: array 1, and the machine has 1 (tpu_mxu_units)"
+
+echo "-- the matrix unit with tpu_mxu_units: 2"
+{ cat "$HERE/machine.yml"; echo "tpu_mxu_units: 2"; } > "$OUT/machine-mxu2.yml"
+MODEL=$MXU MACHINE="$OUT/machine-mxu2.yml" on_model mxu-arrays -- mxu arrays; rc=$?
+if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  two arrays, each its own tile and its own held halves, named in sf.vc.iv's rd and sf.vc.v.i's rs2, popped the other way round: $(tail -n1 "$OUT/mxu-arrays.out") (exit $rc)"
+MACHINE="$OUT/machine-mxu2.yml" refused_mxu array "tpu: vmatmul: array 2, and the machine has 2 (tpu_mxu_units)"
 
 # refused <which> <exit> <text>: the run ends there, with this on standard error.
 refused() {
