@@ -1,5 +1,6 @@
 # The tpu machine in syscall emulation: PyTorchSim's gem5_script/script_systolic.py on the gem5 of branch vcix.
 # Usage: gem5.opt script_systolic.py -c BINARY --model libtpu.so [--machine-config machine.yml] [--vlane N] [--vlen N]
+# examples/tpuv6e/gem5/script_systolic.py builds its machine with this file's functions, its own CPU and scratchpad.
 import os
 import time
 import argparse
@@ -10,21 +11,21 @@ from m5.objects import *
 
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
 from machine_description import machine_description
-from vpu_config import *
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-c", "--cmd", default="", help="The binary to run in syscall emulation mode.")
-parser.add_argument("-o", "--options", default="", help="""The options to pass to the binary, use around the entire string""")
-parser.add_argument("--cpu", choices=["RiscvAtomicSimpleCPU", "RiscvTimingSimpleCPU", "RiscvMinorCPU", "RiscvDerivO3CPU",
-                                      "RiscvMinorCPU", "RiscvCustomCPU", "RiscvMinorV2CPU", "RiscvMinorV4CPU", "RiscvVPU",
-                                      "RiscvSparseVPU"], default="RiscvVPU")
-parser.add_argument("--mem", choices=["SimpleMemory", "ScratchpadMemory", "DDR3_1600_8x8"], default="ScratchpadMemory")
-parser.add_argument("--sparse", type=bool, default=False)
-parser.add_argument("--model", required=True, help="The accelerator model (.so) of the tpu unit.")
-parser.add_argument("--machine-config", help="The machine description (YAML) the model is configured from.")
-parser.add_argument("--vlane", type=int, help="The model's vpu_num_lanes, over the machine description's.")
-parser.add_argument("--vlen", type=int, default=256)
-args = parser.parse_args()
+def arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--cmd", default="", help="The binary to run in syscall emulation mode.")
+    parser.add_argument("-o", "--options", default="", help="""The options to pass to the binary, use around the entire string""")
+    parser.add_argument("--cpu", choices=["RiscvAtomicSimpleCPU", "RiscvTimingSimpleCPU", "RiscvMinorCPU", "RiscvDerivO3CPU",
+                                          "RiscvMinorCPU", "RiscvCustomCPU", "RiscvMinorV2CPU", "RiscvMinorV4CPU", "RiscvVPU",
+                                          "RiscvSparseVPU"], default="RiscvVPU")
+    parser.add_argument("--mem", choices=["SimpleMemory", "ScratchpadMemory", "DDR3_1600_8x8"], default="ScratchpadMemory")
+    parser.add_argument("--sparse", type=bool, default=False)
+    parser.add_argument("--model", required=True, help="The accelerator model (.so) of the tpu unit.")
+    parser.add_argument("--machine-config", help="The machine description (YAML) the model is configured from.")
+    parser.add_argument("--vlane", type=int, help="The model's vpu_num_lanes, over the machine description's.")
+    parser.add_argument("--vlen", type=int, default=256)
+    return parser.parse_args()
 
 class InstMemory(SimpleMemory):
     latency = "1ns"
@@ -119,84 +120,93 @@ class L1ICache(L1Cache):
     def connectCPU(self, cpu):
         self.cpu_side = cpu.icache_port
 
-valid_cpu = {
-    "RiscvMinorCPU": RiscvMinorCPU,
-    "RiscvDerivO3CPU": RiscvO3CPU,
-    "RiscvMinorCPU": RiscvMinorCPU,
-    "RiscvVPU": RiscvVPU,
-}
+# machine <args> <vpu> <scratchpad>: the system, its CPU the --cpu named, vpu the machine's RiscvVPU; scratchpad(system)
+# connects the CPU's data port and the bus's memory side
+def machine(args, vpu, scratchpad):
+    valid_cpu = {
+        "RiscvMinorCPU": RiscvMinorCPU,
+        "RiscvDerivO3CPU": RiscvO3CPU,
+        "RiscvVPU": vpu,
+    }
 
-# The model's configuration: the machine description, with --vlane over its vpu_num_lanes.
-settings = machine_description(args.machine_config) if args.machine_config else {}
-if args.vlane is not None:
-    settings["vpu_num_lanes"] = str(args.vlane)
-binary = args.cmd
+    # The model's configuration: the machine description, with --vlane over its vpu_num_lanes.
+    settings = machine_description(args.machine_config) if args.machine_config else {}
+    if args.vlane is not None:
+        settings["vpu_num_lanes"] = str(args.vlane)
+    binary = args.cmd
 
-# Main System Setup
-system = System()
-system.workload = SEWorkload.init_compatible(binary)
+    # Main System Setup
+    system = System()
+    system.workload = SEWorkload.init_compatible(binary)
 
-# Clock setting
-system.clk_domain = SrcClockDomain()
-system.clk_domain.clock = "1GHz"
-system.clk_domain.voltage_domain = VoltageDomain()
+    # Clock setting
+    system.clk_domain = SrcClockDomain()
+    system.clk_domain.clock = "1GHz"
+    system.clk_domain.voltage_domain = VoltageDomain()
 
-fast_clk = SrcClockDomain()
-fast_clk.clock = '8GHz'
-fast_clk.voltage_domain = VoltageDomain()
+    fast_clk = SrcClockDomain()
+    fast_clk.clock = '8GHz'
+    fast_clk.voltage_domain = VoltageDomain()
 
-system.mem_mode = "timing"
-system.cache_line_size = 64
-system.cpu = valid_cpu[args.cpu]()
-system.cpu.ArchISA.vlen = args.vlen
-for unit in system.cpu.executeFuncUnits.funcUnits:
-    if isinstance(unit, MinorVcixAccelFU):
-        unit.vcixModel = args.model
-        unit.vcixConfigKeys = list(settings.keys())
-        unit.vcixConfigValues = list(settings.values())
+    system.mem_mode = "timing"
+    system.cache_line_size = 64
+    system.cpu = valid_cpu[args.cpu]()
+    system.cpu.ArchISA.vlen = args.vlen
+    for unit in system.cpu.executeFuncUnits.funcUnits:
+        if isinstance(unit, MinorVcixAccelFU):
+            unit.vcixModel = args.model
+            unit.vcixConfigKeys = list(settings.keys())
+            unit.vcixConfigValues = list(settings.values())
 
-# Memory range: the scratchpad is two banks, interleaved by the 64-byte line, 64 GB/s in all (32 GB/s each); the
-# original's is one bank of 32 GB/s. The interleave is no finer than cache_line_size: an access of a whole line in
-# two banks has no destination on the bus (gem5's fatal "Unable to find destination for [0:0x40]" at 32 bytes).
-granule_sz = 64
-spad_num_bank = 2
-spad_bandwidth = "64GB/s"
-system.mem_ranges = [AddrRange(start=0, size="16GB")]
+    system.mem_ranges = [AddrRange(start=0, size="16GB")]
 
-system.membus = SpmXBar(
-        width = granule_sz,
-        header_latency = 0,
-        frontend_latency = 0,
-        forward_latency = 0,
-        response_latency = 0)
-system.membus.clk_domain = fast_clk
+    system.membus = SpmXBar(
+            width = 64,
+            header_latency = 0,
+            frontend_latency = 0,
+            forward_latency = 0,
+            response_latency = 0)
+    system.membus.clk_domain = fast_clk
 
-# Instruction cache connection
-system.cpu.icache= L1ICache()
-system.cpu.icache.connectCPU(system.cpu)
-system.cpu.icache.connectBus(system.membus)
-system.cpu.dcache_port = system.membus.cpu_side_ports
-system.cpu.createInterruptController()
+    # Instruction cache connection
+    system.cpu.icache= L1ICache()
+    system.cpu.icache.connectCPU(system.cpu)
+    system.cpu.icache.connectBus(system.membus)
+    scratchpad(system)
+    system.cpu.createInterruptController()
 
-# Create and connect memory nodes
-multi_banked_spm = MultiBankMemorySystem(system.membus.mem_side_ports, system.mem_ranges[0], num_banks=spad_num_bank, granule_size=granule_sz, total_bandwidth=spad_bandwidth)
-system.mem_ctrls = multi_banked_spm.get_ctrls()
+    system.system_port = system.membus.cpu_side_ports
 
-system.system_port = system.membus.cpu_side_ports
+    process = Process()
+    process.cmd = [binary] + args.options.split()
+    system.cpu.workload = process
+    system.cpu.createThreads()
+    return system
 
-process = Process()
-process.cmd = [binary] + args.options.split()
-system.cpu.workload = process
-system.cpu.createThreads()
+# banked_scratchpad <system>: this machine's scratchpad. The scratchpad is two banks, interleaved by the 64-byte line,
+# 64 GB/s in all (32 GB/s each); the original's is one bank of 32 GB/s. The interleave is no finer than
+# cache_line_size: an access of a whole line in two banks has no destination on the bus (gem5's fatal "Unable to find
+# destination for [0:0x40]" at 32 bytes).
+def banked_scratchpad(system):
+    granule_sz = 64
+    spad_num_bank = 2
+    spad_bandwidth = "64GB/s"
+    system.cpu.dcache_port = system.membus.cpu_side_ports
+    multi_banked_spm = MultiBankMemorySystem(system.membus.mem_side_ports, system.mem_ranges[0], num_banks=spad_num_bank, granule_size=granule_sz, total_bandwidth=spad_bandwidth)
+    system.mem_ctrls = multi_banked_spm.get_ctrls()
 
-# Simulation
-root = Root(full_system=False, system=system)
-m5.instantiate()
-start_time = time.time()
-exit_event = m5.simulate()
+def simulate(system):
+    root = Root(full_system=False, system=system)
+    m5.instantiate()
+    start_time = time.time()
+    exit_event = m5.simulate()
 
-if exit_event.getCause() != "exiting with last active thread context":
-    exit(1)
-end_time = time.time()
-elapsed_seconds = end_time - start_time
-print(f"Simulation time: {elapsed_seconds:.6f} seconds")
+    if exit_event.getCause() != "exiting with last active thread context":
+        exit(1)
+    end_time = time.time()
+    elapsed_seconds = end_time - start_time
+    print(f"Simulation time: {elapsed_seconds:.6f} seconds")
+
+if __name__ == "__m5_main__":
+    from vpu_config import RiscvVPU
+    simulate(machine(arguments(), RiscvVPU, banked_scratchpad))

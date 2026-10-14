@@ -285,9 +285,9 @@ Not code, only where the model is:
 `MinorVcixAccelFU` is defined in the gem5 branch, beside gem5's own units. A
 machine's CPU config stays wherever it already lives and gains that one unit.
 `examples/gem5_se.py` is only a fixture, for the example and the tests: gem5's
-default pool plus the one unit. `examples/tpu/gem5/` is a whole machine, the
-CPU and memory configuration PyTorchSim measures on, with the one unit naming
-the tpu model.
+default pool plus the one unit. `examples/tpu/gem5/` and
+`examples/tpuv6e/gem5/` are whole machines, the CPU and memory configurations
+PyTorchSim measures on, each with the one unit naming its model.
 
 ## Constraints the interface is built around
 
@@ -337,6 +337,9 @@ examples/tpu/gem5/        the machine the tpu example is measured on: PyTorchSim
                           ports and two more integer units
 examples/tpuv6e/          a TPU v6e: the tpu example's units with a matrix unit
                           as the array, its own model and library
+examples/tpuv6e/gem5/     the machine the tpuv6e example is measured on: the tpu
+                          example's, with the v6e's scratchpad ports and four
+                          vector ALUs
 examples/tpuv3/           a TPU v3: the tpu example's units with a matrix unit
                           of 128 x 128, its own model and library
 examples/gem5_se.py       the gem5 fixture the example and the tests run on
