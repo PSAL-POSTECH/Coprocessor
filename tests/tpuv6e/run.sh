@@ -119,17 +119,9 @@ on_machine() {
   rc[machine-$1]=$?
 }
 
-# config <run> <section> <key>: the key's value in the section of the run's config.ini
-config() {
-  awk -v section="[$2]" -v key="$3=" '/^\[/ { in_section = ($0 == section) }
-    in_section && index($0, key) == 1 { print substr($0, length(key) + 1); exit }' "$BUILD/m5out-tpuv6e-machine-$1/config.ini"
-}
-
-# window <run> <dump> <name>: the value of the stat named <name> in the dump-th dump, 0 if the dump does not print it
-window() {
-  awk -v want="$3" -v n="$2" '/Begin Simulation Statistics/ { s++ } s == n && $1 == want { v = $2 } END { print v + 0 }' \
-    "$BUILD/m5out-tpuv6e-machine-$1/stats.txt"
-}
+# config <run> <section> <key>, window <run> <dump> <name>: scripts/sim.sh's, of the run on the v6e machine
+config() { gem5_config "$BUILD/m5out-tpuv6e-machine-$1" "${@:2}"; }
+window() { gem5_window "$BUILD/m5out-tpuv6e-machine-$1" "${@:2}"; }
 
 for program in scratchpad valu loads addresses; do on_machine $program; done
 report "exit ${rc[machine-scratchpad]}, ports $(config scratchpad system.spad load_ports) $(config scratchpad system.spad store_ports) $(config scratchpad system.spad access_ports), latency $(config scratchpad system.spad latency); requests $(config scratchpad system.cpu executeLSQRequestsQueueSize); integer units $(grep -c '^opClass=IntAlu$' "$BUILD/m5out-tpuv6e-machine-scratchpad/config.ini"), VALUs $(grep -c '^unit=Vpu$' "$BUILD/m5out-tpuv6e-machine-scratchpad/config.ini")" \

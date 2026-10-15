@@ -174,8 +174,12 @@ gem5.opt -d m5out examples/tpu/gem5/script_systolic.py -c <binary> --model libtp
 
 PyTorchSim reads `system.cpu.numCycles` of every statistics dump in
 `m5out/stats.txt` but the last. `examples/tpuv6e/gem5` is the v6e's machine,
-built with this script's functions (`machine`, `simulate`) and its own CPU and
-scratchpad.
+built with this script's functions (`machine`, `multiport_scratchpad`,
+`simulate`) and its own CPU, whose pool is `vliw_pool` of `vpu_config.py`: a
+VLIW TPU's VALU slots as `MinorVALU`s, each of which takes every vector ALU op
+class. `machine` takes the system clock, the original's 1GHz by default;
+`multiport_scratchpad` a gem5 `MultiPortScratchpad`'s load, store and access
+ports and latency.
 
 This is the generic machine, a model's stand-in, not a model's own. Run as
 gem5's script, it says so on stderr before it builds anything:
