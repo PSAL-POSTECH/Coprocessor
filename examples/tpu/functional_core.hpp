@@ -247,6 +247,8 @@ class FunctionalCore {
                                     {"compute", &FunctionalCore::nothing},
                                     {"vlane_idx", &FunctionalCore::vlane_idx},
                                     {"pack", &FunctionalCore::pack},
+                                    {"unpack_lo", &FunctionalCore::unpack_lo},
+                                    {"unpack_hi", &FunctionalCore::unpack_hi},
                                     {"xlu_push", &FunctionalCore::xlu_push},
                                     {"xlu_push_pattern", &FunctionalCore::xlu_push_pattern},
                                     {"xlu_pop", &FunctionalCore::xlu_pop},
@@ -316,6 +318,28 @@ class FunctionalCore {
         put<uint32_t>(host, lane, vcix_accel::rd(insn), w, bf16_of(both[2 * w]) | (bf16_of(both[2 * w + 1]) << 16));
     }
   }
+
+  // ---- unpack_lo / unpack_hi: the pack the other way. vs2's vl 32-bit words hold 2 * vl bf16, element 2w in the
+  // low half of word w and 2w + 1 in the high half; unpack_lo writes vd's vl f32 from elements 0 .. vl - 1,
+  // unpack_hi from vl .. 2 * vl - 1. A bf16 widens exactly (its bits are the f32's upper half).
+  static float f32_of_bf16(uint32_t h) {
+    const uint32_t u = (h & 0xFFFFu) << 16;
+    float f;
+    std::memcpy(&f, &u, sizeof f);
+    return f;
+  }
+  void unpack(const Host &host, const Insn &insn, uint32_t first) {
+    for (uint32_t lane = 0; lane < host.lanes(); lane++) {
+      std::vector<uint32_t> words(insn.vl);
+      for (uint32_t w = 0; w < insn.vl; w++) words[w] = get<uint32_t>(host, lane, vcix_accel::rs2(insn), w);
+      for (uint32_t i = 0; i < insn.vl; i++) {
+        const uint32_t e = first + i;
+        put<float>(host, lane, vcix_accel::rd(insn), i, f32_of_bf16(words[e / 2] >> (16 * (e & 1))));
+      }
+    }
+  }
+  void unpack_lo(const Host &host, const Insn &insn) { unpack(host, insn, 0); }
+  void unpack_hi(const Host &host, const Insn &insn) { unpack(host, insn, insn.vl); }
 
   // ---- vlane_idx: every element of vd is the number of its lane, as 64 bits whatever the element width.
   void vlane_idx(const Host &host, const Insn &insn) {
