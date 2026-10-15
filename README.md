@@ -89,9 +89,13 @@ There are three kinds of code here. Only the first is yours.
 +-------------------------------+  +--------------------------------+
 ```
 
-A unit that already exists as RTL can skip the class: `examples/rtl` wraps one
-Verilated module with standard ports, and the model is a table of the
-encodings it owns (see `examples/rtl/README.md`).
+### A unit that is RTL
+
+A unit that exists as RTL needs no class: `examples/rtl/rtl_model.hpp` wraps
+one Verilated module with standard ports (command, in/out beats, memory,
+`busy`), and the model is a table of the encodings it owns. Spike clocks the
+unit only while an instruction needs it and gives the values; gem5 clocks it
+once a cycle and gives the timing. See `examples/rtl/README.md`.
 
 ### What you implement
 
