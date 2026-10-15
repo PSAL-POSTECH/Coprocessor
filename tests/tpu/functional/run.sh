@@ -26,7 +26,7 @@ KERNEL_BASE=0x2000000
 KERNEL_RANGE=2000000:2100000
 
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c "$HERE/kernels.S" -o "$OUT/kernels.o" || { echo "FAIL  kernels.S does not build"; exit 2; }
-for program in special systolic cross_lane msa dma refused; do
+for program in special systolic cross_lane msa dma refused pack; do
   riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -Wl,--section-start=.kernel=$KERNEL_BASE \
     "$HERE/$program.c" "$OUT/kernels.o" -o "$OUT/$program" || { echo "FAIL  $program.c does not build"; exit 2; }
 done
@@ -120,6 +120,10 @@ echo "-- checked against a formula, which the old Spike has no answer for"
 on_model systolic-bf16 -- systolic bf16; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
 echo "  bfloat16 weights and inputs (rs1 3) popped as singles: $(tail -n1 "$OUT/systolic-bf16.out") (exit $rc)"
+
+on_model pack -- pack; rc=$?
+if [ "$rc" = 0 ] && grep -Fq ", 0 wrong" "$OUT/pack.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  the bf16 pack (sf.vc.v.vv): $(tail -n1 "$OUT/pack.out") (exit $rc)"
 
 # refused <which> <exit> <text>: the run ends there, with this on standard error.
 refused() {

@@ -246,6 +246,7 @@ class FunctionalCore {
       named.insert(named.end(), {
                                     {"compute", &FunctionalCore::nothing},
                                     {"vlane_idx", &FunctionalCore::vlane_idx},
+                                    {"pack", &FunctionalCore::pack},
                                     {"xlu_push", &FunctionalCore::xlu_push},
                                     {"xlu_push_pattern", &FunctionalCore::xlu_push_pattern},
                                     {"xlu_pop", &FunctionalCore::xlu_pop},
@@ -297,6 +298,24 @@ class FunctionalCore {
   void vexp(const Host &host, const Insn &insn) { special(host, insn, "vexp", ::expf, nullptr); }
   void vlog(const Host &host, const Insn &insn) { special(host, insn, "vlog", ::logf, ::log); }
   void vatan(const Host &host, const Insn &insn) { special(host, insn, "vatan", ::atanf, ::atan); }
+
+  // ---- pack: f32 registers packed into bf16, two to a 32-bit word, as the v6e's VPU packs. vd's vl words are
+  // vs2's vl elements then vs1's, element 2w in the low half of word w, rounded to nearest-even.
+  static uint32_t bf16_of(float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, sizeof u);
+    if ((u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu)) return (u >> 16) | 0x40u;  // a NaN stays one
+    return (u + 0x7FFFu + ((u >> 16) & 1u)) >> 16;
+  }
+  void pack(const Host &host, const Insn &insn) {
+    for (uint32_t lane = 0; lane < host.lanes(); lane++) {
+      std::vector<float> both;
+      for (uint32_t i = 0; i < insn.vl; i++) both.push_back(get<float>(host, lane, vcix_accel::rs2(insn), i));
+      for (uint32_t i = 0; i < insn.vl; i++) both.push_back(get<float>(host, lane, vcix_accel::rs1(insn), i));
+      for (uint32_t w = 0; w < insn.vl; w++)
+        put<uint32_t>(host, lane, vcix_accel::rd(insn), w, bf16_of(both[2 * w]) | (bf16_of(both[2 * w + 1]) << 16));
+    }
+  }
 
   // ---- vlane_idx: every element of vd is the number of its lane, as 64 bits whatever the element width.
   void vlane_idx(const Host &host, const Insn &insn) {

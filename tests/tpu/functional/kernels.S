@@ -215,3 +215,16 @@ k_cross_load:
 .irp sew, 8, 16, 32, 64
     lane_index k_lane_index_\sew, \sew
 .endr
+
+# The bf16 pack: a0 holds 2 * vl singles, the first vl to vs2 and the next vl to vs1; a1 receives vl words.
+    .globl k_pack
+k_pack:
+    vsetvli t0, a2, e32, m1, ta, ma
+    slli    t1, t0, 2
+    add     t1, a0, t1
+    vle32.v v8, (a0)
+    vle32.v v9, (t1)
+    sf.vc.v.vv 0x2, v16, v8, v9
+    vse32.v v16, (a1)
+    mv      a0, t0
+    ret

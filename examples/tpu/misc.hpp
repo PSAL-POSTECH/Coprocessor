@@ -50,6 +50,10 @@ class Misc {
       {0x0E00302B, FUNCTION, "dma_config_desc"},
       {0x1000302B, FUNCTION, "dma_index_key"},
       {0x1C00302B, FUNCTION, "mvin3"},
+      // custom-2, sf.vc.v.vv (funct3 000) funct6 10: a bf16 pack of two f32 registers, as the v6e's VPU packs
+      // (vpack): vd's vl words from vs2's vl elements then vs1's, each rounded to bf16 (to nearest, ties to even),
+      // two to a word, element 2w in the low half. No 16-bit vtype is set for it.
+      {0x2800005B, FUNCTION, "pack"},
   };
   static constexpr const char *WIDTH_KEY = "tpu_misc_issue_width";
 
