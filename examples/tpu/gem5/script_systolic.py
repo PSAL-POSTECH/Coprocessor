@@ -1,6 +1,6 @@
 # The tpu machine in syscall emulation: PyTorchSim's gem5_script/script_systolic.py on the gem5 of branch vcix.
 # Usage: gem5.opt script_systolic.py -c BINARY --model libtpu.so [--machine-config machine.yml] [--vlane N] [--vlen N]
-# examples/tpuv6e/gem5/script_systolic.py builds its machine with this file's functions, its own CPU and scratchpad.
+# examples/<model>/gem5/script_systolic.py builds a model's machine with this file's functions, its own CPU and scratchpad.
 import os
 import time
 import argparse
@@ -120,9 +120,9 @@ class L1ICache(L1Cache):
     def connectCPU(self, cpu):
         self.cpu_side = cpu.icache_port
 
-# machine <args> <vpu> <scratchpad>: the system, its CPU the --cpu named, vpu the machine's RiscvVPU; scratchpad(system)
-# connects the CPU's data port and the bus's memory side
-def machine(args, vpu, scratchpad):
+# machine <args> <vpu> <scratchpad> [clock]: the system, its CPU the --cpu named, vpu the machine's RiscvVPU, its clock
+# domain at clock (the original's 1GHz); scratchpad(system) connects the CPU's data port and the bus's memory side
+def machine(args, vpu, scratchpad, clock="1GHz"):
     valid_cpu = {
         "RiscvMinorCPU": RiscvMinorCPU,
         "RiscvDerivO3CPU": RiscvO3CPU,
@@ -141,7 +141,7 @@ def machine(args, vpu, scratchpad):
 
     # Clock setting
     system.clk_domain = SrcClockDomain()
-    system.clk_domain.clock = "1GHz"
+    system.clk_domain.clock = clock
     system.clk_domain.voltage_domain = VoltageDomain()
 
     fast_clk = SrcClockDomain()
@@ -194,6 +194,17 @@ def banked_scratchpad(system):
     system.cpu.dcache_port = system.membus.cpu_side_ports
     multi_banked_spm = MultiBankMemorySystem(system.membus.mem_side_ports, system.mem_ranges[0], num_banks=spad_num_bank, granule_size=granule_sz, total_bandwidth=spad_bandwidth)
     system.mem_ctrls = multi_banked_spm.get_ctrls()
+
+# multiport_scratchpad <load> <store> <access> <latency>: a scratchpad of one MultiPortScratchpad taking, each cycle and at
+# any address, up to load loads, store stores and access of both, each answered latency cycles later. The CPU's data port
+# goes to it directly (behind the bus one layer refuses a second packet a bus cycle, noncoherent_xbar.cc:115, xbar.cc:197).
+def multiport_scratchpad(load, store, access, latency):
+    def scratchpad(system):
+        system.spad = MultiPortScratchpad(range=system.mem_ranges[0], load_ports=load, store_ports=store,
+                                          access_ports=access, latency=latency)
+        system.cpu.dcache_port = system.spad.port
+        system.membus.mem_side_ports = system.spad.port
+    return scratchpad
 
 def simulate(system):
     root = Root(full_system=False, system=system)

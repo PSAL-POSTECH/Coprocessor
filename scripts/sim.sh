@@ -47,6 +47,18 @@ gem5_bare_run() {
   "$GEM5" -d "$1" "$REPO/tests/contract/gem5_bare.py" --model "$2" "$3"
 }
 
+# gem5_config <m5out> <section> <key>: the key's value in the section of the run's config.ini
+gem5_config() {
+  awk -v section="[$2]" -v key="$3=" '/^\[/ { in_section = ($0 == section) }
+    in_section && index($0, key) == 1 { print substr($0, length(key) + 1); exit }' "$1/config.ini"
+}
+
+# gem5_window <m5out> <dump> <name>: the value of the stat named <name> in the dump-th dump, 0 if the dump does not print it
+gem5_window() {
+  awk -v want="$3" -v n="$2" '/Begin Simulation Statistics/ { s++ } s == n && $1 == want { v = $2 } END { print v + 0 }' \
+    "$1/stats.txt"
+}
+
 # spike_illegal <log> [insn as 8 hex digits]
 spike_illegal() {
   local insn=${2:-'[0-9a-f]{8}'}
