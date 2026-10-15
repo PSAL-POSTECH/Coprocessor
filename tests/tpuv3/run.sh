@@ -6,6 +6,7 @@ source "$HERE/../../scripts/sim.sh"
 failed=0
 declare -A rc
 MODEL="$BUILD/libtpuv3.so"
+MACHINE="$REPO/examples/tpuv3/gem5/script_systolic.py"
 
 report() {
   if [ "$1" = "$2" ]; then echo "PASS  $3 ($1)"; else echo "FAIL  $3 ($1, expected $2)"; failed=1; fi
@@ -43,6 +44,9 @@ for program in mxu mxu_rate; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv3-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 rv_program "$HERE/../tpuv6e/mxu.S" "$BUILD/tpuv3-tpuv6e_mxu" || { echo "FAIL  tpuv6e/mxu.S does not build"; exit 2; }
+for program in scratchpad ../tpuv6e/valu ../tpu/loads ../tpu/addresses; do
+  rv_program "$HERE/$program.S" "$BUILD/tpuv3-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
+done
 
 echo "-- the units' statistics, with no simulator"
 "$BUILD/tpuv3_ports" "$MODEL" > "$BUILD/tpuv3-ports.log" 2>&1
@@ -99,6 +103,41 @@ on_gem5 bound-2 mxu "$BUILD/tpuv3-bound-2.yml" "$BUILD/libtpuv6e.so"
 why=$(grep -Fc "tpuv6e: machine description: tpu_mxu_bound_to_lanes: '2' is not 0 (the model's array) or 1 (an array of lanes x lanes)" \
   "$BUILD/tpuv3-bound-2.gem5.log")
 report "exit ${rc[bound-2]}, reason given $why" "exit 1, reason given 1" "gem5 stops on tpu_mxu_bound_to_lanes: 2"
+
+echo "-- the machine PyTorchSim measures on (examples/tpuv3/gem5)"
+
+# on_machine <program> [machine.yml]: runs it on the v3 machine
+on_machine() {
+  local description=()
+  [ -n "${2:-}" ] && description=(--machine-config "$2")
+  timeout 300 "$GEM5" -d "$BUILD/m5out-tpuv3-machine-$1" "$MACHINE" -c "$BUILD/tpuv3-$1" --model "$MODEL" "${description[@]}" \
+    > "$BUILD/tpuv3-machine-$1.gem5.log" 2>&1
+  rc[machine-$1]=$?
+}
+
+# config <run> <section> <key>, window <run> <dump> <name>: scripts/sim.sh's, of the run on the v3 machine
+config() { gem5_config "$BUILD/m5out-tpuv3-machine-$1" "${@:2}"; }
+window() { gem5_window "$BUILD/m5out-tpuv3-machine-$1" "${@:2}"; }
+
+for program in scratchpad valu loads addresses; do on_machine $program; done
+on_machine mxu "$HERE/mxu.yml"
+report "exit ${rc[machine-scratchpad]}, ports $(config scratchpad system.spad load_ports) $(config scratchpad system.spad store_ports) $(config scratchpad system.spad access_ports), latency $(config scratchpad system.spad latency); requests $(config scratchpad system.cpu executeLSQRequestsQueueSize); integer units $(grep -c '^opClass=IntAlu$' "$BUILD/m5out-tpuv3-machine-scratchpad/config.ini"), VALUs $(grep -c '^unit=Vpu$' "$BUILD/m5out-tpuv3-machine-scratchpad/config.ini"); clock $(config scratchpad system.clk_domain clock) ps" \
+  "exit 0, ports 1 1 2, latency 1; requests 2; integer units 6, VALUs 2; clock 1064 ps" \
+  "the v3 machine: a scratchpad of 1 load, 1 store and 2 access ports a cycle, two LSQ requests, six integer units, two VALUs, and 940 MHz, a cycle of 1064 ticks of a picosecond"
+report "at most $(window scratchpad 1 system.spad.loadsPerCycle::max_value) loads, $(window scratchpad 1 system.spad.storesPerCycle::max_value) stores, $(window scratchpad 1 system.spad.accessesPerCycle::max_value) accesses a cycle" \
+  "at most 1 loads, 1 stores, 2 accesses a cycle" \
+  "scratchpad.S's independent loads and stores, one and one in turn: the scratchpad takes 1 load, 1 store and 2 accesses in a cycle"
+report "$(window loads 2 system.cpu.numCycles) and $(window loads 4 system.cpu.numCycles), $(window loads 2 system.spad.loads) and $(window loads 4 system.spad.loads) reads, at most $(window loads 2 system.spad.loadsPerCycle::max_value) a cycle" \
+  "86 and 83, 68 and 64 reads, at most 1 a cycle" \
+  "loads.S's 64 loads from lines 128 and 64 bytes apart: no banks, so only the 4 instruction lines the 128-apart window still fetches, on the one load port, set them apart"
+report "$(window addresses 2 system.cpu.numCycles)" "105" \
+  "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 105 cycles"
+report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 32 of 50 cycles" \
+  "tests/tpuv6e/valu.S's 64 independent vfadds and vfmuls keep the VALUs busy 32 cycles: 2 a cycle, whatever the mix"
+report "exit ${rc[machine-mxu]}, $(issues machine-mxu)" "exit 0, vmatmul:1:0/0 vpop:11:0/4 vpop:4:0/4" \
+  "mxu.S on the machine as on gem5_se.py: the matrix unit's timing is the model's, not the machine's"
+report "$(grep -c 'generic machine' "$BUILD/tpuv3-machine-scratchpad.gem5.log") warnings" "0 warnings" \
+  "the v3 machine is a model's own: the tpu machine's warning that it is the generic one is not printed"
 
 echo "-- the model"
 printf 'tpu_mxu_queue_entries: 1\n' > "$BUILD/tpuv3-queue-1.yml"

@@ -11,8 +11,9 @@
 
 namespace {
 
-// The v3's MXU: 128 x 128 on 128 lanes, so an operand is one register; a row a cycle, which gives 123 TFLOPS per
-// chip at 940 MHz; one MXU slot a cycle, a placeholder.
+// The v3's MXU: 128 x 128 on 128 lanes, so an operand is one register; a row a cycle, which gives 123 TFLOPS a
+// chip at 940 MHz. SLOTS 1, a placeholder: the TPUv2 bundle has one push slot, for its one MXU and the transpose unit
+// (Norrie et al., IEEE Micro 2021, p.4; Jouppi et al., CACM 2020, p.70); the v3's, for two MXUs, no source states.
 struct Shape {
   static constexpr uint32_t REGISTERS = 1;
   static constexpr uint64_t SLOTS = 1;
