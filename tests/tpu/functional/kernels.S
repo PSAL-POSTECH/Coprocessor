@@ -228,3 +228,17 @@ k_pack:
     vse32.v v16, (a1)
     mv      a0, t0
     ret
+
+# The bf16 unpack: a0 holds vl words (2 * vl bf16); a1 receives 2 * vl singles, unpack_lo's then unpack_hi's.
+    .globl k_unpack
+k_unpack:
+    vsetvli t0, a2, e32, m1, ta, ma
+    vle32.v v8, (a0)
+    sf.vc.v.iv 0x2, v16, v8, 8
+    sf.vc.v.iv 0x2, v17, v8, 9
+    slli    t1, t0, 2
+    add     t1, a1, t1
+    vse32.v v16, (a1)
+    vse32.v v17, (t1)
+    mv      a0, t0
+    ret

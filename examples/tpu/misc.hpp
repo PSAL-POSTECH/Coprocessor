@@ -40,7 +40,7 @@ class Misc {
 
  private:
   // custom-2: lane number, compute. custom-1: DMA.
-  static constexpr uint32_t FUNCTION = 0xFE00707F;
+  static constexpr uint32_t FUNCTION = 0xFE00707F, FIELD = 0xFE0FF07F;
   static constexpr vcix_accel::Encoding ENCODINGS[] = {
       {0x0000305B, FUNCTION, "vlane_idx"},
       {0x0600305B, FUNCTION, "compute"},
@@ -54,6 +54,11 @@ class Misc {
       // (vpack): vd's vl words from vs2's vl elements then vs1's, each rounded to bf16 (to nearest, ties to even),
       // two to a word, element 2w in the low half. No 16-bit vtype is set for it.
       {0x2800005B, FUNCTION, "pack"},
+      // custom-2, sf.vc.v.iv funct6 10 with the field at 19:15 8 / 9 (the SFU's vsin..vatan use 0..3): the bf16
+      // unpack, the pack the other way, as the v6e's vunpack.c.l / vunpack.c.h: vs2's vl words hold 2 * vl bf16,
+      // two to a word; unpack_lo writes vd's vl f32 from the first vl of them, unpack_hi from the last vl.
+      {0x2804305B, FIELD, "unpack_lo"},
+      {0x2804B05B, FIELD, "unpack_hi"},
   };
   static constexpr const char *WIDTH_KEY = "tpu_misc_issue_width";
 
