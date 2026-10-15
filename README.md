@@ -396,9 +396,10 @@ widening forms, the three-operand forms without `vd`, or fractional LMUL.
 
 ## Environment
 
-Building and running needs a RISC-V toolchain, the proxy kernel, Spike and the
-gem5 branch. `setup/versions.env` pins all of them -- repository and commit for
-Spike and pk, the gem5 release and the Python it embeds -- and is
+Building and running needs a RISC-V toolchain, the proxy kernel, Spike, the
+gem5 branch and, for the RTL models of `examples/rtl`, Verilator.
+`setup/versions.env` pins all of them -- repository and commit for Spike, pk
+and Verilator, the gem5 release and the Python it embeds -- and is
 the only place a version is written. gem5 is not built here: a `vcix-v*` tag in
 `PSAL-POSTECH/gem5` publishes `gem5.opt`, built for the packages
 `setup/system.sh` installs, and the setup downloads it. There are two ways to get what it describes.
@@ -412,14 +413,14 @@ docker run --rm -it -v "$PWD":/work -w /work "$(setup/image.sh ref)" bash
 
 `setup/image.sh build` builds the same image locally. It holds the toolchain,
 pk, Spike (the binary, and its source for the copy of the header the tests
-compare) and the gem5 binary, but nothing of this repository: a checkout is
-built inside it.
+compare), the gem5 binary and Verilator, but nothing of this repository: a
+checkout is built inside it.
 
 **The scripts**, on Ubuntu 22.04:
 
 ```
 sudo setup/system.sh       # system packages
-setup/setup.sh -j 16       # toolchain, pk, spike, gem5, then this repository
+setup/setup.sh -j 16       # toolchain, pk, spike, gem5, verilator, then this repository
 ```
 
 Everything lands under `/opt/vcix-env`; set `VCIX_ENV_ROOT` to put it elsewhere
@@ -449,6 +450,8 @@ ninja -C build
 It needs no simulator tree: the models, the probe and nothing else are built.
 With Verilator on `PATH` (or `VERILATOR_ROOT` set) it also builds the RTL
 models of `examples/rtl`; without it they are skipped, and so is `tests/rtl`.
+`scripts/build.sh` puts the Verilator of `setup/versions.env` on `PATH` when it
+is installed there.
 
 How each simulator is given the adapter, the model and the machine description
 is in the table under "What you configure, per run"; `scripts/sim.sh` is where
