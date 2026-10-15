@@ -8,5 +8,9 @@ JOBS=$(nproc)
 if [ "${1:-}" = -j ]; then JOBS="$2"; shift 2; fi
 BUILD="${1:-$REPO/build}"
 
+# shellcheck source=../setup/versions.env
+source "$REPO/setup/versions.env"
+[ -x "$VERILATOR_BIN" ] && PATH="$VERILATOR_PREFIX/bin:$PATH"
+
 cmake -G Ninja -S "$REPO" -B "$BUILD"
 cmake --build "$BUILD" -j "$JOBS"

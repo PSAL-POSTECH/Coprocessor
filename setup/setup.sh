@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the environment from the pins in versions.env, then this repository; system.sh (as root) comes first.
-# Usage: setup/setup.sh [-j N] [toolchain|pk|spike|gem5|repo ...]      (default: every step, nproc jobs)
+# Usage: setup/setup.sh [-j N] [toolchain|pk|spike|gem5|verilator|repo ...]      (default: every step, nproc jobs)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,11 +17,11 @@ while [ $# -gt 0 ]; do
     -j*) JOBS="${1#-j}"; shift ;;
     -h|--help) sed -n '2,3p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
-    toolchain|pk|spike|gem5|repo) STEPS+=("$1"); shift ;;
-    *) echo "unknown step: $1 (toolchain, pk, spike, gem5, repo)" >&2; exit 2 ;;
+    toolchain|pk|spike|gem5|verilator|repo) STEPS+=("$1"); shift ;;
+    *) echo "unknown step: $1 (toolchain, pk, spike, gem5, verilator, repo)" >&2; exit 2 ;;
   esac
 done
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(toolchain pk spike gem5 repo)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(toolchain pk spike gem5 verilator repo)
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
@@ -104,6 +104,19 @@ if want gem5; then
   head -n 4 "$INFO/build-info"
   rm -rf "$INFO"
   echo "  $GEM5_BIN"
+fi
+
+if want verilator; then
+  log "verilator"
+  fetch_commit "$VERILATOR_SRC" "$VERILATOR_REPO" "$VERILATOR_SHA"
+  cd "$VERILATOR_SRC"
+  unset VERILATOR_ROOT
+  [ -f configure ] || autoconf
+  [ -f Makefile ] || ./configure --prefix="$VERILATOR_PREFIX"
+  make -j"$JOBS"
+  make install
+  test -x "$VERILATOR_BIN" || { echo "verilator did not land at $VERILATOR_BIN" >&2; exit 1; }
+  "$VERILATOR_BIN" --version
 fi
 
 if want repo; then

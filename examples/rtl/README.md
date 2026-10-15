@@ -128,7 +128,8 @@ tests/rtl/run.sh                                 # the checks; SKIP when not bui
 
 `tests/run.sh` runs `tests/rtl` with the rest; without the libraries (no
 Verilator, or `-DVCIX_RTL=OFF`) it prints `SKIP` and passes. The image has
-no Verilator, so CI takes the `SKIP`.
+the Verilator `setup/versions.env` pins, and `scripts/build.sh` finds it, so
+CI builds the models and runs the checks.
 
 ## What the checks show
 

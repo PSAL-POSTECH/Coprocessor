@@ -1,4 +1,4 @@
-# The environment image: the RISC-V toolchain, pk, and the pinned Spike and gem5; built by setup/image.sh.
+# The environment image: the RISC-V toolchain, pk, the pinned Spike and gem5, and Verilator; built by setup/image.sh.
 ARG BASE_IMAGE
 
 FROM ${BASE_IMAGE} AS system
@@ -10,7 +10,7 @@ RUN /opt/vcix-setup/system.sh
 FROM system AS build
 ARG JOBS=4
 COPY setup.sh /opt/vcix-setup/
-RUN /opt/vcix-setup/setup.sh -j "$JOBS" toolchain pk spike gem5
+RUN /opt/vcix-setup/setup.sh -j "$JOBS" toolchain pk spike gem5 verilator
 
 FROM build AS slim
 COPY slim.sh /opt/vcix-setup/
@@ -19,4 +19,4 @@ RUN /opt/vcix-setup/slim.sh
 FROM system
 COPY --from=slim ${VCIX_ENV_ROOT} ${VCIX_ENV_ROOT}
 LABEL org.opencontainers.image.source=https://github.com/PSAL-POSTECH/vcix-accelerator
-LABEL org.opencontainers.image.description="Build and run environment for vcix-accelerator: RISC-V toolchain, pk, Spike and gem5"
+LABEL org.opencontainers.image.description="Build and run environment for vcix-accelerator: RISC-V toolchain, pk, Spike, gem5 and Verilator"
