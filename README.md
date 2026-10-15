@@ -89,6 +89,10 @@ There are three kinds of code here. Only the first is yours.
 +-------------------------------+  +--------------------------------+
 ```
 
+A unit that already exists as RTL can skip the class: `examples/rtl` wraps one
+Verilated module with standard ports, and the model is a table of the
+encodings it owns (see `examples/rtl/README.md`).
+
 ### What you implement
 
 One class derived from `vcix_accel::Model` (`include/vcix_accel.hpp`), built
@@ -345,6 +349,9 @@ examples/tpuv3/           a TPU v3: the tpu example's units with a matrix unit
 examples/tpuv3/gem5/      the machine the tpuv3 example is measured on: the tpu
                           example's, with the v3's scratchpad ports, two vector
                           ALUs and 940 MHz
+examples/rtl/             models whose unit is Verilated RTL behind one wrapper: a
+                          systolic array checked against the tpu example's, and an
+                          asynchronous memory copier; built when Verilator is found
 examples/gem5_se.py       the gem5 fixture the example and the tests run on
 examples/machine_description.py
                           how a gem5 config script reads the machine description
@@ -360,6 +367,8 @@ tests/tpu/                the tpu example's timing on gem5; functional/: what it
 tests/tpuv6e/             the tpuv6e example's timing on gem5; functional/: what
                           its matrix unit computes on Spike, against a formula
 tests/tpuv3/              the same, of the tpuv3 example
+tests/rtl/                the examples/rtl models on both simulators, under the
+                          default and the check schedules; skipped when not built
 setup/                    the pinned environment: versions.env, the scripts
                           that build it, and the image
 scripts/                  build this repository; how each simulator is started
@@ -438,6 +447,8 @@ ninja -C build
 ```
 
 It needs no simulator tree: the models, the probe and nothing else are built.
+With Verilator on `PATH` (or `VERILATOR_ROOT` set) it also builds the RTL
+models of `examples/rtl`; without it they are skipped, and so is `tests/rtl`.
 
 How each simulator is given the adapter, the model and the machine description
 is in the table under "What you configure, per run"; `scripts/sim.sh` is where

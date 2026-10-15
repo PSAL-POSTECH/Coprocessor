@@ -22,6 +22,35 @@ vcix_accel_add_model(tpuv3 examples/tpuv3/tpuv3.cc)
 target_include_directories(tpuv6e PRIVATE examples)
 target_include_directories(tpuv3 PRIVATE examples)
 vcix_accel_add_model(pipelined tests/pipeline/pipelined.cc)
+
+# examples/rtl: models that are one Verilated unit each, built when Verilator is found (VERILATOR_ROOT, or verilator on
+# PATH) and skipped otherwise; -DVCIX_RTL=OFF skips them too. The array is built three times; tests/rtl shows that the
+# variant whose weight push does not wait gives other values, and that a wrong out_tag ends a gem5 run.
+option(VCIX_RTL "Build examples/rtl's models when Verilator is found" ON)
+if(VCIX_RTL)
+  find_package(verilator QUIET HINTS $ENV{VERILATOR_ROOT} ${VERILATOR_ROOT})
+endif()
+if(VCIX_RTL AND verilator_FOUND)
+  set(rtl_systolic_lanes 4)
+  function(vcix_accel_add_rtl_model name source sv top)
+    vcix_accel_add_model(${name} ${source})
+    target_include_directories(${name} PRIVATE examples/rtl)
+    verilate(${name} SOURCES ${sv} TOP_MODULE ${top} PREFIX V${top}
+             VERILATOR_ARGS --savable -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL ${ARGN})
+  endfunction()
+  foreach(variant rtl_systolic:1:0 rtl_systolic_nowait:0:0 rtl_systolic_badtag:1:1)
+    string(REPLACE ":" ";" variant ${variant})
+    list(GET variant 0 name)
+    list(GET variant 1 waits)
+    list(GET variant 2 bad_tag)
+    vcix_accel_add_rtl_model(${name} examples/rtl/systolic/systolic.cc examples/rtl/systolic/systolic.sv systolic
+                             -GL=${rtl_systolic_lanes} -GWEIGHT_WAITS=${waits} -GBAD_TAG=${bad_tag})
+    target_compile_definitions(${name} PRIVATE SYSTOLIC_LANES=${rtl_systolic_lanes})
+  endforeach()
+  vcix_accel_add_rtl_model(rtl_copier examples/rtl/copier/copier.cc examples/rtl/copier/copier.sv copier)
+elseif(VCIX_RTL)
+  message(STATUS "Verilator not found (VERILATOR_ROOT, PATH): examples/rtl is not built")
+endif()
 vcix_accel_add_model(reports tests/contract/reports.cc)
 vcix_accel_add_model(timing tests/contract/timing.cc)
 
