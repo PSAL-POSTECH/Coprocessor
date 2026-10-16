@@ -1020,28 +1020,29 @@ class Machine : public vcix_accel::Model {
   // yet true, is the same every cycle after: the run ends there.
   template <class V, class Until>
   void spike_cycle(V &u, const char *name, Until &&until) {
-    const std::vector<uint64_t> before = motion(u);
+    motion(u, before_);
     tick(++clock_);
-    if (until() || motion(u) != before || arriving(u)) return;
+    if (until()) return;
+    motion(u, after_);
+    if (after_ != before_ || arriving(u)) return;
     std::fprintf(stderr, "vcix_uarch: %s waits, and nothing in its unit moves any more: on Spike, which runs each "
                  "instruction to its end before the next, it never ends\n", name);
     std::exit(1);
   }
-  // What a cycle of unit u can change in its pipelines and queues.
+  // What a cycle of unit u can change in its pipelines and queues, into m.
   template <class V>
-  std::vector<uint64_t> motion(V &u) const {
-    std::vector<uint64_t> m{ready_.size()};
+  void motion(V &u, std::vector<uint64_t> &m) const {
+    m.assign(1, ready_.size());
+    const auto add = [&m](auto... v) { (m.push_back(static_cast<uint64_t>(v)), ...); };
     u.hardware(blocks(Ignore{},
                       [&](auto &p, Port &, auto...) {
-                        m.insert(m.end(), {p.input_.rows(), p.line_.rows(), p.out_[0].rows(), p.out_[1].rows(),
-                                           p.line_.empty() ? 0 : p.moves_});
+                        add(p.input_.rows(), p.line_.rows(), p.out_[0].rows(), p.out_[1].rows(),
+                            p.line_.empty() ? 0 : p.moves_);
                       },
                       [&](CommandQueue &q) {
-                        m.insert(m.end(), {q.list_.size(), q.used_, q.waiters_.size()});
-                        if (!q.list_.empty())
-                          m.insert(m.end(), {q.list_.front().step, q.list_.front().done, q.list_.front().started});
+                        add(q.list_.size(), q.used_, q.waiters_.size());
+                        if (!q.list_.empty()) add(q.list_.front().step, q.list_.front().done, q.list_.front().started);
                       }));
-    return m;
   }
   template <class V>
   bool arriving(V &u) const {
@@ -1064,6 +1065,7 @@ class Machine : public vcix_accel::Model {
   std::tuple<U...> units_;
   std::vector<Id> ready_;
   std::vector<Beats> beats_;
+  std::vector<uint64_t> before_, after_;
   Cycle clock_ = 0;
   Id spike_id_ = 0;
 };
