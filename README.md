@@ -346,6 +346,7 @@ examples/tpu/             a model made of units: the timing of a TPU's special-f
 examples/tpu/gem5/        the machine the tpu example is measured on: PyTorchSim's
                           gem5 CPU and memory configuration, with two load/store
                           ports and two more integer units
+examples/copier/          examples/rtl/copier/copier.sv as a vcix_uarch unit
 examples/tpuv6e/          a TPU v6e: the tpu example's units with a matrix unit
                           as the array, its own model and library
 examples/tpuv6e/gem5/     the machine the tpuv6e example is measured on: the tpu

@@ -18,6 +18,8 @@ vcix_accel_add_model(print_args examples/print_args/print_args.cc)
 vcix_accel_add_model(tpu examples/tpu/tpu.cc)
 vcix_accel_add_model(tpuv6e examples/tpuv6e/tpuv6e.cc)
 vcix_accel_add_model(tpuv3 examples/tpuv3/tpuv3.cc)
+# examples/copier: examples/rtl/copier/copier.sv as a vcix_uarch unit, no Verilator needed.
+vcix_accel_add_model(copier examples/copier/copier.cc)
 # examples/tpuv6e and examples/tpuv3 are the tpu example's units, its matrix unit among them, as tpu/<unit>.hpp.
 target_include_directories(tpuv6e PRIVATE examples)
 target_include_directories(tpuv3 PRIVATE examples)
