@@ -80,9 +80,8 @@ class Systolic {
     r.compute([&](const Host &) {
       if (element_format(r.insn()) == Element::BF16) fail("systolic pop: a pop to bfloat16 is not modeled");
     });
-    r.when_done([&r](const Host &) {
-      if (r.received() < r.vl())
-        fail("systolic pop: %u elements asked, %llu computed", r.vl(), static_cast<unsigned long long>(r.received()));
+    r.when_short([&r](const Host &, uint64_t taken) {
+      fail("systolic pop: %u elements asked, %llu computed", r.vl(), static_cast<unsigned long long>(taken));
     });
   }
 
