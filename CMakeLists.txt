@@ -80,6 +80,8 @@ add_executable(direct tests/contract/direct.cc)
 target_link_libraries(direct PRIVATE vcix_accel ${CMAKE_DL_LIBS})
 add_executable(port_stats tests/contract/port_stats.cc)
 target_link_libraries(port_stats PRIVATE vcix_accel)
+add_executable(route_once tests/contract/route_once.cc)
+target_link_libraries(route_once PRIVATE vcix_accel)
 
 # tests/tpu: the tpu units' ports, read through the table with no simulator.
 add_executable(tpu_ports tests/tpu/ports.cc)
