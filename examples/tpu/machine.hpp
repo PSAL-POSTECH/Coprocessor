@@ -50,9 +50,9 @@ class Machine : public vcix_uarch::Machine<Unit...> {
   template <class U>
   static void queues(const U &unit, const Insn &, long) {
     uint32_t pipelines = 0;
-    Base::each_pipeline(unit, [&](const vcix_uarch::PipelineTiming &) { pipelines++; });
+    Base::each_pipeline(unit, [&](const vcix_uarch::AnyPipeline &) { pipelines++; });
     if (pipelines != 1) return;
-    Base::each_pipeline(unit, [](const vcix_uarch::PipelineTiming &p) {
+    Base::each_pipeline(unit, [](const vcix_uarch::AnyPipeline &p) {
       std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(p.input_entries()),
                   static_cast<uint32_t>(p.output_entries()));
     });
