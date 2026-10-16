@@ -4,7 +4,6 @@
 #ifndef TPU_SYSTOLIC_HPP
 #define TPU_SYSTOLIC_HPP
 
-#include <deque>
 #include <memory>
 #include <vector>
 
@@ -18,7 +17,20 @@ class Systolic {
   using Host = vcix_uarch::Host;
   using Insn = vcix_uarch::Insn;
   using Route = vcix_uarch::Route;
-  using Weights = std::vector<std::deque<float>>;
+  // A lane's last `lanes` weights, oldest first, in one block.
+  struct LaneWeights {
+    std::vector<float> held;
+    size_t first = 0;
+    size_t size() const { return held.size() - first; }
+    bool empty() const { return !size(); }
+    float operator[](size_t i) const { return held[first + i]; }
+    void push(float weight, size_t keep) {
+      if (size() == keep) first++;
+      held.push_back(weight);
+      if (first >= keep) held.erase(held.begin(), held.begin() + static_cast<long>(first)), first = 0;
+    }
+  };
+  using Weights = std::vector<LaneWeights>;
   // A row in the array: element i of every lane, each output lane's sum so far, and with no command queue the weights
   // its PEs hold for it: the weights a push brings travel down the array behind the rows already in it.
   struct Row {
@@ -134,8 +146,7 @@ class Systolic {
     if (weights.empty()) weights.assign(lanes, {});
     for (uint32_t lane = 0; lane < lanes; lane++) {
       const float weight = element(host, insn, lane, static_cast<uint32_t>(i));
-      if (weights[lane].size() == lanes) weights[lane].pop_front();
-      weights[lane].push_back(weight);
+      weights[lane].push(weight, lanes);
     }
   }
   // Row i a pop takes: each lane's sum to element i of vd.
