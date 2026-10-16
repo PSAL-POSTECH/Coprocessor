@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The examples/rtl models on both simulators: the array's values against libtpu.so under every schedule, the copier's
-# copy with and without a wait and into a page that faults, their gem5 timing lines, and a wrong out_tag caught on gem5.
+# The examples/rtl models: the array's values against libtpu.so under every schedule and its stall against libtpu.so's
+# timing, the copier's copy with and without a wait and into a page that faults, their gem5 timing lines, a wrong out_tag.
 # Skipped (exit 0) when the build has no RTL models. Usage: tests/rtl/run.sh [build-dir [spike [pk [gem5.opt]]]]
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -55,6 +55,12 @@ done
 rc=$(values rtl_systolic_nowait "" systolic-nowait)
 report "exit $rc, $(same systolic-nowait)" "exit 0, differs" \
   "rtl_systolic_nowait (WEIGHT_WAITS=0) under the default schedule: a weight push overtakes older inputs, values differ"
+
+echo "-- systolic array: where the stall modes part, against libtpu.so's RTL keys, with no simulator"
+"$BUILD/rtl_stall" "$BUILD/librtl_systolic.so" "$BUILD/libtpu.so" > "$OUT/stall.log" 2>&1
+rc=$?
+report "exit $rc, $(grep -c '^PASS' "$OUT/stall.log") passed" "exit 0, 7 passed" \
+  "rtl_stall: the array stops while its output queue is full, slot empty or not; each instruction ready as on the RTL"
 
 # copy <program> <schedule, or ""> <name>: prints the exit status and what the program and the unit said
 copy() {

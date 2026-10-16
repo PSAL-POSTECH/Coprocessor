@@ -94,6 +94,9 @@ target_link_libraries(tpuv6e_ports PRIVATE vcix_accel ${CMAKE_DL_LIBS})
 # tests/tpuv3: the same, of the tpuv3 model.
 add_executable(tpuv3_ports tests/tpuv3/ports.cc)
 target_link_libraries(tpuv3_ports PRIVATE vcix_accel ${CMAKE_DL_LIBS})
+# tests/rtl: libtpu.so's RTL keys against librtl_systolic.so where the array's stall mode shows, with no simulator.
+add_executable(rtl_stall tests/rtl/stall.cc)
+target_link_libraries(rtl_stall PRIVATE vcix_accel ${CMAKE_DL_LIBS})
 
 add_executable(timing_probe tools/timing_probe.cc)
 target_link_libraries(timing_probe PRIVATE vcix_accel ${CMAKE_DL_LIBS})
