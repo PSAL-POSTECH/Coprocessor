@@ -74,9 +74,17 @@ class Slots {
   };
   bool empty() const { return !runs_; }
   const Run &front() const { return few_[0]; }
+  const Run &back() const { return run(runs_ - 1); }
   uint64_t rows() const {
     uint64_t n = 0;
     for (uint32_t i = 0; i < runs_; i++) n += uint64_t{run(i).count} * run(i).weight;
+    return n;
+  }
+  // The rows of the entries tagged `tag`, of runs that do not step.
+  uint64_t rows(uint32_t tag) const {
+    uint64_t n = 0;
+    for (uint32_t i = 0; i < runs_; i++)
+      if (!run(i).steps && run(i).tag == tag) n += uint64_t{run(i).count} * run(i).weight;
     return n;
   }
   bool valued() const { return more_ && more_->valued(); }
@@ -107,9 +115,30 @@ class Slots {
         break;
       }
       left -= f.count;
-      drop_front_run();
+      erase(0);
     }
     if (valued()) own().drop(n, !runs_);
+  }
+  // Runs that do not step: every entry tagged `from` is tagged `to`.
+  void retag(uint32_t from, uint32_t to) {
+    bool any = false;
+    for (uint32_t i = 0; i < runs_; i++)
+      if (!run(i).steps && run(i).tag == from) mut(i).tag = to, any = true;
+    if (any) merge();
+  }
+  // Runs that do not step: the n entries after the front ones tagged `tag` are tagged `tag` too.
+  void tag_front(uint64_t n, uint32_t tag) {
+    uint32_t r = 0;
+    while (r < runs_ && run(r).tag == tag) r++;
+    for (; n && r < runs_; r++) {
+      if (n < run(r).count) {
+        Run rest = run(r);
+        rest.count -= static_cast<uint32_t>(n), mut(r).count = static_cast<uint32_t>(n);
+        insert(r + 1, rest);
+      }
+      n -= mut(r).count, mut(r).tag = tag;
+    }
+    merge();
   }
   void clear() {
     runs_ = 0;
@@ -180,13 +209,45 @@ class Slots {
     return n;
   }
   const Run &run(uint32_t i) const { return i < FEW ? few_[i] : more_->runs[i - FEW]; }
-  void drop_front_run() {
-    for (uint32_t i = 1; i < FEW && i < runs_; i++) few_[i - 1] = few_[i];
-    if (runs_ > FEW) {
+  Run &mut(uint32_t i) { return i < FEW ? few_[i] : own().runs[i - FEW]; }
+  void insert(uint32_t at, const Run &add) {
+    if (runs_ >= FEW) {
       More &m = own();
-      few_[FEW - 1] = m.runs.front(), m.runs.erase(m.runs.begin());
+      if (at >= FEW) m.runs.insert(m.runs.begin() + (at - FEW), add);
+      else m.runs.insert(m.runs.begin(), few_[FEW - 1]);
+    }
+    if (at < FEW) {
+      for (uint32_t i = std::min(runs_, FEW - 1); i > at; i--) few_[i] = few_[i - 1];
+      few_[at] = add;
+    }
+    runs_++;
+  }
+  void erase(uint32_t at) {
+    if (at >= FEW) {
+      More &m = own();
+      m.runs.erase(m.runs.begin() + (at - FEW));
+    } else {
+      for (uint32_t i = at + 1; i < FEW && i < runs_; i++) few_[i - 1] = few_[i];
+      if (runs_ > FEW) {
+        More &m = own();
+        few_[FEW - 1] = m.runs.front(), m.runs.erase(m.runs.begin());
+      }
     }
     runs_--;
+  }
+  // Neighbouring runs that continue one another become one.
+  void merge() {
+    for (uint32_t i = 1; i < runs_;) {
+      const Run &a = run(i - 1), &b = run(i);
+      if (a.weight == b.weight && a.steps == b.steps && a.tag + (a.steps ? a.count : 0) == b.tag &&
+          uint64_t{a.count} + b.count <= UINT32_MAX) {
+        const uint32_t count = b.count;
+        mut(i - 1).count += count;
+        erase(i);
+      } else {
+        i++;
+      }
+    }
   }
   Run few_[FEW] = {};
   uint32_t runs_ = 0;
@@ -194,7 +255,8 @@ class Slots {
 };
 
 // A pipeline, whatever its entries carry: an input queue -> `stages` stages -> 1 or 2 output queues, each `depth` rows
-// deep, all slots. Rows that arrive in a cycle are seen in the next; rows taken in a cycle hold their slots to its end.
+// deep, all slots. Rows that arrive in a cycle are tagged so and seen in the next; rows taken in a cycle are tagged so
+// and hold their slots to its end.
 class AnyPipeline {
  public:
   void configure(uint64_t stages, uint64_t depth, Stall stall, uint32_t outputs = 1) {
@@ -207,13 +269,12 @@ class AnyPipeline {
     flush();
   }
   bool drained() const { return input_.empty() && line_.empty(); }
-  uint64_t input_entries() const { return input_.rows() - arriving_; }
+  uint64_t input_entries() const { return input_.rows(SEEN); }
   uint64_t output_entries(uint32_t output = 0) const { return out_[output].rows(); }
   uint32_t outputs() const { return outputs_; }
   // Forgets what is queued and in the stages.
   void flush() {
     input_.clear(), line_.clear(), out_[0].clear(), out_[1].clear();
-    arriving_ = taken_[0] = taken_[1] = 0;
   }
 
  protected:
@@ -222,22 +283,24 @@ class AnyPipeline {
   friend class Machine;
   AnyPipeline() = default;
   uint64_t input_room() const { return depth_ - input_.rows(); }
-  uint64_t out(uint32_t output) const { return out_[output].rows() - taken_[output]; }
+  // The tag of an input queue's run (seen, or arrived this cycle) and of an output queue's (seen, or taken this cycle).
+  static constexpr uint32_t SEEN = 0, ARRIVED = 1, TAKEN = 1;
+  uint64_t out(uint32_t output) const { return out_[output].rows(SEEN); }
   void arrive(uint64_t entries, uint32_t weight) {
     if (input_.valued() && weight != 1) {
       std::fprintf(stderr, "vcix_uarch: a pipeline whose rows carry values takes entries of one row\n");
       std::abort();
     }
-    input_.push(entries, weight);
-    arriving_ += entries * weight;
+    input_.push(entries, weight, ARRIVED);
   }
-  void take_rows(uint64_t rows, uint32_t output) { taken_[output] += rows; }
+  void take_rows(uint64_t rows, uint32_t output) { out_[output].tag_front(rows, TAKEN); }
+  // Arrivals sit at the back of the input queue, what was taken at the front of an output queue.
   void end_cycle() {
-    arriving_ = 0;
-    for (uint32_t q = 0; q < 2; q++)
-      if (taken_[q]) out_[q].pop(taken_[q]), taken_[q] = 0;
+    if (!input_.empty() && input_.back().tag == ARRIVED) input_.retag(ARRIVED, SEEN);
+    for (uint32_t q = 0; q < outputs_; q++)
+      if (!out_[q].empty() && out_[q].front().tag == TAKEN) out_[q].pop(out_[q].rows(TAKEN));
   }
-  uint64_t depth_ = 1, arriving_ = 0, taken_[2] = {};
+  uint64_t depth_ = 1;
   uint32_t stages_ = 1, outputs_ = 1, moves_ = 0;
   Stall stall_ = Stall::WHEN_OUTPUT_FULL;
   Slots input_, line_, out_[2];
@@ -275,11 +338,12 @@ class Pipeline : public AnyPipeline {
     flush();
     queue_.reset();
   }
-  void arrive(T value) {
-    input_.push_value(std::move(value));
-    arriving_++;
+  void arrive(T value) { input_.push_value(std::move(value), ARRIVED); }
+  T take_value(uint32_t output) {
+    const uint64_t at = out_[output].rows(TAKEN);
+    take_rows(1, output);
+    return std::move(out_[output].value<T>(at));
   }
-  T take_value(uint32_t output) { return std::move(out_[output].value<T>(taken_[output]++)); }
   // One cycle of the stages; false when they hold still. An entry in the stages is tagged with the move it entered at
   // (mod 2^32); it leaves `stages` moves later, its rows into every output queue.
   bool advance(Cycle now, Port &entry) {
@@ -294,8 +358,8 @@ class Pipeline : public AnyPipeline {
         else out_[q].push_value(std::move(line_.value<T>(0)));
       line_.pop(1);
     }
-    const uint32_t weight = input_.empty() ? 0 : input_.front().weight;
-    if (weight && weight <= input_.rows() - arriving_ && weight <= entry.room(now)) {
+    const uint32_t weight = input_.empty() || input_.front().tag != SEEN ? 0 : input_.front().weight;
+    if (weight && weight <= entry.room(now)) {
       entry.admit(weight, now);
       input_.pass<T>(line_, moves_, true);
     }
@@ -457,15 +521,13 @@ class Route {
     transfer(n);
     return on_moves([beat](const Host &host, uint64_t i, uint32_t) mutable { beat(host, i); });
   }
-  // finish(host) once the instruction is done (Spike).
+  // short_of(host, taken) as the last receive_at_most ends having taken fewer than its n (Spike).
   template <class F>
-  Route &when_done(F finish) {
-    if (keeps_values()) carry_->done = std::move(finish);
+  Route &when_short(F short_of) {
+    if (keeps_values() && count_) carry_->shorts.push_back({count_ - 1, std::move(short_of)});
     has_values_ |= host_ != nullptr;
     return *this;
   }
-  // Entries the receives of the instruction took so far (Spike).
-  uint64_t received() const { return carry_ ? carry_->received : 0; }
   // The last transfer's n pass this port, at most its width a cycle; at issue the whole n must fit this cycle.
   Route &through(Port &port) {
     last().through = &port;
@@ -503,7 +565,7 @@ class Route {
     return *this;
   }
   // Unit state the instruction changes as it is issued, before any of its moves; on Spike only for a route that gives
-  // its moves values (send, receive or transfer with values, or when_done).
+  // its moves values (send, receive or transfer with values, or when_short).
   template <class F>
   Route &at_issue(F &&change) {
     if (mode_ == ISSUE) change();
@@ -534,11 +596,14 @@ class Route {
     uint32_t at;
     std::function<void(const Host &, uint64_t, uint32_t)> each;
   };
-  // What Spike's issue of the route keeps for its moves: the functions it was given and what its receives took.
+  struct Short {
+    uint32_t at;
+    std::function<void(const Host &, uint64_t)> taken;
+  };
+  // What Spike's issue of the route keeps for its moves: the functions it was given.
   struct Carry {
     std::vector<Hook> hooks;
-    std::function<void(const Host &)> done;
-    uint64_t received = 0;
+    std::vector<Short> shorts;
   };
   Route(Mode mode, const Insn &insn, uint32_t arg, const Host *host) : mode_(mode), insn_(insn), arg_(arg), host_(host) {}
   Step &add(Kind k) {
@@ -614,10 +679,13 @@ class Route {
           move(values(), i, 0, s.n, SEND, s.pipe, s.weight, s.output);
           s.pipe->end_cycle();
           break;
-        case RECEIVE:
-          move(values(), i, 0, std::min(s.n, s.pipe->out(s.output)), RECEIVE, s.pipe, s.weight, s.output);
+        case RECEIVE: {
+          const uint64_t taken = std::min(s.n, s.pipe->out(s.output));
+          move(values(), i, 0, taken, RECEIVE, s.pipe, s.weight, s.output);
+          if (taken < s.n) ended_short(values(), i, taken);
           s.pipe->end_cycle();
           break;
+        }
         case TRANSFER: move(values(), i, 0, s.n, TRANSFER, nullptr, 0, 0); break;
         case ENQUEUE: {
           CommandQueue &q = *s.queue;
@@ -657,7 +725,6 @@ class Route {
                    uint32_t weight, uint32_t output) {
     if (!n) return;
     if (values) {
-      if (kind == RECEIVE) values->carry_->received += n;
       for (Hook &h : values->carry_->hooks)
         if (h.at == at) {
           for (uint64_t i = 0; i < n; i++) h.each(*values->host_, from + i, output);
@@ -667,8 +734,10 @@ class Route {
     if (kind == SEND) pipe->arrive(n, weight);
     else if (kind == RECEIVE) pipe->take_rows(n, output);
   }
-  void finish() {
-    if (carry_->done) carry_->done(*host_);
+  static void ended_short(Route *values, uint32_t at, uint64_t taken) {
+    if (values)
+      for (Short &s : values->carry_->shorts)
+        if (s.at == at) s.taken(*values->host_, taken);
   }
 
   Mode mode_;
@@ -750,6 +819,7 @@ class Machine : public vcix_accel::Model {
        ...);
     }, units_);
     ready_.clear();
+    beats_.clear();
     clock_ = spike_id_ = 0;
   }
   std::vector<const Port *> ports() const override {
@@ -901,6 +971,7 @@ class Machine : public vcix_accel::Model {
       else Route::move(c.values, at, c.done, moved, s.kind, pipe, s.weight, s.output);
       if (through && moved) through->admit(moved, now);
       c.done += moved;
+      if (finished && c.done < s.n) Route::ended_short(c.values, at, c.done);
       if (finished || c.done == s.n) c.step++, c.done = 0;
       else if (!moved) break;
       if (moved) break;
@@ -944,7 +1015,6 @@ class Machine : public vcix_accel::Model {
     };
     while (!done()) spike_cycle(u, instruction.name, done);
     Machine::commit(insn, id, clock_);
-    r.finish();
   }
   // One cycle Spike waits for `until`; a cycle in which nothing moves, no command still on its way and `until` not
   // yet true, is the same every cycle after: the run ends there.
