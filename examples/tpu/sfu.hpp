@@ -1,5 +1,5 @@
-// A TPU's special-function unit: one instruction a cycle enters, done tpu_sfu_latency_cycles later; vd = f(vs2)
-// element by element in every lane.
+// A TPU's special-function unit: one instruction a cycle enters, done tpu_sfu_latency_cycles later, when it writes
+// vd = f(vs2) element by element in every lane.
 #ifndef TPU_SFU_HPP
 #define TPU_SFU_HPP
 
@@ -30,7 +30,7 @@ class Sfu {
   // Function arg() of the seven, on elements of 16, 32 or (vlog, vatan) 64 bits.
   void special_function(Route &r) {
     r.use(entry_).done_after(latency_);
-    r.compute([&](const Host &host) {
+    r.when_done([&r](const Host &host) {
       const uint32_t f = r.arg(), vs = vcix_accel::rs2(r.insn()), vd = vcix_accel::rd(r.insn()), sew = r.insn().sew_bits;
       for (uint32_t lane = 0; lane < host.lanes(); lane++)
         for (uint32_t i = 0; i < r.vl(); i++)
