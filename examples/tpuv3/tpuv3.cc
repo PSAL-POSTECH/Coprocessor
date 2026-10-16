@@ -5,7 +5,6 @@
 #include "tpu/machine.hpp"
 #include "tpu/misc.hpp"
 #include "tpu/mxu.hpp"
-#include "tpu/mxu_functional.hpp"
 #include "tpu/sfu.hpp"
 #include "tpu/xlu.hpp"
 
@@ -20,7 +19,7 @@ struct Shape {
   static constexpr bool WORD_A_CYCLE = false;
 };
 
-class Tpuv3 final : public tpu::Machine<tpu::MxuFunctional<Shape>, tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
+class Tpuv3 final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
  public:
   Tpuv3() : Machine("TPUV3_SFU", "TPUV3_MISC", "TPUV3_XLU", "TPUV3_MXU") {}
   const char *name() const override { return "tpuv3"; }
