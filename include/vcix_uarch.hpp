@@ -65,8 +65,8 @@ class Machine;
 constexpr uint32_t MAX_STEPS = 12;
 
 // Entries in order, held as runs: a run is `count` entries of `weight` rows, the i-th tagged tag + i if it steps, else
-// tag. On Spike each entry also has its value (and is one row); gem5's never do. The first runs sit inline; the rest
-// and the values are a block that copies share until one writes, so a copy of a few runs allocates nothing.
+// tag. On Spike each row of an entry also has its value; gem5's never do. The first runs sit inline; the rest and the
+// values are a block that copies share until one writes, so a copy of a few runs allocates nothing.
 class Slots {
  public:
   struct Run {
@@ -90,12 +90,12 @@ class Slots {
     return n;
   }
   bool valued() const { return more_ && more_->valued(); }
-  // f(i, tag) for each entry i.
+  // f(first row, rows, tag) for each entry.
   template <class F>
   void each(F &&f) const {
-    uint64_t i = 0;
+    uint64_t row = 0;
     for (uint32_t r = 0; r < runs_; r++)
-      for (uint32_t k = 0; k < run(r).count; k++) f(i++, run(r).tag + (run(r).steps ? k : 0));
+      for (uint32_t k = 0; k < run(r).count; k++, row += run(r).weight) f(row, run(r).weight, run(r).tag + (run(r).steps ? k : 0));
   }
   void push(uint64_t count, uint32_t weight, uint32_t tag = 0, bool steps = false) {
     if (!count) return;
@@ -107,19 +107,21 @@ class Slots {
       last->count += add.count;
     else if (runs_ < FEW) few_[runs_++] = add;
     else own().runs.push_back(add), runs_++;
-    if (valued()) own().add(count);
+    if (valued()) own().add(count * weight);
   }
   void pop(uint64_t n) {
+    uint64_t rows = 0;
     for (uint64_t left = n; left;) {
       Run &f = few_[0];
       if (left < f.count) {
+        rows += left * f.weight;
         f.count -= static_cast<uint32_t>(left), f.tag += f.steps ? static_cast<uint32_t>(left) : 0;
         break;
       }
-      left -= f.count;
+      left -= f.count, rows += uint64_t{f.count} * f.weight;
       erase(0);
     }
-    if (valued()) own().drop(n, !runs_);
+    if (valued()) own().drop(rows, !runs_);
   }
   // Runs that do not step: every entry tagged `from` is tagged `to`.
   void retag(uint32_t from, uint32_t to) {
@@ -146,28 +148,23 @@ class Slots {
     runs_ = 0;
     more_.reset();
   }
+  // The value of row i, which a row of a Slots that carries no values yet gets as T{}.
   template <class T>
   T &value(uint64_t i) {
-    Values<T> &v = static_cast<Values<T> &>(own());
+    Values<T> &v = values<T>();
     return v.items[v.first + i];
   }
-  template <class T>
-  void push_value(T value, uint32_t tag = 0, bool steps = false) {
-    if (!valued()) {
-      auto v = std::make_shared<Values<T>>();
-      if (more_) v->runs = more_->runs;
-      v->items.resize(entries());
-      more_ = v;
-    }
-    push(1, 1, tag, steps);
-    static_cast<Values<T> &>(own()).items.back() = std::move(value);
-  }
-  // The front entry into `to`, tagged `tag`.
-  template <class T>
+  // The front entry into `to`, tagged `tag`, its values with it.
   void pass(Slots &to, uint32_t tag, bool steps) {
-    if (valued()) to.push_value(std::move(value<T>(0)), tag, steps);
-    else to.push(1, front().weight, tag, steps);
+    const uint32_t weight = front().weight;
+    to.push(1, weight, tag, steps);
+    if (valued()) own().give(to, weight, false);
     pop(1);
+  }
+  // The front entry's rows into `to` as entries of one row; `copy`: their values stay here too.
+  void give_rows(Slots &to, bool copy) {
+    to.push(front().weight, 1);
+    if (valued()) own().give(to, front().weight, copy);
   }
 
  private:
@@ -177,13 +174,14 @@ class Slots {
                  static_cast<unsigned long long>(count), weight);
     std::abort();
   }
-  // The runs past the first few, and with values (Values<T>) the entries', from `first` on.
+  // The runs past the first few, and with values (Values<T>) the rows', from `first` on.
   struct More {
     virtual ~More() = default;
     virtual std::shared_ptr<More> copy() const { return std::make_shared<More>(*this); }
     virtual bool valued() const { return false; }
     virtual void add(uint64_t) {}
     virtual void drop(uint64_t, bool) {}
+    virtual void give(Slots &, uint64_t, bool) {}
     std::vector<Run> runs;
   };
   template <class T>
@@ -197,18 +195,29 @@ class Slots {
       else if (first >= 64 && 2 * first >= items.size())
         items.erase(items.begin(), items.begin() + static_cast<long>(first)), first = 0;
     }
+    // The front n rows' values to the last n rows of `to`.
+    void give(Slots &to, uint64_t n, bool keep) override {
+      Values &v = to.values<T>();
+      T *at = &v.items[v.items.size() - n];
+      for (uint64_t k = 0; k < n; k++) at[k] = keep ? items[first + k] : std::move(items[first + k]);
+    }
     std::vector<T> items;
     uint64_t first = 0;
   };
+  template <class T>
+  Values<T> &values() {
+    if (!valued()) {
+      auto v = std::make_shared<Values<T>>();
+      if (more_) v->runs = more_->runs;
+      v->items.resize(rows());
+      more_ = v;
+    }
+    return static_cast<Values<T> &>(own());
+  }
   More &own() {
     if (!more_) more_ = std::make_shared<More>();
     else if (more_.use_count() > 1) more_ = more_->copy();
     return *more_;
-  }
-  uint64_t entries() const {
-    uint64_t n = 0;
-    for (uint32_t i = 0; i < runs_; i++) n += run(i).count;
-    return n;
   }
   const Run &run(uint32_t i) const { return i < FEW ? few_[i] : more_->runs[i - FEW]; }
   Run &mut(uint32_t i) { return i < FEW ? few_[i] : own().runs[i - FEW]; }
@@ -258,7 +267,7 @@ class Slots {
 
 // A pipeline, whatever its entries carry: an input queue -> `stages` stages -> 1 or 2 output queues, each `depth` rows
 // deep, all slots. Rows that arrive in a cycle are tagged so and seen in the next; rows taken in a cycle are tagged so
-// and hold their slots to its end.
+// and hold their slots to its end. An entry of `weight` rows leaves the stages as that many rows, into every output.
 class AnyPipeline {
  public:
   void configure(uint64_t stages, uint64_t depth, Stall stall, uint32_t outputs = 1) {
@@ -288,14 +297,27 @@ class AnyPipeline {
   // The tag of an input queue's run (seen, or arrived this cycle) and of an output queue's (seen, or taken this cycle).
   static constexpr uint32_t SEEN = 0, ARRIVED = 1, TAKEN = 1;
   uint64_t out(uint32_t output) const { return out_[output].rows(SEEN); }
-  void arrive(uint64_t entries, uint32_t weight) {
-    if (input_.valued() && weight != 1) {
-      std::fprintf(stderr, "vcix_uarch: a pipeline whose rows carry values takes entries of one row\n");
-      std::abort();
-    }
-    input_.push(entries, weight, ARRIVED);
-  }
+  void arrive(uint64_t entries, uint32_t weight) { input_.push(entries, weight, ARRIVED); }
   void take_rows(uint64_t rows, uint32_t output) { out_[output].tag_front(rows, TAKEN); }
+  // One cycle of the stages; false when they hold still. An entry in the stages is tagged with the move it entered at
+  // (mod 2^32); it leaves `stages` moves later.
+  bool advance(Cycle now, Port &entry) {
+    const uint32_t leaving = !line_.empty() && moves_ - line_.front().tag == stages_ ? line_.front().weight : 0;
+    for (uint32_t q = 0; q < outputs_; q++)
+      if (stall_ == Stall::WHEN_OUTPUT_FULL ? out_[q].rows() == depth_ : leaving > depth_ - out_[q].rows())
+        return false;
+    if (leaving) {
+      for (uint32_t q = 0; q < outputs_; q++) line_.give_rows(out_[q], q + 1 < outputs_);
+      line_.pop(1);
+    }
+    const uint32_t weight = input_.empty() || input_.front().tag != SEEN ? 0 : input_.front().weight;
+    if (weight && weight <= entry.room(now)) {
+      entry.admit(weight, now);
+      input_.pass(line_, moves_, true);
+    }
+    moves_++;
+    return true;
+  }
   // Arrivals sit at the back of the input queue, what was taken at the front of an output queue.
   void end_cycle() {
     if (!input_.empty() && input_.back().tag == ARRIVED) input_.retag(ARRIVED, SEEN);
@@ -308,8 +330,7 @@ class AnyPipeline {
   Slots input_, line_, out_[2];
 };
 
-// A pipeline whose entries carry values of type T on Spike. An entry of `weight` rows enters a cycle through the entry
-// port; every output queue gets each row that leaves. For a unit whose values are compute(), put and take are instead
+// A pipeline whose rows carry values of type T on Spike. For a unit whose values are compute(), put and take are instead
 // a plain queue that takes no time.
 template <class T = char>
 class Pipeline : public AnyPipeline {
@@ -340,38 +361,16 @@ class Pipeline : public AnyPipeline {
     flush();
     queue_.reset();
   }
-  void arrive(T value) { input_.push_value(std::move(value), ARRIVED); }
-  T take_value(uint32_t output) {
-    const uint64_t at = out_[output].rows(TAKEN);
-    take_rows(1, output);
-    return std::move(out_[output].value<T>(at));
-  }
-  // One cycle of the stages; false when they hold still. An entry in the stages is tagged with the move it entered at
-  // (mod 2^32); it leaves `stages` moves later, its rows into every output queue.
-  bool advance(Cycle now, Port &entry) {
-    const uint32_t leaving = !line_.empty() && moves_ - line_.front().tag == stages_ ? line_.front().weight : 0;
-    for (uint32_t q = 0; q < outputs_; q++)
-      if (stall_ == Stall::WHEN_OUTPUT_FULL ? out_[q].rows() == depth_ : leaving > depth_ - out_[q].rows())
-        return false;
-    if (leaving) {
-      for (uint32_t q = 0; q < outputs_; q++)
-        if (!line_.valued()) out_[q].push(leaving, 1);
-        else if (q + 1 < outputs_) out_[q].push_value(line_.value<T>(0));
-        else out_[q].push_value(std::move(line_.value<T>(0)));
-      line_.pop(1);
-    }
-    const uint32_t weight = input_.empty() || input_.front().tag != SEEN ? 0 : input_.front().weight;
-    if (weight && weight <= entry.room(now)) {
-      entry.admit(weight, now);
-      input_.pass<T>(line_, moves_, true);
-    }
-    moves_++;
-    return true;
-  }
-  // f(value, stage) for each entry in the stages, stage 0 the one it entered this cycle.
+  // Row `row` of the input queue, as it arrives; row `row` of an output queue, as it is taken.
+  void arrived(uint64_t row, T value) { input_.value<T>(row) = std::move(value); }
+  T taken(uint32_t output, uint64_t row) { return std::move(out_[output].value<T>(row)); }
+  // f(value, stage) for each row in the stages, stage 0 the one it entered this cycle.
   template <class F>
   void each_stage(F &&f) {
-    if (line_.valued()) line_.each([&](uint64_t i, uint32_t tag) { f(line_.value<T>(i), moves_ - 1 - tag); });
+    if (line_.valued())
+      line_.each([&](uint64_t row, uint32_t rows, uint32_t tag) {
+        for (uint32_t k = 0; k < rows; k++) f(line_.value<T>(row + k), moves_ - 1 - tag);
+      });
   }
   Register<Queue> queue_;
 };
@@ -424,8 +423,9 @@ class CommandQueue {
   void reset() {
     list_.clear();
     waiters_.clear();
-    used_ = 0;
   }
+  // The slots its commands hold: all of them, but a head that gave its slot back as it started.
+  uint64_t held() const { return list_.size() - (!list_.empty() && !list_.front().holds_slot); }
   void arrivals(Cycle now, std::vector<Id> &ready) const {
     for (const Command &c : list_)
       if (c.when_enqueued && c.arrives == now) ready.push_back(c.id);
@@ -437,10 +437,7 @@ class CommandQueue {
     ready.insert(ready.end(), waiters_.begin(), waiters_.end());
     waiters_.clear();
   }
-  void give_back(Command &c) {
-    if (c.holds_slot) c.holds_slot = false, used_--;
-  }
-  uint32_t depth_ = 0, arrival_ = 1, used_ = 0;
+  uint32_t depth_ = 0, arrival_ = 1;
   Free free_ = Free::WHEN_DONE;
   std::deque<Command> list_;
   std::vector<Id> waiters_;
@@ -496,19 +493,26 @@ class Route {
     add(TRANSFER).n = n;
     return *this;
   }
-  // As send, with values (Spike): value_of(host, i) -> T is the i-th entry's, made as it enters the input queue. The
-  // functions given to a route outlive its declaration: capture the route and the unit by reference, the rest by value.
+  // As send, with values (Spike): value_of(host, j) -> T is row j's, the entries' rows in order, made as its entry
+  // enters the input queue. The functions given to a route outlive its declaration: capture the route and the unit by
+  // reference, the rest by value.
+  template <class T, class F, std::enable_if_t<std::is_invocable_r_v<T, F &, const Host &, uint64_t>, int> = 0>
+  Route &send(Pipeline<T> &p, uint64_t n, uint32_t weight, F value_of) {
+    send(p, n, weight);
+    return on_moves([&p, weight, value_of](const Host &host, uint64_t i, uint64_t row, uint32_t) mutable {
+      for (uint32_t k = 0; k < weight; k++) p.arrived(row + k, value_of(host, i * weight + k));
+    });
+  }
   template <class T, class F, std::enable_if_t<std::is_invocable_r_v<T, F &, const Host &, uint64_t>, int> = 0>
   Route &send(Pipeline<T> &p, uint64_t n, F value_of) {
-    send(p, n);
-    return on_moves([&p, value_of](const Host &host, uint64_t i, uint32_t) mutable { p.arrive(value_of(host, i)); });
+    return send(p, n, 1, std::move(value_of));
   }
-  // As receive and receive_at_most, with values (Spike): take(host, i, T &&) gets the i-th entry as it is taken.
+  // As receive and receive_at_most, with values (Spike): take(host, i, T &&) gets the i-th row as it is taken.
   template <class T, class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t, T &&>, int> = 0>
   Route &receive(Pipeline<T> &p, uint64_t n, F take) {
     receive(p, n);
-    return on_moves([&p, take](const Host &host, uint64_t i, uint32_t output) mutable {
-      take(host, i, p.take_value(output));
+    return on_moves([&p, take](const Host &host, uint64_t i, uint64_t row, uint32_t output) mutable {
+      take(host, i, p.taken(output, row));
     });
   }
   template <class T, class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t, T &&>, int> = 0>
@@ -521,12 +525,12 @@ class Route {
   template <class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t>, int> = 0>
   Route &transfer(uint64_t n, F beat) {
     transfer(n);
-    return on_moves([beat](const Host &host, uint64_t i, uint32_t) mutable { beat(host, i); });
+    return on_moves([beat](const Host &host, uint64_t i, uint64_t, uint32_t) mutable { beat(host, i); });
   }
-  // short_of(host, taken) as the last receive_at_most ends having taken fewer than its n (Spike).
+  // received(host, taken) as the last receive ends, `taken` of its n (Spike).
   template <class F>
-  Route &when_short(F short_of) {
-    if (keeps_values() && count_) carry_->shorts.push_back({count_ - 1, std::move(short_of)});
+  Route &when_received(F received) {
+    if (keeps_values() && count_) hooks_->received.push_back({count_ - 1, std::move(received)});
     has_values_ |= host_ != nullptr;
     return *this;
   }
@@ -566,11 +570,23 @@ class Route {
     when_enqueued_ = true;
     return *this;
   }
-  // Unit state the instruction changes as it is issued, before any of its moves; on Spike only for a route that gives
-  // its moves values (send, receive or transfer with values, or when_short).
+  // What the instruction changes as it is issued, before any of its moves: change() unit state, on gem5 and Spike;
+  // change(host) values, on Spike only.
   template <class F>
   Route &at_issue(F &&change) {
-    if (mode_ == ISSUE) change();
+    if constexpr (std::is_invocable_v<F &, const Host &>) {
+      if (keeps_values()) change(*host_);
+      has_values_ |= host_ != nullptr;
+    } else if (mode_ == ISSUE) {
+      change();
+    }
+    return *this;
+  }
+  // done(host) as the instruction is done (Spike).
+  template <class F>
+  Route &when_done(F done) {
+    if (keeps_values()) hooks_->done.push_back(std::move(done));
+    has_values_ |= host_ != nullptr;
     return *this;
   }
   // The instruction's values (Spike only), at issue; takes no time.
@@ -585,36 +601,43 @@ class Route {
   friend class Machine;
   enum Mode { CHECK, ISSUE, VALUE };
   enum Kind { REQUIRE, USE, ENQUEUE, SEND, RECEIVE, TRANSFER };
+  // Trivial, so the steps a route does not declare cost nothing; made() is a declared one.
   struct Step {
     Kind kind;
-    uint64_t n = 0;
-    uint32_t weight = 1, output = 0;
-    bool holds = true, at_most = false, received = false;
-    Port *port = nullptr, *through = nullptr;
-    AnyPipeline *pipe = nullptr, *guard = nullptr;
-    CommandQueue *queue = nullptr;
+    uint64_t n;
+    uint32_t weight, output;
+    bool holds, at_most, received;
+    Port *port, *through;
+    AnyPipeline *pipe, *guard;
+    CommandQueue *queue;
+    static Step made(Kind k) {
+      Step s{k, 0, 1, 0, true, false, false, nullptr, nullptr, nullptr, nullptr, nullptr};
+      return s;
+    }
   };
-  struct Hook {
+  // each(host, i, row, output) for the i-th entry or beat of step `at`, row its first row in the queue it moved in.
+  struct Move {
     uint32_t at;
-    std::function<void(const Host &, uint64_t, uint32_t)> each;
+    std::function<void(const Host &, uint64_t, uint64_t, uint32_t)> each;
   };
-  struct Short {
+  struct Received {
     uint32_t at;
     std::function<void(const Host &, uint64_t)> taken;
   };
-  // What Spike's issue of the route keeps for its moves: the functions it was given.
-  struct Carry {
-    std::vector<Hook> hooks;
-    std::vector<Short> shorts;
+  // The functions Spike's issue of the route keeps for its values until it is done.
+  struct Hooks {
+    std::vector<Move> moves;
+    std::vector<Received> received;
+    std::vector<std::function<void(const Host &)>> done;
   };
   Route(Mode mode, const Insn &insn, uint32_t arg, const Host *host) : mode_(mode), insn_(insn), arg_(arg), host_(host) {}
   Step &add(Kind k) {
-    if (mode_ == VALUE) return scratch_ = Step{k};
+    if (mode_ == VALUE) return scratch_ = Step::made(k);
     if (count_ == MAX_STEPS) {
       std::fprintf(stderr, "vcix_uarch: a route of more than %u steps\n", MAX_STEPS);
       std::abort();
     }
-    Step &s = steps_[count_++] = Step{k};
+    Step &s = steps_[count_++] = Step::made(k);
     s.guard = guard_;
     guard_ = nullptr;
     return s;
@@ -647,8 +670,8 @@ class Route {
     return count_;
   }
   static bool open(const Step &s) { return !s.guard || s.guard->drained(); }
-  // What a step moves at issue: n, or for a receive_at_most charged as received, what is out.
-  static uint64_t charged(const Step &s) {
+  // What a step moves at issue: n, or for a receive_at_most whose port counts what it takes, what is out.
+  static uint64_t moved_at_issue(const Step &s) {
     return s.kind == RECEIVE && s.received ? std::min(s.n, s.pipe->out(s.output)) : s.n;
   }
 
@@ -657,11 +680,11 @@ class Route {
     for (uint32_t i = 0; i < count_; i++) {
       const Step &s = steps_[i];
       if (!open(s)) return false;
-      if (s.through && s.kind != USE && s.through->room(now) < charged(s)) return false;
+      if (s.through && s.kind != USE && s.through->room(now) < moved_at_issue(s)) return false;
       switch (s.kind) {
         case REQUIRE: if (!s.holds) return false; break;
         case USE: if (s.port->room(now) < s.n) return false; break;
-        case ENQUEUE: if (s.queue->depth_) return s.queue->used_ < s.queue->depth_; break;
+        case ENQUEUE: if (s.queue->depth_) return s.queue->held() < s.queue->depth_; break;
         case SEND: if (s.n * s.weight > s.pipe->input_room()) return false; break;
         case RECEIVE: if (s.n > s.pipe->out(s.output) && !(s.at_most && s.pipe->drained())) return false; break;
         default: break;
@@ -674,7 +697,7 @@ class Route {
   Cycle issue(Cycle now, Id id, std::vector<Id> &ready) {
     for (uint32_t i = 0; i < count_; i++) {
       Step &s = steps_[i];
-      if (s.through && s.kind != USE) s.through->admit(charged(s), now);
+      if (s.through && s.kind != USE) s.through->admit(moved_at_issue(s), now);
       switch (s.kind) {
         case USE: s.port->admit(s.n, now); break;
         case SEND:
@@ -684,7 +707,7 @@ class Route {
         case RECEIVE: {
           const uint64_t taken = std::min(s.n, s.pipe->out(s.output));
           move(values(), i, 0, taken, RECEIVE, s.pipe, s.weight, s.output);
-          if (taken < s.n) ended_short(values(), i, taken);
+          received(values(), i, taken);
           s.pipe->end_cycle();
           break;
         }
@@ -695,6 +718,8 @@ class Route {
           uint64_t work = q.free_ == Free::WHEN_STARTED;
           for (uint32_t j = i + 1; j < count_; j++) work += steps_[j].n;
           if (!work) {
+            for (uint32_t j = i + 1; j < count_; j++)
+              if (steps_[j].kind == RECEIVE) received(values(), j, 0);
             ready.push_back(id);
             return vcix_accel::Unknown;
           }
@@ -703,7 +728,6 @@ class Route {
           if (keeps_values()) c.values = this;
           for (uint32_t j = i + 1; j < count_; j++) c.moves[c.count++] = record(steps_[j], q.blocks_);
           q.list_.push_back(c);
-          q.used_++;
           return vcix_accel::Unknown;
         }
         default: break;
@@ -713,33 +737,42 @@ class Route {
   }
 
   // The values ride the moves: Spike issues the route with its host, and the functions it was given are kept.
-  bool keeps_values() const { return carry_ != nullptr; }
+  bool keeps_values() const { return hooks_ != nullptr; }
   Route *values() { return keeps_values() ? this : nullptr; }
   template <class F>
   Route &on_moves(F &&each) {
-    if (keeps_values() && count_) carry_->hooks.push_back({count_ - 1, std::forward<F>(each)});
+    if (keeps_values() && count_) hooks_->moves.push_back({count_ - 1, std::forward<F>(each)});
     has_values_ |= host_ != nullptr;
     return *this;
   }
-  // n entries or beats of step `at` of route `values`, from its from-th on, move: on Spike through the functions it
-  // was given, else (and on gem5) as rows that carry nothing.
+  // n entries or beats of step `at` move, from its from-th on: the same entries on gem5 and Spike, and on Spike, of route
+  // `values`, the function it was given puts or takes their values.
   static void move(Route *values, uint32_t at, uint64_t from, uint64_t n, uint32_t kind, AnyPipeline *pipe,
                    uint32_t weight, uint32_t output) {
     if (!n) return;
-    if (values) {
-      for (Hook &h : values->carry_->hooks)
-        if (h.at == at) {
-          for (uint64_t i = 0; i < n; i++) h.each(*values->host_, from + i, output);
-          return;
-        }
-    }
-    if (kind == SEND) pipe->arrive(n, weight);
-    else if (kind == RECEIVE) pipe->take_rows(n, output);
-  }
-  static void ended_short(Route *values, uint32_t at, uint64_t taken) {
+    const Move *hook = nullptr;
     if (values)
-      for (Short &s : values->carry_->shorts)
-        if (s.at == at) s.taken(*values->host_, taken);
+      for (const Move &h : values->hooks_->moves)
+        if (h.at == at) hook = &h;
+    uint64_t row = 0;
+    if (kind == SEND) {
+      pipe->arrive(n, weight);
+      if (hook) row = pipe->input_.rows() - n * weight;
+    } else if (kind == RECEIVE) {
+      if (hook) row = pipe->out_[output].rows(AnyPipeline::TAKEN);
+      pipe->take_rows(n, output);
+    }
+    if (hook)
+      for (uint64_t i = 0; i < n; i++) hook->each(*values->host_, from + i, row + i * (kind == SEND ? weight : 1), output);
+  }
+  static void received(Route *values, uint32_t at, uint64_t taken) {
+    if (values)
+      for (Received &r : values->hooks_->received)
+        if (r.at == at) r.taken(*values->host_, taken);
+  }
+  void done() {
+    if (keeps_values())
+      for (auto &d : hooks_->done) d(*host_);
   }
 
   Mode mode_;
@@ -747,11 +780,11 @@ class Route {
   uint32_t arg_;
   const Host *host_;
   Step steps_[MAX_STEPS];
-  Step scratch_{REQUIRE};
+  Step scratch_ = Step::made(REQUIRE);
   uint32_t count_ = 0;
   AnyPipeline *guard_ = nullptr;
   Cycle latency_ = 1;
-  Carry *carry_ = nullptr;
+  Hooks *hooks_ = nullptr;
   bool when_idle_ = false, when_enqueued_ = false, has_values_ = false;
 };
 
@@ -933,7 +966,6 @@ class Machine : public vcix_accel::Model {
     if (!advance(c, q, now, beats_)) return;
     if (c.when_idle) q.waiters_.push_back(c.id);
     else if (!c.when_enqueued) ready_.push_back(c.id);
-    q.give_back(c);
     q.list_.pop_front();
   }
 
@@ -947,8 +979,7 @@ class Machine : public vcix_accel::Model {
   // One cycle of the head command: its recorded step moves what the registered state allows. True when it is done.
   static bool advance(CommandQueue::Command &c, CommandQueue &q, Cycle now, std::vector<Beats> &beats) {
     if (q.free_ == Free::WHEN_STARTED && !c.started) {
-      c.started = true;
-      q.give_back(c);
+      c.started = true, c.holds_slot = false;
       return c.count == 0;
     }
     while (c.step < c.count) {
@@ -973,7 +1004,7 @@ class Machine : public vcix_accel::Model {
       else Route::move(c.values, at, c.done, moved, s.kind, pipe, s.weight, s.output);
       if (through && moved) through->admit(moved, now);
       c.done += moved;
-      if (finished && c.done < s.n) Route::ended_short(c.values, at, c.done);
+      if ((finished || c.done == s.n) && s.kind == Route::RECEIVE) Route::received(c.values, at, c.done);
       if (finished || c.done == s.n) c.step++, c.done = 0;
       else if (!moved) break;
       if (moved) break;
@@ -1003,9 +1034,9 @@ class Machine : public vcix_accel::Model {
       return r.check(clock_);
     };
     while (!accepts()) spike_cycle(u, instruction.name, accepts);
-    Route::Carry carry;
+    Route::Hooks hooks;
     Route r(Route::ISSUE, insn, instruction.arg, &host);
-    r.carry_ = &carry;
+    r.hooks_ = &hooks;
     (u.*instruction.route)(r);
     if (CommandQueue *q = r.queue()) list_blocks(u, *q);
     const Id id = ++spike_id_;
@@ -1016,6 +1047,7 @@ class Machine : public vcix_accel::Model {
       return (latency != vcix_accel::Unknown || Machine::ready(id, clock_)) && !queued(u, id);
     };
     while (!done()) spike_cycle(u, instruction.name, done);
+    r.done();
     Machine::commit(insn, id, clock_);
   }
   // One cycle Spike waits for `until`; a cycle in which nothing moves, no command still on its way and `until` not
@@ -1042,7 +1074,7 @@ class Machine : public vcix_accel::Model {
                             p.line_.empty() ? 0 : p.moves_);
                       },
                       [&](CommandQueue &q) {
-                        add(q.list_.size(), q.used_, q.waiters_.size());
+                        add(q.list_.size(), q.waiters_.size());
                         if (!q.list_.empty()) add(q.list_.front().step, q.list_.front().done, q.list_.front().started);
                       }));
   }

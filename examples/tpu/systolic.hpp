@@ -73,7 +73,7 @@ class Systolic {
   void input_push(Route &r) {
     r.use(issue_).enqueue(commands_);
     r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
-    r.compute([&](const Host &) {
+    r.at_issue([&](const Host &) {
       if (r.vl()) element_format(r.insn());
       const Weights &weights = weights_.get();
       if (weights.empty() || weights[0].empty()) fail("systolic input push: no weight was pushed before it");
@@ -92,11 +92,11 @@ class Systolic {
     r.use(issue_).enqueue(commands_);
     r.receive_at_most(array_, r.vl(), [&r](const Host &host, uint64_t i, Row &&row) { popped(host, r.insn(), i, row); })
         .through(pop_);
-    r.compute([&](const Host &) {
+    r.at_issue([&](const Host &) {
       if (element_format(r.insn()) == Element::BF16) fail("systolic pop: a pop to bfloat16 is not modeled");
     });
-    r.when_short([&r](const Host &, uint64_t taken) {
-      fail("systolic pop: %u elements asked, %llu computed", r.vl(), static_cast<unsigned long long>(taken));
+    r.when_received([&r](const Host &, uint64_t taken) {
+      if (taken < r.vl()) fail("systolic pop: %u elements asked, %llu computed", r.vl(), static_cast<unsigned long long>(taken));
     });
   }
 
