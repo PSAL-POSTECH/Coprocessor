@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The container image of the environment: what it is called, and how it is built.
-# Usage: setup/image.sh ref | exists | build [-j N] [--push]
+# The container image of the environment: what it is called, and how it is built. One build per host architecture,
+# pushed as <ref>-x64 / <ref>-arm64; `join` makes <ref> the manifest list of the two.
+# Usage: setup/image.sh tag | ref | exists | arch-exists | build [-j N] [--push] | join
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -18,11 +19,16 @@ image_tag() {
 }
 
 REF="$IMAGE_REPO:$(image_tag)"
+case "$HOST_ARCH" in
+  x86_64) ARCH=x64 ;;
+  aarch64) ARCH=arm64 ;;
+esac
 
 case "${1:-}" in
   tag) echo "${REF##*:}" ;;
   ref) echo "$REF" ;;
   exists) "$DOCKER" buildx imagetools inspect "$REF" > /dev/null ;;
+  arch-exists) "$DOCKER" buildx imagetools inspect "$REF-$ARCH" > /dev/null ;;
   build)
     shift
     JOBS=$(nproc); OUTPUT=--load
@@ -36,12 +42,23 @@ case "${1:-}" in
     case "$OUTPUT$REF" in
       --push*-dirty) echo "setup/ has uncommitted changes; commit them before publishing" >&2; exit 1 ;;
     esac
-    "$DOCKER" buildx build "$OUTPUT" -t "$REF" -f "$HERE/Dockerfile" \
+    # Pushed under this architecture's tag only; loaded locally under the plain one as well.
+    TAGS=(-t "$REF-$ARCH")
+    [ "$OUTPUT" = --push ] || TAGS+=(-t "$REF")
+    "$DOCKER" buildx build "$OUTPUT" "${TAGS[@]}" -f "$HERE/Dockerfile" \
       --build-arg BASE_IMAGE="$BASE_IMAGE" \
       --build-arg VCIX_ENV_ROOT="$VCIX_ENV_ROOT" \
       --build-arg JOBS="$JOBS" \
       "$HERE"
-    echo "$REF"
+    echo "$REF-$ARCH"
+    ;;
+  join)
+    "$DOCKER" buildx imagetools create -t "$REF" "$REF-x64" "$REF-arm64"
+    got=$("$DOCKER" buildx imagetools inspect --format '{{range .Manifest.Manifests}}{{.Platform.Architecture}} {{end}}' "$REF")
+    for want in amd64 arm64; do
+      case " $got " in *" $want "*) ;; *) echo "$REF has no $want ($got)" >&2; exit 1 ;; esac
+    done
+    echo "$REF: $got"
     ;;
   *) sed -n '2,3p' "${BASH_SOURCE[0]}" | sed 's/^# \?//' >&2; exit 2 ;;
 esac

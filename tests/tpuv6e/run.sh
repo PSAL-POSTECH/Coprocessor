@@ -131,11 +131,11 @@ report "at most $(window scratchpad 1 system.spad.loadsPerCycle::max_value) load
   "at most 3 loads, 2 stores, 4 accesses a cycle" \
   "scratchpad.S's independent loads and stores, three and two in turn: the scratchpad takes 3 loads, 2 stores and 4 accesses in a cycle"
 report "$(window loads 2 system.cpu.numCycles) and $(window loads 4 system.cpu.numCycles), at most $(window loads 2 system.spad.loadsPerCycle::max_value) loads a cycle" \
-  "41 and 41, at most 3 loads a cycle" \
+  "40 and 40, at most 3 loads a cycle" \
   "loads.S's 64 loads take the same from lines 128 and 64 bytes apart: the scratchpad has no banks, its ports take any address"
 report "$(window addresses 2 system.cpu.numCycles)" "76" \
   "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 76 cycles"
-report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 16 of 34 cycles" \
+report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 16 of 35 cycles" \
   "valu.S's 64 independent vfadds and vfmuls keep the VALUs busy 16 cycles: 4 a cycle, whatever the mix"
 
 echo "-- the model"

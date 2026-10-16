@@ -278,7 +278,7 @@ where two independent accesses are there to go together.
 
 `tests/tpu/run.sh` runs `sfu.S` on this machine as well, and `loads.S`: a
 window of 64 independent vector loads from lines all in one bank, then one from
-lines in both banks, 85 and 56 cycles (92 and 58 with four integer units, 89
+lines in both banks, 85 and 51 cycles (92 and 60 with four integer units, 89
 and 57 with five, below); in the second the loads commit two a cycle.
 
 ### Two more integer units
@@ -338,5 +338,5 @@ matrix unit every loop runs at about 8 from five units on (7.8 to 8.1 in this
 measure).
 
 `tests/tpu/run.sh` runs `addresses.S` on this machine: a window of 64 vector
-loads, each followed by the `addi` that steps its pointer, 93 cycles (101 with
-four units, 98 with five).
+loads, each followed by the `addi` that steps its pointer, 91 cycles (99 with
+four units, 95 with five).

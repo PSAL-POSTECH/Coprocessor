@@ -1,6 +1,8 @@
 name: image
 
-# Publish the environment image to GHCR -- when it is not there already. x86_64 only.
+# Publish the environment image to GHCR -- when it is not there already. Built natively on the big runner of each
+# host architecture (x64 on x86_64, arm64 on aarch64) and pushed as <ref>-x64 / <ref>-arm64; join makes <ref> the
+# manifest list of the two, so a FROM or a `docker run` of <ref> picks the host's.
 
 on:
   workflow_dispatch:
@@ -44,13 +46,19 @@ jobs:
   build:
     needs: key
     if: needs.key.outputs.exists != 'true'
-    runs-on: [self-hosted, slurm, big, x86_64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: x86_64}
+          - {arch: arm64, runner: aarch64}
+    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 110
     permissions:
       contents: read
       packages: write
     concurrency:
-      group: image-${{ needs.key.outputs.image }}
+      group: image-${{ needs.key.outputs.image }}-${{ matrix.arch }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -64,8 +72,29 @@ jobs:
 
       - name: Build and publish
         run: |
-          if setup/image.sh exists; then
+          if setup/image.sh arch-exists; then
             echo "published while this job waited; nothing to build"
             exit 0
           fi
           setup/image.sh build --push -j "$(nproc)"
+
+  join:
+    needs: [key, build]
+    if: needs.key.outputs.exists != 'true'
+    runs-on: [self-hosted, slurm, x86_64]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Join the architectures under one tag
+        run: setup/image.sh join

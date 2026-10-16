@@ -20,7 +20,7 @@ apt-get install -y --no-install-recommends \
   zlib1g-dev libprotobuf-dev protobuf-compiler libgoogle-perftools-dev \
   libhdf5-serial-dev libpng-dev \
   libboost-dev libboost-regex-dev libboost-system-dev device-tree-compiler \
-  python3 autoconf flex bison libfl-dev help2man
+  python3 autoconf flex bison libfl-dev help2man xz-utils
 rm -rf /var/lib/apt/lists/*
 
 SITE="$("$PYTHON" -c 'import site; print(site.getsitepackages()[0])')"

@@ -49,10 +49,10 @@ if want toolchain; then
   else
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' EXIT
-    curl -fSL --retry 3 -o "$TMP/toolchain.tar.gz" "$TOOLCHAIN_URL"
-    echo "$TOOLCHAIN_SHA256  $TMP/toolchain.tar.gz" | sha256sum -c -
+    curl -fSL --retry 3 -o "$TMP/toolchain.tar.xz" "$TOOLCHAIN_URL"
+    echo "$TOOLCHAIN_SHA256  $TMP/toolchain.tar.xz" | sha256sum -c -
     rm -rf "$TOOLCHAIN_ROOT"; mkdir -p "$TOOLCHAIN_ROOT"
-    tar -xzf "$TMP/toolchain.tar.gz" -C "$TOOLCHAIN_ROOT" --strip-components=1 --no-same-owner
+    tar -xJf "$TMP/toolchain.tar.xz" -C "$TOOLCHAIN_ROOT" --strip-components=1 --no-same-owner
     rm -rf "$TMP"; trap - EXIT
     echo "$TOOLCHAIN_SHA256" > "$STAMP"
   fi

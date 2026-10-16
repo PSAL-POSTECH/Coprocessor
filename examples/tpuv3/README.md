@@ -116,9 +116,9 @@ On this machine (`tests/tpuv3/run.sh`; cycles of the window):
 
 | Program | v6e machine | v3 machine |
 |---|---|---|
-| `tests/tpuv6e/valu.S`, 64 vfadds and vfmuls | VALUs busy 16 of 34 | 32 of 50 |
-| `tests/tpu/loads.S`, 64 loads, 128 and 64 bytes apart | 41 and 41 | 86 and 83: the first window still reads 4 instruction lines through the one load port |
-| `tests/tpu/addresses.S`, 64 loads with their `addi`s | 76 | 105 |
+| `tests/tpuv6e/valu.S`, 64 vfadds and vfmuls | VALUs busy 16 of 35 | 32 of 51 |
+| `tests/tpu/loads.S`, 64 loads, 128 and 64 bytes apart | 40 and 40 | 86 and 83: the first window still reads 4 instruction lines through the one load port |
+| `tests/tpu/addresses.S`, 64 loads with their `addi`s | 76 | 104 |
 | `tests/tpuv3/scratchpad.S`, a load and a store in turn | | at most 1 load, 1 store, 2 accesses a cycle |
 
 [norrie]: https://www.gwern.net/doc/ai/scaling/hardware/2021-norrie.pdf
