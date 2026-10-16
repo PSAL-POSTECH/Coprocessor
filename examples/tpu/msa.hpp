@@ -43,14 +43,14 @@ class Msa {
   }
 
   // The field at 19:15: [4] weights or inputs, [3:2] how many columns compute (all shifted right by it), [1:0] what a
-  // word holds. A weight push takes its own slot and changing the format or the width empties the matrix; an input
-  // push sends vl rows, element i of every lane one input row, and a column past the width computes 0.
+  // word holds. A weight push takes its own slot and writes the matrix as it issues, and changing the format or the
+  // width empties it; an input push sends vl rows, element i of every lane one input row (row()).
   void push(Route &r) {
     const bool weights = vcix_accel::rs1(r.insn()) & WEIGHT;
     r.use(issue_);
     if (weights) r.use(weight_push_);
-    else r.send(array_, r.vl());
-    r.compute([&](const Host &host) {
+    else r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return row(host, r.insn(), i); });
+    r.at_issue([&](const Host &host) {
       if (r.insn().sew_bits != 32) fail("msa push: its elements are words of 32 bits, not of %u", r.insn().sew_bits);
       const uint32_t lanes = host.lanes(), field = vcix_accel::rs1(r.insn()), vs = vcix_accel::rs2(r.insn());
       const uint32_t format = field & 3, pack = elements(format);
@@ -70,39 +70,23 @@ class Msa {
             }
         return;
       }
-      const Weights &w = weights_.get();
-      if (pack != elements(w.format)) fail("msa push: inputs of %u to a word, weights of %u", pack, elements(w.format));
-      Row in(lanes * pack);
-      for (uint32_t i = 0; i < r.vl(); i++) {
-        for (uint32_t lane = 0; lane < lanes; lane++)
-          for (uint32_t slot = 0; slot < pack; slot++) in[lane * pack + slot] = element(get<uint32_t>(host, lane, vs, i), slot, format);
-        Row row(lanes);
-        for (uint32_t lane = 0; lane < lanes && lane < w.columns.size(); lane++) {
-          if (lane >= lanes >> w.shift) continue;
-          float output = 0;
-          uint32_t k = 0;
-          for (float weight : w.columns[lane]) output = multiply_add(output, in[k++], weight);
-          row[lane] = output;
-        }
-        array_.put(std::move(row));
-      }
+      if (pack != elements(weights_.get().format))
+        fail("msa push: inputs of %u to a word, weights of %u", pack, elements(weights_.get().format));
     });
   }
-  // Up to vl rows of the output queue, once vl are out or none is on its way: what is there and no more. To fewer
-  // bits it rounds to nearest even; 8 bits are E5M2 when the field's [1:0] says so and E4M3 otherwise.
+  // Up to vl rows of the output queue, once vl are out or none is on its way: what is there and no more, row i to
+  // element i of vd. To fewer bits it rounds to nearest even; 8 bits are E5M2 when the field's [1:0] says so and E4M3
+  // otherwise.
   void pop(Route &r) {
-    r.use(issue_).receive_at_most(array_, r.vl()).through(pop_);
-    r.compute([&](const Host &host) {
-      const uint32_t vd = vcix_accel::rd(r.insn());
+    r.use(issue_).receive_at_most(array_, r.vl(), [&r](const Host &host, uint64_t i, Row &&row) {
+      const uint32_t vd = vcix_accel::rd(r.insn()), at = static_cast<uint32_t>(i);
       const Narrow &byte = (vcix_accel::rs1(r.insn()) & 3) == E5M2_FORMAT ? E5M2 : E4M3;
-      const std::vector<Row> rows = array_.take(r.vl());
-      for (uint32_t lane = 0; lane < host.lanes(); lane++)
-        for (uint32_t i = 0; i < rows.size(); i++) switch (r.insn().sew_bits) {
-            case 8: put<uint8_t>(host, lane, vd, i, static_cast<uint8_t>(narrow(rows[i][lane], byte, 0))); break;
-            case 16: put<uint16_t>(host, lane, vd, i, static_cast<uint16_t>(narrow(rows[i][lane], HALF, 0))); break;
-            default: put<float>(host, lane, vd, i, rows[i][lane]); break;
-          }
-    });
+      for (uint32_t lane = 0; lane < host.lanes(); lane++) switch (r.insn().sew_bits) {
+          case 8: put<uint8_t>(host, lane, vd, at, static_cast<uint8_t>(narrow(row[lane], byte, 0))); break;
+          case 16: put<uint16_t>(host, lane, vd, at, static_cast<uint16_t>(narrow(row[lane], HALF, 0))); break;
+          default: put<float>(host, lane, vd, at, row[lane]); break;
+        }
+    }).through(pop_);
   }
 
   // funct6, vm and funct3 of custom-2: sf.vc.iv 2 and sf.vc.v.i 3.
@@ -116,6 +100,24 @@ class Msa {
     std::vector<std::deque<float>> columns;
     uint32_t format = 0, shift = 0;
   };
+  // Input row i of a push, as it enters: per lane, its column of the matrix times element i of every lane; a column
+  // past the width computes 0.
+  Row row(const Host &host, const vcix_uarch::Insn &insn, uint64_t i) const {
+    const uint32_t lanes = host.lanes(), vs = vcix_accel::rs2(insn), format = vcix_accel::rs1(insn) & 3;
+    const uint32_t pack = elements(format), at = static_cast<uint32_t>(i);
+    const Weights &w = weights_.get();
+    Row in(lanes * pack), out(lanes);
+    for (uint32_t lane = 0; lane < lanes; lane++)
+      for (uint32_t slot = 0; slot < pack; slot++) in[lane * pack + slot] = element(get<uint32_t>(host, lane, vs, at), slot, format);
+    for (uint32_t lane = 0; lane < lanes && lane < w.columns.size(); lane++) {
+      if (lane >= lanes >> w.shift) continue;
+      float output = 0;
+      uint32_t k = 0;
+      for (float weight : w.columns[lane]) output = multiply_add(output, in[k++], weight);
+      out[lane] = output;
+    }
+    return out;
+  }
   // A word's elements: 1 single (0), 2 halves (1), 4 of E4M3 (2) or of E5M2 (3); element `slot` from its low bits up.
   static uint32_t elements(uint32_t format) { return format == 0 ? 1 : format == 1 ? 2 : 4; }
   static float element(uint32_t word, uint32_t slot, uint32_t format) {
