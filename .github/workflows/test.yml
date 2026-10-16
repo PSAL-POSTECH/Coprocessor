@@ -1,6 +1,7 @@
 name: test
 
-# Build this repository in the environment image and run every test on both simulators.
+# Build this repository in the environment image and run every test on both simulators, on an x86_64 and an aarch64
+# host: the image's tag is the manifest list of its two architectures, so each runner pulls its own.
 
 on:
   push:
@@ -21,7 +22,13 @@ jobs:
 
   test:
     needs: image
-    runs-on: [self-hosted, slurm, x86_64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: x86_64}
+          - {arch: arm64, runner: aarch64}
+    runs-on: [self-hosted, slurm, "${{ matrix.runner }}"]
     timeout-minutes: 30
     permissions:
       contents: read
@@ -45,7 +52,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: simulator-logs
+          name: simulator-logs-${{ matrix.arch }}
           path: build/*.log
           retention-days: 7
 

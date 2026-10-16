@@ -15,10 +15,16 @@ for tool in clang-check clang-repl clang-refactor clang-rename clang-scan-deps \
   rm -f "$TOOLCHAIN_ROOT/bin/$tool"
 done
 
-# Whether $1 is an x86-64 ELF.
+# The ELF e_machine of this host, little-endian: EM_X86_64 (62) or EM_AARCH64 (183).
+case "$HOST_ARCH" in
+  x86_64) HOST_EM=3e00 ;;
+  aarch64) HOST_EM=b700 ;;
+esac
+
+# Whether $1 is an ELF of this host.
 host_elf() {
   [ "$(od -An -tx1 -N4 "$1" | tr -d ' ')" = 7f454c46 ] \
-    && [ "$(od -An -tx1 -j18 -N2 "$1" | tr -d ' ')" = 3e00 ]
+    && [ "$(od -An -tx1 -j18 -N2 "$1" | tr -d ' ')" = "$HOST_EM" ]
 }
 
 strip_tree() {

@@ -72,8 +72,50 @@ same() {
   echo "  the old Spike prints the same (exit $rc)"
 }
 
+# close <name> <what>: the program's output against what the old Spike printed (<name>.from-old-spike.xz), element
+# by element and not bit for bit: the special functions are the host's libm, which differs a little from one host to
+# another. A NaN is to be a NaN, of any sign or payload (x86-64 and AArch64 make different default NaNs); every other
+# result within 4 ulps of the old one, each libm being a couple of ulps from the true value.
+close() {
+  local name=$1 what=$2 rc why within
+  on_model "$name" -- "$name"; rc=$?
+  why=$(python3 - "$OUT/$name.out" "$HERE/$name.from-old-spike.xz" <<'EOF'
+import lzma, struct, sys
+got, was = open(sys.argv[1], "rb").read(), lzma.open(sys.argv[2]).read()
+if len(got) != len(was):
+    sys.exit(f"{len(got)} bytes, the old Spike printed {len(was)}")
+# special.c's runs: seven of halves, seven of singles, two of doubles, each the four lanes in turn
+runs = [(2, 65536 // 4)] * 7 + [(4, 4096)] * 7 + [(8, 1024)] * 2
+ULPS = 4
+at, worst, beyond = 0, 0, 0
+for size, count in runs:
+    bits = size * 8
+    exponent = {2: 0x7C00, 4: 0x7F800000, 8: 0x7FF0000000000000}[size]
+    magnitude = (1 << (bits - 1)) - 1
+    n = 4 * count
+    fmt = "<" + {2: "H", 4: "I", 8: "Q"}[size] * n
+    for a, b in zip(struct.unpack_from(fmt, got, at), struct.unpack_from(fmt, was, at)):
+        nan_a = a & exponent == exponent and a & magnitude != exponent
+        nan_b = b & exponent == exponent and b & magnitude != exponent
+        if nan_a or nan_b:
+            beyond += nan_a != nan_b
+            continue
+        order = lambda x: -(x & magnitude) if x >> (bits - 1) else x & magnitude
+        apart = abs(order(a) - order(b))
+        worst = max(worst, apart)
+        beyond += apart > ULPS
+    at += size * n
+print(f"at most {worst} ulps apart, {beyond} beyond {ULPS}")
+sys.exit(1 if beyond else 0)
+EOF
+)
+  within=$?
+  if [ "$rc" = 0 ] && [ "$within" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+  echo "  $what (exit $rc, $why)"
+}
+
 echo "-- as the old Spike did it"
-same special from-old-spike.sha256 "the seven special functions: every half, 4096 singles a lane, 1024 doubles a lane for vlog and vatan" -- special
+close special "the seven special functions: every half, 4096 singles a lane, 1024 doubles a lane for vlog and vatan"
 same systolic from-old-spike.sha256 "the systolic array: weights that slide, pops in pieces, every element width, both floats of 8 bits, every value of frm" -- systolic
 same lanes from-old-spike.sha256 "vlane_idx at every element width" -- cross_lane lanes
 same cross from-old-spike.sha256 "the cross-lane unit: each of its 24 operations, with the patterns it reads" -- cross_lane 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
