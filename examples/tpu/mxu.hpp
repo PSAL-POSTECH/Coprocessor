@@ -78,12 +78,13 @@ class Mxu {
   }
 
   // A cycle takes Shape::SLOTS of vmatprep, vmatpush and vmatmul over all arrays and, per array, one weight, one
-  // input and one vpop instruction. An instruction for an array the machine lacks is never accepted.
+  // input and one vpop instruction; the vpops of all arrays share the pop port's rows. An instruction for an array the
+  // machine lacks is never accepted.
   bool can_accept(const Insn &insn, Cycle now) const {
     if (array_of(insn) >= arrays_.size()) return false;
     const Array &array = arrays_[array_of(insn)];
     if (!slot(array, insn).room(now)) return false;
-    if (is(insn, POP)) return insn.vl <= out(array, insn) || drained(array);
+    if (is(insn, POP)) return (insn.vl <= out(array, insn) || drained(array)) && taken(array, insn) <= pop_.room(now);
     if (!issue_.room(now)) return false;
     if (is(insn, MATMUL)) return rows(insn) <= capacity_ - array.input;
     return true;
@@ -97,10 +98,9 @@ class Mxu {
       array.queued.push_back({rows(insn), Shape::WORD_A_CYCLE ? rows_in_word(vcix_accel::rs1(insn)) : 1});
     }
     if (is(insn, POP)) {
-      uint32_t &left = upper(insn) ? array.out_upper : array.out_lower;
-      const uint32_t taken = insn.vl < left ? insn.vl : left;
-      left -= taken;
-      pop_.admit(taken, now);
+      const uint32_t rows = taken(array, insn);
+      (upper(insn) ? array.out_upper : array.out_lower) -= rows;
+      pop_.admit(rows, now);
     }
     return 1;
   }
@@ -197,6 +197,8 @@ class Mxu {
   }
   static uint32_t rows(const Insn &insn) { return insn.vl * rows_in_word(vcix_accel::rs1(insn)); }
   static uint32_t out(const Array &array, const Insn &insn) { return upper(insn) ? array.out_upper : array.out_lower; }
+  // The rows a vpop takes: up to its vl of what is out.
+  static uint32_t taken(const Array &array, const Insn &insn) { return insn.vl < out(array, insn) ? insn.vl : out(array, insn); }
   static bool drained(const Array &array) { return !array.input && !array.in_line; }
   // Moves one array's delay line a slot; a row out goes to both output queues when an operand is two registers.
   void step(Array &array, Cycle now) {
