@@ -1,10 +1,11 @@
-// The tpu model's systolic array: rows enter an input queue, cross 2 x lanes - 1 stages and wait in an output queue,
-// a row a cycle in and an instruction a cycle into the unit. The default keys are the golden timing (every step at
-// issue); tpu_systolic_command_queue and the three keys after it make it systolic.sv's (examples/rtl/systolic).
+// The tpu model's systolic array: rows enter an input queue, cross 2 x lanes - 1 stages, the PEs of one anti-diagonal
+// a stage, and wait in an output queue, a row a cycle in. Default keys: the golden timing (every step at issue);
+// tpu_systolic_command_queue and the three keys after it make it systolic.sv's (examples/rtl/systolic).
 #ifndef TPU_SYSTOLIC_HPP
 #define TPU_SYSTOLIC_HPP
 
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include "vcix_uarch.hpp"
@@ -17,7 +18,12 @@ class Systolic {
   using Host = vcix_uarch::Host;
   using Insn = vcix_uarch::Insn;
   using Route = vcix_uarch::Route;
-  using Row = std::vector<float>;
+  using Weights = std::vector<std::deque<float>>;
+  // A row in the array: element i of every lane, each output lane's sum so far, the weights it was pushed under.
+  struct Row {
+    std::vector<float> input, sums;
+    std::shared_ptr<const Weights> weights;
+  };
 
  public:
   // `name` is the unit as its statistics report it; the model that holds the unit says it.
@@ -33,7 +39,8 @@ class Systolic {
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 1 || entries > UINT32_MAX)
       throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
-    array_.configure(2 * lanes - 1, entries, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
+    stages_ = static_cast<uint32_t>(2 * lanes - 1);
+    array_.configure(stages_, entries, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
     commands_.configure(static_cast<uint32_t>(config.uint(COMMANDS_KEY, 0)));
     in_.set_capacity(config.uint(IN_KEY, vcix_uarch::UNLIMITED));
     pop_.set_capacity(config.uint(POP_KEY, entries));
@@ -44,72 +51,40 @@ class Systolic {
   template <class H>
   void hardware(H &&h) {
     h.port(entry_), h.port(issue_), h.port(weight_push_), h.port(pop_), h.port(in_);
-    h.pipeline(array_, entry_);
+    h.pipeline(array_, entry_, &Systolic::stage);
     h.queue(commands_);
     h.reg(weights_);
   }
 
-  // vl rows into the array; each is the weights times element i of every lane, computed as it is pushed.
+  // vl rows into the array, row i element i of every lane, under the weights in the registers as it is sent.
   void input_push(Route &r) {
-    r.use(issue_).enqueue(commands_).send(array_, r.vl()).through(in_);
-    r.compute([&](const Host &host) {
-      const uint32_t lanes = host.lanes();
-      std::vector<Row> input(lanes, Row(r.vl()));
-      for (uint32_t lane = 0; lane < lanes; lane++)
-        for (uint32_t i = 0; i < r.vl(); i++) input[lane][i] = element(host, r.insn(), lane, i);
-      const std::vector<std::deque<float>> &weights = weights_.get();
+    r.use(issue_).enqueue(commands_);
+    r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
+    r.compute([&](const Host &) {
+      if (r.vl()) element_format(r.insn());
+      const Weights &weights = weights_.get();
       if (weights.empty() || weights[0].empty()) fail("systolic input push: no weight was pushed before it");
-      for (uint32_t i = 0; i < r.vl(); i++) {
-        Row row(lanes);
-        for (uint32_t lane = 0; lane < lanes; lane++) {
-          float output = 0;
-          uint32_t k = 0;
-          for (float weight : weights[lane]) output = multiply_add(output, input[k++][i], weight);
-          row[lane] = output;
-        }
-        array_.put(std::move(row));
-      }
     });
   }
-  // vl beats of weights into the unit's registers; a row keeps its last `lanes`. Under tpu_systolic_weight_waits they
-  // move only once the array is empty.
+  // vl beats of weights into the registers, beat i element i of every lane; a lane keeps its last `lanes`. Under
+  // tpu_systolic_weight_waits they move only once the array is empty.
   void weight_push(Route &r) {
     r.use(issue_).use(weight_push_).enqueue(commands_);
     if (weight_waits_) r.wait_until_empty(array_);
-    r.transfer(r.vl()).through(in_);
-    r.compute([&](const Host &host) {
-      const uint32_t lanes = host.lanes();
-      std::vector<Row> pushed(lanes, Row(r.vl()));
-      for (uint32_t lane = 0; lane < lanes; lane++)
-        for (uint32_t i = 0; i < r.vl(); i++) pushed[lane][i] = element(host, r.insn(), lane, i);
-      std::vector<std::deque<float>> &weights = weights_.write();
-      if (weights.empty()) weights.assign(lanes, {});
-      for (uint32_t lane = 0; lane < lanes; lane++)
-        for (float weight : pushed[lane]) {
-          if (weights[lane].size() == lanes) weights[lane].pop_front();
-          weights[lane].push_back(weight);
-        }
-    });
+    r.transfer(r.vl(), [this, &r](const Host &host, uint64_t i) { latch(host, r.insn(), i); }).through(in_);
   }
-  // Up to vl rows of the output queue, once vl are out or none is on its way; written in rs1's format, rounded by frm.
+  // Up to vl rows of the output queue, once vl are out or none is on its way, row i to element i of vd in every lane
+  // in rs1's format, rounded by frm.
   void pop(Route &r) {
-    r.use(issue_).enqueue(commands_).receive_at_most(array_, r.vl()).through(pop_);
-    r.compute([&](const Host &host) {
-      const uint64_t mode = host.csr(CSR_FRM);
-      const Element format = element_format(r.insn());
-      if (format == Element::BF16) fail("systolic pop: a pop to bfloat16 is not modeled");
-      if (array_.values_out() < r.vl())
-        fail("systolic pop: %u elements asked, %llu computed", r.vl(), static_cast<unsigned long long>(array_.values_out()));
-      const std::vector<Row> rows = array_.take(r.vl());
-      const uint32_t vd = vcix_accel::rd(r.insn());
-      for (uint32_t lane = 0; lane < host.lanes(); lane++)
-        for (uint32_t i = 0; i < rows.size(); i++) switch (format) {
-            case Element::INTEGER: put<int8_t>(host, lane, vd, i, static_cast<int8_t>(rows[i][lane])); break;
-            case Element::E4M3: put<uint8_t>(host, lane, vd, i, static_cast<uint8_t>(narrow(rows[i][lane], E4M3, mode))); break;
-            case Element::E5M2: put<uint8_t>(host, lane, vd, i, static_cast<uint8_t>(narrow(rows[i][lane], E5M2, mode))); break;
-            case Element::HALF: put<uint16_t>(host, lane, vd, i, static_cast<uint16_t>(narrow(rows[i][lane], HALF, mode))); break;
-            default: put<float>(host, lane, vd, i, rows[i][lane]); break;
-          }
+    r.use(issue_).enqueue(commands_);
+    r.receive_at_most(array_, r.vl(), [&r](const Host &host, uint64_t i, Row &&row) { popped(host, r.insn(), i, row); })
+        .through(pop_);
+    r.compute([&](const Host &) {
+      if (element_format(r.insn()) == Element::BF16) fail("systolic pop: a pop to bfloat16 is not modeled");
+    });
+    r.when_done([&r](const Host &) {
+      if (r.received() < r.vl())
+        fail("systolic pop: %u elements asked, %llu computed", r.vl(), static_cast<unsigned long long>(r.received()));
     });
   }
 
@@ -131,6 +106,52 @@ class Systolic {
     if (sew == 8 && (code == 1 || code == 2)) return code == 1 ? Element::E4M3 : Element::E5M2;
     if (sew == 16 && code == 3) return Element::BF16;
     fail("systolic: format %u names no element of %u bits", code, sew);
+  }
+  // Stage k: PE (lane, k - lane) adds input k - lane times its weight to lane's sum, so a lane sums k = 0.. in order;
+  // the last stage also does the anti-diagonals a hart of more lanes than the array has would need.
+  void stage(Row &row, uint32_t k) {
+    const Weights &weights = *row.weights;
+    const uint32_t lanes = static_cast<uint32_t>(row.sums.size());
+    const uint32_t last = k + 1 == stages_ && 2 * lanes > stages_ + 1 ? 2 * lanes - 2 : k;
+    for (uint32_t d = k; d <= last; d++)
+      for (uint32_t lane = 0; lane < lanes && lane <= d; lane++) {
+        const uint32_t at = d - lane;
+        if (at < weights[lane].size()) row.sums[lane] = multiply_add(row.sums[lane], row.input[at], weights[lane][at]);
+      }
+  }
+  // Row i of an input push: element i of every lane, sums of 0, and the weights as they are now.
+  Row pushed(const Host &host, const Insn &insn, uint64_t i) const {
+    const uint32_t lanes = host.lanes();
+    Row row{std::vector<float>(lanes), std::vector<float>(lanes, 0.0f), weights_.share()};
+    for (uint32_t lane = 0; lane < lanes; lane++) row.input[lane] = element(host, insn, lane, static_cast<uint32_t>(i));
+    return row;
+  }
+  // Beat i of a weight push: element i of every lane shifts into that lane's weights.
+  void latch(const Host &host, const Insn &insn, uint64_t i) {
+    const uint32_t lanes = host.lanes();
+    Weights &weights = weights_.write();
+    if (weights.empty()) weights.assign(lanes, {});
+    for (uint32_t lane = 0; lane < lanes; lane++) {
+      const float weight = element(host, insn, lane, static_cast<uint32_t>(i));
+      if (weights[lane].size() == lanes) weights[lane].pop_front();
+      weights[lane].push_back(weight);
+    }
+  }
+  // Row i a pop takes: each lane's sum to element i of vd.
+  static void popped(const Host &host, const Insn &insn, uint64_t i, const Row &row) {
+    const uint64_t mode = host.csr(CSR_FRM);
+    const Element format = element_format(insn);
+    const uint32_t vd = vcix_accel::rd(insn), at = static_cast<uint32_t>(i);
+    for (uint32_t lane = 0; lane < host.lanes(); lane++) {
+      const float sum = row.sums[lane];
+      switch (format) {
+        case Element::INTEGER: put<int8_t>(host, lane, vd, at, static_cast<int8_t>(sum)); break;
+        case Element::E4M3: put<uint8_t>(host, lane, vd, at, static_cast<uint8_t>(narrow(sum, E4M3, mode))); break;
+        case Element::E5M2: put<uint8_t>(host, lane, vd, at, static_cast<uint8_t>(narrow(sum, E5M2, mode))); break;
+        case Element::HALF: put<uint16_t>(host, lane, vd, at, static_cast<uint16_t>(narrow(sum, HALF, mode))); break;
+        default: put<float>(host, lane, vd, at, sum); break;
+      }
+    }
   }
   static float element(const Host &host, const Insn &insn, uint32_t lane, uint32_t i) {
     const uint32_t reg = vcix_accel::rs2(insn);
@@ -158,7 +179,8 @@ class Systolic {
   vcix_uarch::Port entry_, issue_, weight_push_, pop_, in_;
   vcix_uarch::Pipeline<Row> array_;
   vcix_uarch::CommandQueue commands_;
-  vcix_uarch::Register<std::vector<std::deque<float>>> weights_;
+  vcix_uarch::Register<Weights> weights_;
+  uint32_t stages_ = 1;
   bool weight_waits_ = false;
 };
 
