@@ -330,6 +330,9 @@ PyTorchSim measures on, each with the one unit naming its model.
 include/vcix_accel.h      the C ABI: vcix_model, vcix_insn,
                           vcix_config, vcix_host, vcix_encoding
 include/vcix_accel.hpp    C++ wrapper: subclass Model, VCIX_ACCEL_REGISTER
+include/vcix_uarch.hpp    units as hardware blocks (Port, Pipeline, CommandQueue,
+                          Register) and a route per instruction; Machine derives
+                          the Model from them
 adapters/spike/           what the Spike branch does; its code is in the Spike
                           repository
 adapters/gem5/            what the gem5 branch does; its code is in the gem5

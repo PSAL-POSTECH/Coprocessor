@@ -126,14 +126,11 @@ array's width + depth - 1.
 
 ## The functional face
 
-`tpu::MxuFunctional<Shape>` (`examples/tpu/mxu_functional.hpp`) derives from
-the tpu example's `tpu::FunctionalCore` (`examples/tpu/functional_core.hpp`),
-which carries out the special functions, `vlane_idx` and `compute`, the
-cross-lane unit and the DMA as `examples/tpu/README.md` says, and adds the
-matrix unit: the handlers of `vmatprep`, `vmatpush`, `vmatmul` and `vpop`, the
-unit whose encodings those are, and its state, per array (the staged and the
-active weights, the held upper halves, the results). A run it cannot carry out
-ends as the core's do, with a line on standard error that starts `tpu: ` and
+Each unit computes its own instructions' values (`examples/tpu/README.md`);
+`tpu::Mxu<Shape>` (`examples/tpu/mxu.hpp`) those of `vmatprep`, `vmatpush`,
+`vmatmul` and `vpop`, per array: the staged and the active weights and the
+held upper halves in a register, the results riding the array's pipeline. A
+run it cannot carry out ends as the other units' do, with a line on standard error that starts `tpu: ` and
 exit 1.
 
 ## The gem5 machine
