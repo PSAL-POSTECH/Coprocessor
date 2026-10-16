@@ -143,7 +143,8 @@ class XluValues {
 };
 
 // The values are a register, not the pipeline's entries: a push of the pattern ([4:3] 3) enters the stages but no
-// tile, and the first pop computes the whole tile, whose rows outlive the pops that take part of them.
+// tile, and the first pop computes the whole tile, whose rows outlive the pops that take part of them. A push writes it
+// as it issues, a pop reads it as its receive ends, both in the cycles the stages give them, on Spike as on gem5.
 class Xlu {
   using Host = vcix_uarch::Host;
   using Route = vcix_uarch::Route;
@@ -175,7 +176,7 @@ class Xlu {
       if (popped_.get()) stages_.flush(), popped_.write() = false;
     });
     r.send(stages_, r.vl());
-    r.compute([&](const Host &host) {
+    r.at_issue([&](const Host &host) {
       if (r.arg()) values_.write().xlu_push_pattern(host, r.insn());
       else values_.write().xlu_push(host, r.insn());
     });
@@ -185,7 +186,7 @@ class Xlu {
     r.use(issue_).receive_at_most(stages_, r.vl()).at_issue([&] {
       if (!popped_.get()) popped_.write() = true;
     });
-    r.compute([&](const Host &host) { values_.write().xlu_pop(host, r.insn()); });
+    r.when_received([&](const Host &host, uint64_t) { values_.write().xlu_pop(host, r.insn()); });
   }
 
   static constexpr uint32_t FORM = 0xFE00707F;
