@@ -1,6 +1,6 @@
 // vcix_uarch: a unit lists its hardware blocks (ports, pipelines, a command queue, registers) and, per instruction,
 // the route it takes through them. Machine reads one route as gem5's can_accept and issue; Spike issues it the same way
-// and ticks the same cycles, the rows carrying values, unless its values are all compute(). Moves are seen next cycle.
+// and ticks the same cycles, the same state carrying values where gem5's carries none. Moves are seen next cycle.
 #ifndef VCIX_UARCH_HPP
 #define VCIX_UARCH_HPP
 
@@ -330,37 +330,13 @@ class AnyPipeline {
   Slots input_, line_, out_[2];
 };
 
-// A pipeline whose rows carry values of type T on Spike. For a unit whose values are compute(), put and take are instead
-// a plain queue that takes no time.
+// A pipeline whose rows carry values of type T on Spike.
 template <class T = char>
 class Pipeline : public AnyPipeline {
- public:
-  // put appends an entry for every output, take(n, output) removes up to n of that output's.
-  void put(T value) { queue_.write().items.push_back(std::move(value)); }
-  std::vector<T> take(uint64_t n, uint32_t output = 0) {
-    Queue &v = queue_.write();
-    const uint64_t at = v.taken[output], k = std::min<uint64_t>(n, v.items.size() - at);
-    std::vector<T> got(v.items.begin() + static_cast<long>(at), v.items.begin() + static_cast<long>(at + k));
-    v.taken[output] += k;
-    const uint64_t gone = outputs() == 1 ? v.taken[0] : std::min(v.taken[0], v.taken[1]);
-    v.items.erase(v.items.begin(), v.items.begin() + static_cast<long>(gone));
-    for (uint32_t q = 0; q < outputs(); q++) v.taken[q] -= gone;
-    return got;
-  }
-  uint64_t values_out(uint32_t output = 0) const { return queue_.get().items.size() - queue_.get().taken[output]; }
-
  private:
   friend class Route;
   template <class...>
   friend class Machine;
-  struct Queue {
-    std::deque<T> items;
-    uint64_t taken[2] = {};
-  };
-  void reset() {
-    flush();
-    queue_.reset();
-  }
   // Row `row` of the input queue, as it arrives; row `row` of an output queue, as it is taken.
   void arrived(uint64_t row, T value) { input_.value<T>(row) = std::move(value); }
   T taken(uint32_t output, uint64_t row) { return std::move(out_[output].value<T>(row)); }
@@ -372,7 +348,6 @@ class Pipeline : public AnyPipeline {
         for (uint32_t k = 0; k < rows; k++) f(line_.value<T>(row + k), moves_ - 1 - tag);
       });
   }
-  Register<Queue> queue_;
 };
 
 // Issued instructions in program order; only the head works. Depth 0: no queue, every step at issue. A command
@@ -537,7 +512,6 @@ class Route {
   template <class F>
   Route &when_received(F received) {
     if (keeps_values() && count_) hooks_->received.push_back({count_ - 1, std::move(received)});
-    has_values_ |= host_ != nullptr;
     return *this;
   }
   // The last transfer's n pass this port, at most its width a cycle; at issue the whole n must fit this cycle.
@@ -582,7 +556,6 @@ class Route {
   Route &at_issue(F &&change) {
     if constexpr (std::is_invocable_v<F &, const Host &>) {
       if (keeps_values()) change(*host_);
-      has_values_ |= host_ != nullptr;
     } else if (mode_ == ISSUE) {
       change();
     }
@@ -592,20 +565,13 @@ class Route {
   template <class F>
   Route &when_done(F done) {
     if (keeps_values()) hooks_->done.push_back(std::move(done));
-    has_values_ |= host_ != nullptr;
-    return *this;
-  }
-  // The instruction's values (Spike only), at issue; takes no time.
-  template <class F>
-  Route &compute(F &&values) {
-    if (mode_ == VALUE || keeps_values()) values(*host_);
     return *this;
   }
 
  private:
   template <class...>
   friend class Machine;
-  enum Mode { CHECK, ISSUE, VALUE };
+  enum Mode { CHECK, ISSUE };
   enum Kind { REQUIRE, USE, ENQUEUE, SEND, RECEIVE, TRANSFER };
   // Trivial, so the steps a route does not declare cost nothing; made() is a declared one.
   struct Step {
@@ -638,7 +604,6 @@ class Route {
   };
   Route(Mode mode, const Insn &insn, uint32_t arg, const Host *host) : mode_(mode), insn_(insn), arg_(arg), host_(host) {}
   Step &add(Kind k) {
-    if (mode_ == VALUE) return scratch_ = Step::made(k);
     if (count_ == MAX_STEPS) {
       std::fprintf(stderr, "vcix_uarch: a route of more than %u steps\n", MAX_STEPS);
       std::abort();
@@ -648,7 +613,7 @@ class Route {
     guard_ = nullptr;
     return s;
   }
-  Step &last() { return mode_ == VALUE || !count_ ? scratch_ : steps_[count_ - 1]; }
+  Step &last() { return steps_[count_ - 1]; }
   CommandQueue *queue() const {
     for (uint32_t i = 0; i < count_; i++)
       if (steps_[i].kind == ENQUEUE && steps_[i].queue->depth_) return steps_[i].queue;
@@ -748,7 +713,6 @@ class Route {
   template <class F>
   Route &on_moves(F &&each) {
     if (keeps_values() && count_) hooks_->moves.push_back({count_ - 1, std::forward<F>(each)});
-    has_values_ |= host_ != nullptr;
     return *this;
   }
   // n entries or beats of step `at` move, from its from-th on: the same entries on gem5 and Spike, and on Spike, of route
@@ -786,12 +750,11 @@ class Route {
   uint32_t arg_;
   const Host *host_;
   Step steps_[MAX_STEPS];
-  Step scratch_ = Step::made(REQUIRE);
   uint32_t count_ = 0;
   AnyPipeline *guard_ = nullptr;
   Cycle latency_ = 1;
   Hooks *hooks_ = nullptr;
-  bool when_idle_ = false, when_enqueued_ = false, has_values_ = false;
+  bool when_idle_ = false, when_enqueued_ = false;
 };
 
 // An encoding, its name, and the unit's function that declares its route; `arg` tells a family's members apart.
@@ -818,9 +781,8 @@ class Machine : public vcix_accel::Model {
     std::apply([&](U &...u) { (u.configure(c), ...); }, units_);
     reset();
   }
-  // Spike: a route that gives its moves values is issued as gem5 issues it, the machine ticked as gem5 ticks it while
-  // it is not taken and until it is done, the rows carrying values; it stands still between instructions. Else its
-  // compute() is all.
+  // Spike: the route is issued as gem5 issues it, the machine ticked as gem5 ticks it while it is not taken and until it
+  // is done, the route's functions giving the values; it stands still between instructions.
   void execute(const Host &host, const Insn &insn) override {
     if (!std::apply([&](U &...u) { return (execute_on(u, insn, host) || ...); }, units_)) {
       std::fprintf(stderr, "vcix_uarch: instruction %08x has no unit\n", insn.bits);
@@ -855,7 +817,7 @@ class Machine : public vcix_accel::Model {
   void reset() override {
     std::apply([&](U &...u) {
       (u.hardware(blocks([](Port &p) { p.reset(); },
-                         [](auto &p, Port &) { p.reset(); },
+                         [](auto &p, Port &) { p.flush(); },
                          [](CommandQueue &q) { q.reset(); }, [](auto &r) { r.reset(); })),
        ...);
     }, units_);
@@ -1018,24 +980,17 @@ class Machine : public vcix_accel::Model {
     return c.step == c.count;
   }
 
-  // Spike's execute on unit u, when it owns the instruction: the route declared with the host says whether its moves
-  // carry values; if they do, it is clocked, else declared again for its compute().
+  // Spike's execute on unit u, when it owns the instruction.
   template <class V>
   bool execute_on(V &u, const Insn &insn, const Host &host) {
-    for (const auto &i : V::INSTRUCTIONS) {
-      if ((insn.bits & i.mask) != i.match) continue;
-      Route probe(Route::CHECK, insn, i.arg, &host);
-      (u.*i.route)(probe);
-      if (probe.has_values_) clocked(u, i, insn, host);
-      else run(Route::VALUE, u, insn, &host, [](Route &) {});
-      return true;
-    }
+    for (const auto &i : V::INSTRUCTIONS)
+      if ((insn.bits & i.mask) == i.match) return clocked(u, i, insn, host), true;
     return false;
   }
   template <class V, class I>
   void clocked(V &u, const I &instruction, const Insn &insn, const Host &host) {
     const auto accepts = [&] {
-      Route r(Route::CHECK, insn, instruction.arg, nullptr);
+      Route r(Route::CHECK, insn, instruction.arg, &host);
       (u.*instruction.route)(r);
       return r.check(clock_);
     };
