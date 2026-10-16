@@ -1,11 +1,11 @@
 # tpu
 
 A TPU's units on the two custom opcodes: one model (`libtpu.so`, name `tpu`).
-The timing face is five unit classes; each lists its own encodings. `tpu.cc`
-holds them in a `tpu::Machine` (`machine.hpp`), which owns all of them and
-hands each call to the unit that owns the instruction. The functional face is
-`tpu::Functional` (`functional.hpp`): what each instruction does to the
-registers and to memory, which `execute` hands every instruction to.
+It is five `vcix_uarch` units (`include/vcix_uarch.hpp`); each lists its own
+encodings, its blocks, and per instruction the route it takes through them and
+what it computes. `tpu.cc` holds them in a `tpu::Machine` (`machine.hpp`), a
+`vcix_uarch::Machine` that adds `tpu_trace`; one route gives both faces, the
+timing on gem5 and the values on Spike.
 
 ## Units
 
@@ -22,10 +22,10 @@ The systolic array's `compute` has no timing effect and is owned by
 instructions at one cycle each. Nothing on custom-3 is owned.
 
 The array and the cross-lane unit are the same structure with a delay line of
-a different length: `tpu::Stream` (`stream.hpp`) is the two queues and the
-delay line, and each unit has one. Its latency is not known: the 10 of
-`tpu_xlu_latency_cycles` is a placeholder. The multi-precision array is a third `tpu::Stream`, as long as
-the systolic array's. That an array working on a reduced width takes the full
+a different length: a `vcix_uarch::Pipeline` (input queue, stages, output
+queue, `Stall::WHEN_OUTPUT_FULL`), and each unit has one. Its latency is not
+known: the 10 of `tpu_xlu_latency_cycles` is a placeholder. The
+multi-precision array is a third pipeline, as long as the systolic array's. That an array working on a reduced width takes the full
 delay is a decision, not a measurement: no hardware says what it takes.
 
 What a stream is asked to pop need not be what it was pushed, and the rule
@@ -39,18 +39,21 @@ What a pop leaves stays in the output queue. The two arrays compute as
 queues, so it is popped next: an array program that pushes more than it pops
 fills the output queue and stops, and a push then waits for good. The
 cross-lane unit computes a tile, the pushes between two pops, and its first
-pop replaces what the last tile left (`functional.hpp`). So its timing forgets
+pop replaces what the last tile left. So its timing forgets
 the old tile at the first push after a pop, the queues and the line, and a pop
 is never served from the tile before. The tile's shape is not read, nor the
 field at 19:15: a tile 2 lanes by 1 deep that comes out 1 lane by 2 deep is a
 push of 1 and a pop of 2.
 
-A unit is a plain copyable class with the methods of the timing face
-(`owns`, `configure`, `can_accept`, `issue`, `commit`, `tick`), a static
-`encodings()`, the named encodings `owns` is answered from, and
-`trace_queues(insn)`, what it adds to an issue of `insn` under `tpu_trace`.
-`tpu::Sfu`, `tpu::Systolic`, `tpu::Xlu` and `tpu::Msa` change state at
-`issue`; the two arrays and the cross-lane unit also move in `tick`.
+A unit is a plain copyable class: a constructor taking its name,
+`configure(Config)`, `hardware(h)` listing its ports, pipelines, command queue
+and registers, and `INSTRUCTIONS`, each encoding with the function that
+declares its route (`r.use(port)`, `r.send(pipeline, n)`,
+`r.receive_at_most(pipeline, n).through(port)`, `r.done_after(n)`, ...) and its
+values (`r.compute(...)`). `vcix_uarch::Machine` derives `can_accept`, `issue`,
+`tick`, `reset`, the ports and `execute` from them. Under `tpu_trace` an issue
+reports the unit's pipeline queues, or what its `trace_queues(insn)` prints
+(the matrix unit's).
 
 A unit has no name of its own: it is built with the name its statistics
 report, and the model that holds it says which. `tpu.cc` gives the five the
@@ -58,14 +61,14 @@ names of the table's "Reported as", so gem5 reports `vcix.SYSTOLIC.admitted`
 and so on (before, `vcix.Systolic.*`, `vcix.Sfu.*`, `vcix.Misc.*`,
 `vcix.Xlu.*`, `vcix.Msa.*`). The encodings' names, and so
 `vcix.committed.<encoding>`, are the units' and did not change.
-`tpu::Machine<Functional, Unit...>` holds the units in the order it is given
+`tpu::Machine<Unit...>` holds the units in the order it is given
 them: configure, tick, reset and the ports go to them in that order, a call
 about an instruction to the first that owns it. The order of the ports is the
 order of the units in the statistics a simulator lists.
 
-## The functional face
+## The values
 
-`tpu::Functional` does what the Spike these units came from did
+The units' values do what the Spike these units came from did
 (riscv-isa-sim branch `spike-multi-precision-sa`, ea9ec10: `spike-fp8` and the
 multi-precision array, the units built in; the DMA as of 9f555b4, without the
 element type `spike-fp8` added to the descriptor), in every lane:
@@ -81,22 +84,14 @@ element type `spike-fp8` added to the descriptor), in every lane:
 | `msa push`, `msa pop` | the multi-precision array: the systolic array on words of 32 bits that hold 1 single, 2 halves or 4 floats of 8 bits, so a column keeps `lanes` times that many weights. The field at 19:15 of a push says [4] weights or inputs, [3:2] how many columns compute (all of them, shifted right by it; the others give 0), [1:0] what a word holds (single, half, E4M3, E5M2). A weight push of another format or width empties the matrix. A pop takes what is there, as singles, halves, or 8-bit floats (E5M2 when its field's [1:0] is 3, E4M3 otherwise) |
 | `dma_config_desc`, `mvin`, `mvin2`, `mvin3`, `mvout` | a tensor of up to four dimensions between memory and the scratchpad, as the descriptor says: a mask, skip axes, a fill value, a bound on memory, an accumulating `mvout`, indices |
 
-It finds an instruction by the names the units give their encodings, so an
-encoding is still stated once. Its state (the matrix and queues of the array,
-the tile of the cross-lane unit, the descriptor's address) is in its members,
-and is not touched by the timing face.
-
-It is two files. `functional_core.hpp` is `tpu::FunctionalCore<Face>`: the
-numbers (halves, bfloat16, the floats of 8 bits and how a single is narrowed
-to them), the lanes' registers, and the units another TPU model holds as well:
-the special-function unit, `vlane_idx` and `compute`, the cross-lane unit and
-the DMA, with their state. `functional.hpp` is `tpu::Functional`, the face of
-this model, which derives from it and adds the two arrays: their handlers
-(`array_handlers()`), the units whose encodings those are (`array_units()`),
-and their state. The core builds one table from both, so `execute` looks an
-instruction up once whichever unit has it. `mxu_functional.hpp` is
-`tpu::MxuFunctional`, the face of `examples/tpuv6e` and `examples/tpuv3`, which
-derives from the same core and adds the matrix unit of `mxu.hpp`.
+Each unit keeps its values in its own blocks. The arrays' results ride their
+pipeline (`Pipeline<Row>`: `put` at the push, `take` at the pop); the weights,
+the cross-lane unit's tile and the DMA's descriptor are `vcix_uarch::Register`s.
+The cross-lane unit's tile is a register, not the pipeline's entries: a push
+of its pattern enters the stages and no tile, and its first pop computes the
+whole tile. `values.hpp` holds the numbers (halves, bfloat16, the floats of 8
+bits and how a single is narrowed to them, an operation's NaN as golden's x86
+build gave it) and `dma.hpp` the DMA, `tpu::Misc`'s untimed side path.
 
 Where the old Spike trapped, asserted or read past a buffer, the model ends
 the run with a line on standard error (`tpu: ...`, exit 1): a special function
@@ -126,6 +121,10 @@ argument it also runs it and compares the outputs byte by byte.
 | `tpu_trace` | 0 | not 0: the model prints a line at every issue and every commit |
 | `vpu_num_lanes` | 128 | width and height of the systolic array and of the multi-precision array; 1 to 2^20 |
 | `tpu_systolic_queue_entries` | 256 | entries in the input queue and in the output queue of each of the two arrays; at least 1 |
+| `tpu_systolic_command_queue` | 0 | 0: every step of a systolic instruction happens at issue (the timing above). N: instructions wait in an in-order queue of N, the head working, as `examples/rtl/systolic/systolic.sv` does |
+| `tpu_systolic_in_rows_per_cycle` | no limit | rows a cycle of an input or weight push at the queue head; needs the queue |
+| `tpu_systolic_pop_rows_per_cycle` | `tpu_systolic_queue_entries` | rows a cycle of a pop; given, needs the queue |
+| `tpu_systolic_weight_waits` | 0 | not 0: a weight push moves only once the array is empty; needs the queue |
 | `tpu_xlu_latency_cycles` | 10 | slots in the cross-lane unit's delay line, one cycle each; at least 1. A placeholder: the unit's latency is not known |
 | `tpu_xlu_queue_entries` | 256 | entries in the cross-lane unit's input queue and in its output queue; at least 1 |
 | `vpu_spad_size_kb_per_lane` | none | the scratchpad of one lane, which the DMA lays a tensor out over; a transfer without it ends the run |
