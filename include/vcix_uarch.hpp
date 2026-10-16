@@ -48,8 +48,6 @@ class Register {
     return *p_;
   }
   void reset() { p_ = reset_; }
-  // What it holds now, which a later write() leaves as it is.
-  std::shared_ptr<const S> share() const { return p_ ? p_ : std::make_shared<const S>(); }
 
  private:
   static const S &none() {
@@ -777,6 +775,12 @@ class Machine : public vcix_accel::Model {
   }
 
  private:
+  // A head's transfer of values in this cycle, given its values at the cycle's end.
+  struct Beats {
+    Route *route;
+    uint32_t at;
+    uint64_t from, n;
+  };
   struct Ignore {
     template <class... A>
     void operator()(A &&...) const {}
@@ -829,8 +833,8 @@ class Machine : public vcix_accel::Model {
     return false;
   }
   // A cycle of one unit: commands done when enqueued that arrive are done; each queue's head works; the pipelines with
-  // anything in them move and their stages work; then what everything moved becomes visible, and a command waiting
-  // for an idle queue may be done.
+  // anything in them move, their stages reading the registers as the cycle began; then the head's beats land, what
+  // everything moved becomes visible, and a command waiting for an idle queue may be done.
   template <class V>
   void tick_unit(V &u, Cycle now) {
     u.hardware(blocks(Ignore{}, Ignore{}, [&](CommandQueue &q) { q.arrivals(now, ready_); }));
@@ -842,6 +846,8 @@ class Machine : public vcix_accel::Model {
       if constexpr (sizeof...(stage) == 1)
         if (moved) p.each_stage([&](auto &value, uint32_t k) { ((u.*stage)(value, k), ...); });
     }));
+    for (const Beats &b : beats_) Route::move(b.route, b.at, b.from, b.n, Route::TRANSFER, nullptr, 0, 0);
+    beats_.clear();
     u.hardware(blocks(Ignore{}, [](auto &p, Port &, auto...) { p.end_cycle(); },
                       [&](CommandQueue &q) { q.release_waiters(now, ready_); }));
   }
@@ -851,7 +857,7 @@ class Machine : public vcix_accel::Model {
     CommandQueue::Command &c = q.list_.front();
     if (c.arrives >= now) return;
     list_blocks(u, q);
-    if (!advance(c, q, now)) return;
+    if (!advance(c, q, now, beats_)) return;
     if (c.when_idle) q.waiters_.push_back(c.id);
     else if (!c.when_enqueued) ready_.push_back(c.id);
     q.give_back(c);
@@ -866,7 +872,7 @@ class Machine : public vcix_accel::Model {
                       [&](AnyPipeline &p, Port &) { q.blocks_.pipelines.push_back(&p); }));
   }
   // One cycle of the head command: its recorded step moves what the registered state allows. True when it is done.
-  static bool advance(CommandQueue::Command &c, CommandQueue &q, Cycle now) {
+  static bool advance(CommandQueue::Command &c, CommandQueue &q, Cycle now, std::vector<Beats> &beats) {
     if (q.free_ == Free::WHEN_STARTED && !c.started) {
       c.started = true;
       q.give_back(c);
@@ -890,7 +896,8 @@ class Machine : public vcix_accel::Model {
         moved = std::min(left, width);
       }
       const uint32_t at = c.values ? c.values->queued_from() + c.step : 0;
-      Route::move(c.values, at, c.done, moved, s.kind, pipe, s.weight, s.output);
+      if (s.kind == Route::TRANSFER && c.values && moved) beats.push_back({c.values, at, c.done, moved});
+      else Route::move(c.values, at, c.done, moved, s.kind, pipe, s.weight, s.output);
       if (through && moved) through->admit(moved, now);
       c.done += moved;
       if (finished || c.done == s.n) c.step++, c.done = 0;
@@ -985,6 +992,7 @@ class Machine : public vcix_accel::Model {
 
   std::tuple<U...> units_;
   std::vector<Id> ready_;
+  std::vector<Beats> beats_;
   Cycle clock_ = 0;
   Id spike_id_ = 0;
 };
