@@ -34,7 +34,7 @@ unit_stat() { awk -v want=".vcix.$2.$3" 'substr($1, length($1) - length(want) + 
 # units <run>: the units in the run's dump, as gem5 sorts them
 units() { sed -n 's/^.*\.vcix\.\([^.]*\)\.admitted .*$/\1/p' "$BUILD/m5out-tpuv6e-$1/stats.txt" | tr '\n' ' ' | sed 's/ $//'; }
 
-for program in mxu mxu_rate mxu_arrays mxu_slots scratchpad valu ../tpu/loads ../tpu/addresses; do
+for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops scratchpad valu ../tpu/loads ../tpu/addresses; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv6e-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 
@@ -109,6 +109,14 @@ for run in mxu_slots mxu_slots-script; do
   report "exit ${rc[$run]}, lines $together of $(lines $run issue)" "exit 0, lines 2 of 14" \
     "$run: the first input's lower pop and the second input's vmatmul, a vpop slot and an inputs' slot, issue in one cycle"
 done
+
+echo "-- matrix unit, 4 lanes, tpu_mxu_units: 2, queues of 4: two arrays' vpops share the pop port's rows"
+printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 4\ntpu_mxu_units: 2\n' > "$BUILD/tpuv6e-mxu-pops.yml"
+on_gem5 mxu_pops mxu_pops "$BUILD/tpuv6e-mxu-pops.yml"
+pops=$(said mxu_pops "issue vpop: 19 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 4 and 4" \
+  "issue vpop: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 4 and 4")
+report "exit ${rc[mxu_pops]}, lines $pops of $(lines mxu_pops issue)" "exit 0, lines 2 of 4" \
+  "each array's four rows are out in one cycle and the pop port takes four rows a cycle, so array 1's vpop waits a cycle behind array 0's"
 
 echo "-- the machine PyTorchSim measures on (examples/tpuv6e/gem5)"
 
