@@ -50,7 +50,8 @@ A unit is a plain copyable class: a constructor taking its name,
 and registers, and `INSTRUCTIONS`, each encoding with the function that
 declares its route (`r.use(port)`, `r.send(pipeline, n)`,
 `r.receive_at_most(pipeline, n).through(port)`, `r.done_after(n)`, ...) and its
-values (`r.compute(...)`). `vcix_uarch::Machine` derives `can_accept`, `issue`,
+values (the functions it gives `send`, `receive`, `transfer`, `at_issue`,
+`when_received` and `when_done`). `vcix_uarch::Machine` derives `can_accept`, `issue`,
 `tick`, `reset`, the ports and `execute` from them. Under `tpu_trace` an issue
 reports the unit's pipeline queues, or what its `trace_queues(insn)` prints
 (the matrix unit's).
@@ -84,15 +85,17 @@ element type `spike-fp8` added to the descriptor), in every lane:
 | `msa push`, `msa pop` | the multi-precision array: the systolic array on words of 32 bits that hold 1 single, 2 halves or 4 floats of 8 bits, so a column keeps `lanes` times that many weights. The field at 19:15 of a push says [4] weights or inputs, [3:2] how many columns compute (all of them, shifted right by it; the others give 0), [1:0] what a word holds (single, half, E4M3, E5M2). A weight push of another format or width empties the matrix. A pop takes what is there, as singles, halves, or 8-bit floats (E5M2 when its field's [1:0] is 3, E4M3 otherwise) |
 | `dma_config_desc`, `mvin`, `mvin2`, `mvin3`, `mvout` | a tensor of up to four dimensions between memory and the scratchpad, as the descriptor says: a mask, skip axes, a fill value, a bound on memory, an accumulating `mvout`, indices |
 
-Each unit keeps its values in its own blocks. The systolic array's rows ride
-its pipeline's slots on Spike, through the same cycles as on gem5, and its
-`stage` function adds each PE's product as a row reaches it; the other arrays'
-results ride their pipeline as a plain queue (`put` at the push, `take` at the
-pop). The weights, the cross-lane unit's tile and the DMA's descriptor are
-`vcix_uarch::Register`s.
+Each unit keeps its values in its own blocks, and Spike runs every unit
+through the same cycles as gem5. The systolic array's rows ride its
+pipeline's slots, and its `stage` function adds each PE's product as a row
+reaches it; the multi-precision array's and the matrix unit's rows ride theirs
+too, each made as it enters (the matrix as it is then), and a pop writes each
+row it takes. The weights, the cross-lane unit's tile and the DMA's descriptor
+are `vcix_uarch::Register`s, written as their instructions issue.
 The cross-lane unit's tile is a register, not the pipeline's entries: a push
 of its pattern enters the stages and no tile, and its first pop computes the
-whole tile. `values.hpp` holds the numbers (halves, bfloat16, the floats of 8
+whole tile as its receive ends. A special function and a misc instruction
+write `vd` the cycle they are done; the DMA acts as it issues. `values.hpp` holds the numbers (halves, bfloat16, the floats of 8
 bits and how a single is narrowed to them, an operation's NaN as golden's x86
 build gave it) and `dma.hpp` the DMA, `tpu::Misc`'s untimed side path.
 
