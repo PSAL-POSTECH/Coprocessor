@@ -282,7 +282,6 @@ class AnyPipeline {
   bool drained() const { return input_.empty() && line_.empty(); }
   uint64_t input_entries() const { return input_.rows(SEEN); }
   uint64_t output_entries(uint32_t output = 0) const { return out_[output].rows(); }
-  uint32_t outputs() const { return outputs_; }
   // Forgets what is queued and in the stages.
   void flush() {
     input_.clear(), line_.clear(), out_[0].clear(), out_[1].clear();
