@@ -1,5 +1,6 @@
 // A TPU's instructions with no timing of their own: one cycle each, tpu_misc_issue_width of them a cycle. Their values:
-// the lane number, the bf16 pack and unpack, and the DMA (dma.hpp), an untimed side path whose time TOGSim counts.
+// the lane number, the bf16 pack and unpack, written as the instruction is done, and the DMA (dma.hpp), an untimed side
+// path whose time TOGSim counts, carried out as it issues.
 #ifndef TPU_MISC_HPP
 #define TPU_MISC_HPP
 
@@ -37,15 +38,15 @@ class Misc {
     h.reg(dma_);
   }
 
-  // A slot of the issue width, done the next cycle; the values of V.
+  // A slot of the issue width, done the next cycle, when V writes its values.
   template <Values V>
   void one(Route &r) {
-    r.use(issue_).compute([&](const Host &host) { V(host, r.insn()); });
+    r.use(issue_).when_done([&r](const Host &host) { V(host, r.insn()); });
   }
-  // The same slot; the DMA's V on its descriptor and counts.
+  // The same slot; the DMA's V on its descriptor and counts, as it issues.
   template <DmaValues V>
   void dma(Route &r) {
-    r.use(issue_).compute([&](const Host &host) { (dma_.write().*V)(host, r.insn()); });
+    r.use(issue_).at_issue([&](const Host &host) { (dma_.write().*V)(host, r.insn()); });
   }
 
  private:
