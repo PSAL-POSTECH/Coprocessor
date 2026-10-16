@@ -1,10 +1,11 @@
 // The tpu model's systolic array: rows enter an input queue, cross 2 x lanes - 1 stages, the PEs of one anti-diagonal
-// a stage, and wait in an output queue, a row a cycle in. Default keys: the golden timing (every step at issue);
-// tpu_systolic_command_queue and the three keys after it make it systolic.sv's (examples/rtl/systolic).
+// a stage, and wait in an output queue, a row a cycle in. Default keys: the golden timing (every step at issue), a row
+// meeting the weights pushed before it; tpu_systolic_command_queue and the keys after it make it systolic.sv's.
 #ifndef TPU_SYSTOLIC_HPP
 #define TPU_SYSTOLIC_HPP
 
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include "vcix_uarch.hpp"
@@ -18,9 +19,11 @@ class Systolic {
   using Insn = vcix_uarch::Insn;
   using Route = vcix_uarch::Route;
   using Weights = std::vector<std::deque<float>>;
-  // A row in the array: element i of every lane, and each output lane's sum so far.
+  // A row in the array: element i of every lane, each output lane's sum so far, and with no command queue the weights
+  // its PEs hold for it: the weights a push brings travel down the array behind the rows already in it.
   struct Row {
     std::vector<float> input, sums;
+    std::shared_ptr<const Weights> weights;
   };
 
  public:
@@ -57,7 +60,7 @@ class Systolic {
   // vl rows into the array, row i element i of every lane.
   void input_push(Route &r) {
     r.use(issue_).enqueue(commands_);
-    r.send(array_, r.vl(), [&r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
+    r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
     r.compute([&](const Host &) {
       if (r.vl()) element_format(r.insn());
       const Weights &weights = weights_.get();
@@ -107,7 +110,7 @@ class Systolic {
   // Stage k: PE (lane, k - lane) adds input k - lane times the weight it holds now to lane's sum, so a lane sums
   // k = 0.. in order; the last stage also does the anti-diagonals a hart of more lanes than the array has would need.
   void stage(Row &row, uint32_t k) {
-    const Weights &weights = weights_.get();
+    const Weights &weights = row.weights ? *row.weights : weights_.get();
     const uint32_t lanes = static_cast<uint32_t>(row.sums.size());
     const uint32_t last = k + 1 == stages_ && 2 * lanes > stages_ + 1 ? 2 * lanes - 2 : k;
     for (uint32_t d = k; d <= last; d++)
@@ -117,9 +120,10 @@ class Systolic {
       }
   }
   // Row i of an input push: element i of every lane, and sums of 0.
-  static Row pushed(const Host &host, const Insn &insn, uint64_t i) {
+  Row pushed(const Host &host, const Insn &insn, uint64_t i) const {
     const uint32_t lanes = host.lanes();
-    Row row{std::vector<float>(lanes), std::vector<float>(lanes, 0.0f)};
+    Row row{std::vector<float>(lanes), std::vector<float>(lanes, 0.0f),
+            commands_.depth() ? nullptr : weights_.share()};
     for (uint32_t lane = 0; lane < lanes; lane++) row.input[lane] = element(host, insn, lane, static_cast<uint32_t>(i));
     return row;
   }

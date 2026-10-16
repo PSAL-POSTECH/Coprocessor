@@ -42,6 +42,8 @@ class Register {
  public:
   void configure(S at_reset) { p_ = reset_ = std::make_shared<S>(std::move(at_reset)); }
   const S &get() const { return p_ ? *p_ : none(); }
+  // What get() reads now, kept as it is when the register is written later.
+  std::shared_ptr<const S> share() const { return p_; }
   S &write() {
     if (!p_) p_ = std::make_shared<S>();
     else if (p_.use_count() > 1) p_ = std::make_shared<S>(*p_);
