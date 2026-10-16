@@ -750,6 +750,7 @@ class Machine : public vcix_accel::Model {
        ...);
     }, units_);
     ready_.clear();
+    clock_ = spike_id_ = 0;
   }
   std::vector<const Port *> ports() const override {
     std::vector<const Port *> all;
@@ -952,8 +953,8 @@ class Machine : public vcix_accel::Model {
     const std::vector<uint64_t> before = motion(u);
     tick(++clock_);
     if (until() || motion(u) != before || arriving(u)) return;
-    std::fprintf(stderr, "vcix_uarch: %s waits for the unit, and nothing in it moves any more (on Spike, which runs an "
-                 "instruction to its end before the next: a push no later pop can make room for?)\n", name);
+    std::fprintf(stderr, "vcix_uarch: %s waits, and nothing in its unit moves any more: on Spike, which runs each "
+                 "instruction to its end before the next, it never ends\n", name);
     std::exit(1);
   }
   // What a cycle of unit u can change in its pipelines and queues.
