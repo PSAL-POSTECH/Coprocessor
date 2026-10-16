@@ -34,17 +34,23 @@ for variant in plain:"" wait:-DWAIT untouched:-DUNTOUCHED wait-untouched:"-DWAIT
     { echo "FAIL  copier/copy.c (${variant%%:*}) does not build"; exit 2; }
 done
 
-# values <model> <schedule, or ""> <name>: the array's program, its output to $OUT/<name>.out; prints the exit status
+# values <model> <schedule, or ""> <name> [machine]: the array's program, its output to $OUT/<name>.out; prints the exit status
 values() {
-  RTL_SCHEDULE=$2 spike_run "$BUILD/lib$1.so" "$FUNCTIONAL/machine.yml" "$OUT/values" --kernel-addr=2000000:2100000 \
+  RTL_SCHEDULE=$2 spike_run "$BUILD/lib$1.so" "${4:-$FUNCTIONAL/machine.yml}" "$OUT/values" --kernel-addr=2000000:2100000 \
     < /dev/null > "$OUT/$3.out" 2> "$OUT/$3.err"
   echo $?
 }
-same() { if cmp -s "$OUT/reference.out" "$OUT/$1.out"; then echo same; else echo differs; fi; }
+same() { if cmp -s "$OUT/${2:-reference}.out" "$OUT/$1.out"; then echo same; else echo differs; fi; }
 
+# libtpu.so with the RTL's keys: the PEs read the weights they hold as a row passes, so values follow the timing
+for waits in 1 0; do
+  { cat "$FUNCTIONAL/machine.yml"
+    printf 'tpu_systolic_queue_entries: 64\ntpu_systolic_command_queue: 2\ntpu_systolic_in_rows_per_cycle: 1\n'
+    printf 'tpu_systolic_pop_rows_per_cycle: 1\ntpu_systolic_weight_waits: %s\n' "$waits"; } > "$OUT/rtl-waits-$waits.yml"
+done
 echo "-- systolic array: values, against libtpu.so"
-rc=$(values tpu "" reference)
-report "exit $rc, $(wc -c < "$OUT/reference.out") bytes" "exit 0, 1536 bytes" "libtpu.so runs values.c"
+rc=$(values tpu "" reference "$OUT/rtl-waits-1.yml")
+report "exit $rc, $(wc -c < "$OUT/reference.out") bytes" "exit 0, 1536 bytes" "libtpu.so runs values.c under the RTL's keys"
 for schedule in "" slow random:1:12 random:2:12 random:3:12 random:4:12 random:5:12 random:6:12 random:7:12 \
   random:8:12 random:9:12 random:10:12; do
   name=systolic-${schedule:-default}; name=${name//:/-}
@@ -55,6 +61,9 @@ done
 rc=$(values rtl_systolic_nowait "" systolic-nowait)
 report "exit $rc, $(same systolic-nowait)" "exit 0, differs" \
   "rtl_systolic_nowait (WEIGHT_WAITS=0) under the default schedule: a weight push overtakes older inputs, values differ"
+rc=$(values tpu "" nowait-reference "$OUT/rtl-waits-0.yml")
+report "exit $rc, $(same systolic-nowait nowait-reference)" "exit 0, same" \
+  "libtpu.so under tpu_systolic_weight_waits: 0: older inputs meet the new weights in the same PEs as on the RTL"
 
 echo "-- systolic array: where the stall modes part, against libtpu.so's RTL keys, with no simulator"
 "$BUILD/rtl_stall" "$BUILD/librtl_systolic.so" "$BUILD/libtpu.so" > "$OUT/stall.log" 2>&1

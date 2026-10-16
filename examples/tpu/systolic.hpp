@@ -5,7 +5,6 @@
 #define TPU_SYSTOLIC_HPP
 
 #include <deque>
-#include <memory>
 #include <vector>
 
 #include "vcix_uarch.hpp"
@@ -19,10 +18,9 @@ class Systolic {
   using Insn = vcix_uarch::Insn;
   using Route = vcix_uarch::Route;
   using Weights = std::vector<std::deque<float>>;
-  // A row in the array: element i of every lane, each output lane's sum so far, the weights it was pushed under.
+  // A row in the array: element i of every lane, and each output lane's sum so far.
   struct Row {
     std::vector<float> input, sums;
-    std::shared_ptr<const Weights> weights;
   };
 
  public:
@@ -56,10 +54,10 @@ class Systolic {
     h.reg(weights_);
   }
 
-  // vl rows into the array, row i element i of every lane, under the weights in the registers as it is sent.
+  // vl rows into the array, row i element i of every lane.
   void input_push(Route &r) {
     r.use(issue_).enqueue(commands_);
-    r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
+    r.send(array_, r.vl(), [&r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
     r.compute([&](const Host &) {
       if (r.vl()) element_format(r.insn());
       const Weights &weights = weights_.get();
@@ -107,10 +105,10 @@ class Systolic {
     if (sew == 16 && code == 3) return Element::BF16;
     fail("systolic: format %u names no element of %u bits", code, sew);
   }
-  // Stage k: PE (lane, k - lane) adds input k - lane times its weight to lane's sum, so a lane sums k = 0.. in order;
-  // the last stage also does the anti-diagonals a hart of more lanes than the array has would need.
+  // Stage k: PE (lane, k - lane) adds input k - lane times the weight it holds now to lane's sum, so a lane sums
+  // k = 0.. in order; the last stage also does the anti-diagonals a hart of more lanes than the array has would need.
   void stage(Row &row, uint32_t k) {
-    const Weights &weights = *row.weights;
+    const Weights &weights = weights_.get();
     const uint32_t lanes = static_cast<uint32_t>(row.sums.size());
     const uint32_t last = k + 1 == stages_ && 2 * lanes > stages_ + 1 ? 2 * lanes - 2 : k;
     for (uint32_t d = k; d <= last; d++)
@@ -119,10 +117,10 @@ class Systolic {
         if (at < weights[lane].size()) row.sums[lane] = multiply_add(row.sums[lane], row.input[at], weights[lane][at]);
       }
   }
-  // Row i of an input push: element i of every lane, sums of 0, and the weights as they are now.
-  Row pushed(const Host &host, const Insn &insn, uint64_t i) const {
+  // Row i of an input push: element i of every lane, and sums of 0.
+  static Row pushed(const Host &host, const Insn &insn, uint64_t i) {
     const uint32_t lanes = host.lanes();
-    Row row{std::vector<float>(lanes), std::vector<float>(lanes, 0.0f), weights_.share()};
+    Row row{std::vector<float>(lanes), std::vector<float>(lanes, 0.0f)};
     for (uint32_t lane = 0; lane < lanes; lane++) row.input[lane] = element(host, insn, lane, static_cast<uint32_t>(i));
     return row;
   }
