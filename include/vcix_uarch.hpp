@@ -457,6 +457,12 @@ class Route {
     add(REQUIRE).holds = holds;
     return holds;
   }
+  // As require(holds), and on Spike never() says why the instruction is never taken and ends the run.
+  template <class F>
+  bool require(bool holds, F &&never) {
+    if (!holds && host_) never();
+    return require(holds);
+  }
   // n of the port's room this cycle.
   Route &use(Port &port, uint64_t n = 1) {
     Step &s = add(USE);
