@@ -169,7 +169,7 @@ class Mxu {
     const uint32_t which = is_pop(insn) ? vcix_accel::rs2(insn) : vcix_accel::rd(insn);
     if (arrays_.size() > 1) std::printf(", array %u", which);
     if (which >= arrays_.size()) return;
-    const vcix_uarch::PipelineTiming &line = arrays_[which].line;
+    const vcix_uarch::AnyPipeline &line = arrays_[which].line;
     if (registers_ > 1)
       std::printf(", input queue %u, output queues %u and %u", static_cast<uint32_t>(line.input_entries()),
                   static_cast<uint32_t>(line.output_entries(0)), static_cast<uint32_t>(line.output_entries(1)));
