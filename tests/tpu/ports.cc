@@ -267,23 +267,29 @@ int wait_for(Run &run, uint32_t bits, uint32_t vl) {
   return waited;
 }
 
+// `box`: a pop is issued at once and waits in a queue of one for what it takes.
 struct Unit {
   const char *name;
   uint32_t push, pop;
   int slots;
+  bool box;
 };
-const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7}, MSA = {"msa", MSA_PUSH, MSA_POP, 7}, XLU = {"xlu", XLU_PUSH, XLU_POP, 3};
+const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7, false}, MSA = {"msa", MSA_PUSH, MSA_POP, 7, false},
+           XLU = {"xlu", XLU_PUSH, XLU_POP, 3, true};
 
-// A pop of more than was pushed is issued once nothing more is on its way, and so is the pop after it.
+// A pop of more than was pushed ends once nothing more is on its way. Issued then, 1 + slots after the push, the pop
+// after it follows in 1. Issued at once, it takes the element 1 + slots after it, makes its slot in the next, takes it
+// 3 after that and learns in the next that nothing more comes: the pop after it follows slots + 6 after the first.
 void fewer_pushed(const Unit &unit) {
   Run run;
   run.next();
   run.issue(unit.push, 1);
   const int first = wait_for(run, unit.pop, 2);
   const int second = wait_for(run, unit.pop, 2);
-  check(first == 1 + unit.slots && second == 1,
+  const int want_first = unit.box ? 1 : 1 + unit.slots, want_second = unit.box ? unit.slots + 6 : 1;
+  check(first == want_first && second == want_second,
         std::string(unit.name) + ": a push of 1 is popped by 2 after " + n(first) + " cycles, and popped again after " +
-            n(second) + "; expected " + n(1 + unit.slots) + " (1 + " + n(unit.slots) + " slots), 1");
+            n(second) + "; expected " + n(want_first) + ", " + n(want_second) + " (" + n(unit.slots) + " slots)");
 }
 
 // A push of 4 and a pop of 2, over and over, through queues of 8: what the pops leave stays, the output queue
@@ -303,16 +309,20 @@ void more_pushed(const Unit &unit) {
                                            " of the 1000 cycles after; expected fewer than 100, 1000");
 }
 
-// A tile that comes out shallower: every pop waits for its own tile, 2 elements through 3 slots, never served from the last.
+// Tiles of 4 popped by 2, never served from the last: each pop, issued the cycle after its push, takes the fourth
+// element 3 + 3 + 1 cycles later, makes 4 slots in the next and takes 2 of them 3 and 4 after that; the next push, which
+// waits for the pop, is issued then.
 void xlu_shallower() {
   Run run;
   int as_first = 0;
+  const int first = wait_for(run, XLU_PUSH, 4);
   for (int tile = 0; tile < 100; tile++) {
-    const int push = wait_for(run, XLU_PUSH, 4), pop = wait_for(run, XLU_POP, 2);
-    as_first += push == 1 && pop == 2 + 3;
+    const int pop = wait_for(run, XLU_POP, 2), push = wait_for(run, XLU_PUSH, 4);
+    as_first += pop == 1 && push == 3 + 3 + 1 + 1 + 4;
   }
-  check(as_first == 100, "xlu: 100 tiles pushed by 4 and popped by 2: " + n(as_first) +
-                             " pops issued 2 + 3 cycles after their own push; expected 100");
+  check(first == 1 && as_first == 100, "xlu: 100 tiles pushed by 4 and popped by 2: " + n(as_first) +
+                                           " pops issued 1 cycle after their own push and the next push 3 + 3 + 1 + 1 "
+                                           "+ 4 cycles after them; expected 100");
 }
 
 // Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: the pushes and pops of a
