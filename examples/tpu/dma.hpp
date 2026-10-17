@@ -28,6 +28,8 @@ class Dma {
     spad_base_ = config.hex(SPAD_BASE_KEY, 0xD0000000);
     if (const char *path = config.get(BASE_PATH_KEY)) base_path_ = path;
   }
+  static constexpr const char *SPAD_LANE_KEY = "vpu_spad_size_kb_per_lane";
+  bool scratchpad() const { return spad_lane_bytes_ != 0; }
   // The exit code of a transfer that leaves a lane's scratchpad; SKIP, an address another transfer owns.
   static constexpr int INVALID_SPAD_ACCESS = 200;
   static constexpr uint64_t SKIP = ~uint64_t{0};
@@ -56,7 +58,6 @@ class Dma {
   };
 
   Transfer dma_transfer(const Host &host, const Insn &insn, const char *name, bool skips) const {
-    if (!spad_lane_bytes_) fail("%s: the machine description has no %s", name, SPAD_LANE_KEY);
     Transfer t;
     t.memory = host.xreg(vcix_accel::rs1(insn));
     t.scratchpad = host.xreg(vcix_accel::rs2(insn));
@@ -302,7 +303,6 @@ class Dma {
   }
 
  private:
-  static constexpr const char *SPAD_LANE_KEY = "vpu_spad_size_kb_per_lane";
   static constexpr const char *SPAD_BASE_KEY = "vpu_spad_base_vaddr";
   static constexpr const char *BASE_PATH_KEY = "run_base_path";
 

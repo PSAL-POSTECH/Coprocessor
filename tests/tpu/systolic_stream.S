@@ -1,4 +1,4 @@
-# Ten input pushes of two elements back to back, into an input queue of eight.
+# A weight push, then ten input pushes of two elements back to back, into an input queue of eight.
     .option norvc
     .text
     .globl main
@@ -9,6 +9,7 @@ main:
     nop
     .endr
     .balign 64
+    sf.vc.iv  0x1, 0x0, v1, 0
     .rept 10
     sf.vc.iv  0x0, 0x0, v1, 0
     .endr

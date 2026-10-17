@@ -115,7 +115,7 @@ printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 4\ntpu_mxu_units:
 on_gem5 mxu_pops mxu_pops "$BUILD/tpuv6e-mxu-pops.yml"
 pops=$(said mxu_pops "issue vpop: 19 cycles after the last issue, 0 in flight, array 0, input queue 0, output queues 4 and 4" \
   "issue vpop: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 4 and 4")
-report "exit ${rc[mxu_pops]}, lines $pops of $(lines mxu_pops issue)" "exit 0, lines 2 of 4" \
+report "exit ${rc[mxu_pops]}, lines $pops of $(lines mxu_pops issue)" "exit 0, lines 2 of 10" \
   "each array's four rows are out in one cycle and the pop port takes four rows a cycle, so array 1's vpop waits a cycle behind array 0's"
 
 echo "-- the machine PyTorchSim measures on (examples/tpuv6e/gem5)"

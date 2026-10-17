@@ -76,7 +76,7 @@ delay=$(said systolic_full "issue systolic weight push: the first, input queue 0
 report "exit ${rc[systolic_full]}, lines $delay" "exit 0, lines 3" \
   "a pop of four is issued 4 + 7 cycles after the push of four, as the fourth element is in the output queue"
 
-pushes=("issue systolic input push: the first, input queue 0, output queue 0")
+pushes=("issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
 for entries in 1 2 3 4 5 6; do
   pushes+=("issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue $entries, output queue 0")
 done
@@ -84,7 +84,7 @@ for entries in 1 3 5; do
   pushes+=("issue systolic input push: 2 cycles after the last issue, 0 in flight, input queue 6, output queue $entries")
 done
 stream="$(said systolic_stream "${pushes[@]}") of $(lines systolic_stream issue)"
-report "exit ${rc[systolic_stream]}, lines $stream" "exit 0, lines 10 of 10" \
+report "exit ${rc[systolic_stream]}, lines $stream" "exit 0, lines 10 of 11" \
   "pushes of two go in one per cycle while the input queue has room, then one every two cycles, as the array drains"
 
 full=$(said systolic_full \
@@ -186,7 +186,7 @@ report "capacity $(machine_stat machine-misc MISC.capacity), admitted $(machine_
   "capacity 2, admitted 8 of 8 committed" \
   "MISC, at its primary port issue, takes 2 a cycle and admits each committed custom-2 and DMA instruction of tpu::Misc once"
 
-printf 'tpu_trace: 1\ntpu_misc_issue_width: 3\n' > "$BUILD/tpu-misc-3.yml"
+printf 'tpu_trace: 1\ntpu_misc_issue_width: 3\nvpu_spad_size_kb_per_lane: 512\n' > "$BUILD/tpu-misc-3.yml"
 printf 'tpu_misc_issue_width: 0\n' > "$BUILD/tpu-misc-0.yml"
 for width in 3 0; do
   timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-misc-$width" "$REPO/examples/tpu/gem5/script_systolic.py" \

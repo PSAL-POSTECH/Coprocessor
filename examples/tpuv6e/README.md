@@ -66,7 +66,7 @@ the inputs' half waiting under seven more pairs of `vmatprep.subr` and
 vmatmul.vlgmr / 65 vmatpush1`, the weights' half waiting under the
 `vmatmul`. A `vmatpush` or a `vmatmul` with no half of its operand held, or
 one of another number of rows, ends the run, as does a `vpop` of more rows
-than its half holds. A `vmatprep` of an operand whose held half nothing has
+than its half holds; gem5 never accepts it. A `vmatprep` of an operand whose held half nothing has
 taken yet waits, on gem5 as on Spike; when only a later instruction would
 take it, the program stops there on both.
 

@@ -52,7 +52,9 @@ declares its route (`r.use(port)`, `r.send(pipeline, n)`,
 `r.receive_at_most(pipeline, n).through(port)`, `r.done_after(n)`, ...) and its
 values (the functions it gives `send`, `receive`, `transfer`, `at_issue`,
 `when_received` and `when_done`). `vcix_uarch::Machine` derives `can_accept`, `issue`,
-`tick`, `reset`, the ports and `execute` from them. Under `tpu_trace` an issue
+`tick`, `reset`, the ports and `execute` from them. A step that never ends
+says why (`r.require(holds, never)`, `r.when_stuck(never)`): gem5 stops there,
+and Spike ends the run there with that reason. Under `tpu_trace` an issue
 reports the unit's pipeline queues, or what its `trace_queues(insn)` prints
 (the matrix unit's and the cross-lane unit's).
 
@@ -106,7 +108,9 @@ before any weight, a push to the multi-precision array of anything but words
 or of inputs packed otherwise than its weights, a descriptor with a dimension
 of 0 or one that reaches past its tensor. As before, a transfer past the end
 of a lane's scratchpad ends the run with exit 200, and a cross-lane shuffle
-whose pattern is not as wide as its tile with exit 201.
+whose pattern is not as wide as its tile with exit 201. gem5 stops at the same
+instruction, but for the DMA's checks of what it reads (a descriptor, an index,
+an address), which only Spike makes: gem5 sees no values.
 
 Not carried over: what the old Spike printed under `SPIKE_DEBUG` and
 `SPIKE_XLU_DEBUG`, and the list of all-zero tiles it wrote under

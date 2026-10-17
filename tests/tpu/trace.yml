@@ -1,2 +1,3 @@
-# The tpu model reports each issue and commit.
+# The tpu model reports each issue and commit, and has a scratchpad for its DMA.
 tpu_trace: 1
+vpu_spad_size_kb_per_lane: 512

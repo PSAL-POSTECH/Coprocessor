@@ -27,8 +27,12 @@ class Sfu {
     h.port(entry_);
   }
 
-  // Function arg() of the seven, on elements of 16, 32 or (vlog, vatan) 64 bits.
+  // Function arg() of the seven, on elements of 16, 32 or (vlog, vatan) 64 bits; others are never accepted.
   void special_function(Route &r) {
+    const uint32_t f = r.arg(), sew = r.insn().sew_bits;
+    const char *name = INSTRUCTIONS[f].name;
+    r.require(!r.vl() || sew == 16 || sew == 32 || (sew == 64 && WIDE[f]),
+              [name, sew] { fail("%s: an element of %u bits is not supported", name, sew); });
     r.use(entry_).done_after(latency_);
     r.when_done([&r](const Host &host) {
       const uint32_t f = r.arg(), vs = vcix_accel::rs2(r.insn()), vd = vcix_accel::rd(r.insn()), sew = r.insn().sew_bits;
@@ -36,8 +40,7 @@ class Sfu {
         for (uint32_t i = 0; i < r.vl(); i++)
           if (sew == 16) put<uint16_t>(host, lane, vd, i, double_to_half(SINGLE[f](half_to_float(get<uint16_t>(host, lane, vs, i)))));
           else if (sew == 32) put<float>(host, lane, vd, i, SINGLE[f](get<float>(host, lane, vs, i)));
-          else if (sew == 64 && WIDE[f]) put<double>(host, lane, vd, i, WIDE[f](get<double>(host, lane, vs, i)));
-          else fail("%s: an element of %u bits is not supported", INSTRUCTIONS[f].name, sew);
+          else put<double>(host, lane, vd, i, WIDE[f](get<double>(host, lane, vs, i)));
     });
   }
 

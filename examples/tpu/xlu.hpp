@@ -27,7 +27,7 @@ class Xlu {
   using Column = std::vector<std::optional<uint32_t>>;
   struct Box {
     uint32_t operation = 0;
-    uint64_t elements = 0;
+    uint64_t elements = 0, before_entries = 0, after_entries = 0;
     Tile before, after;
     std::vector<Elements> tile;
     std::deque<Column> result;
@@ -69,10 +69,14 @@ class Xlu {
     const bool load = !r.arg() && field >> 3 == LOAD;
     if (!load) r.require(pops_.idle() && stages_.input_entries() + r.vl() <= entries_);
     r.use(issue_).at_issue([&] {
-      if (load) return;
-      if (popped_.get()) stages_.flush(), out_.flush(), popped_.write() = false;
       Box &box = box_.write();
+      if (load) {
+        box.after_entries += r.vl();
+        return;
+      }
+      if (popped_.get()) stages_.flush(), out_.flush(), popped_.write() = false;
       box.operation = field, box.elements += r.vl();
+      if (r.arg()) box.before_entries += r.vl();
     });
     r.at_issue([&](const Host &host) {
       if (!load && !r.arg()) return;
@@ -90,8 +94,13 @@ class Xlu {
     const bool first = !popped_.get();
     const uint64_t in = first ? box_.get().elements : 0;
     const uint64_t out = !in ? 0 : box_.get().operation & EXCHANGE ? lanes_ : in;
+    if (in) patterned(r, in, out);
     r.use(issue_).at_issue([&] {
-      if (first) popped_.write() = true, box_.write().elements = 0;
+      if (!first) return;
+      popped_.write() = true;
+      Box &box = box_.write();
+      box.elements = 0;
+      if (in) box.before_entries = box.after_entries = 0;
     });
     r.enqueue(pops_);
     if (first) {
@@ -157,9 +166,9 @@ class Xlu {
     for (const Elements &slot : box.tile)
       for (uint32_t lane = 0; lane < lanes; lane++) tile[lane].push_back(slot[lane]);
     box.tile.clear();
-    Tile got = shuffle(operation >> 3, tile, sized(box.before, host), "pre", operation);
+    Tile got = shuffle(operation >> 3, tile, sized(box.before, host));
     if (operation & EXCHANGE) got = cross(got, tile[0].size());
-    got = shuffle(operation & 3, got, sized(box.after, host), "post", operation);
+    got = shuffle(operation & 3, got, sized(box.after, host));
     box.before.clear(), box.after.clear();
     for (uint64_t k = 0; k < out; k++) {
       Column &slot = box.result.emplace_back(lanes);
@@ -167,20 +176,30 @@ class Xlu {
         if (k < got[lane].size()) slot[lane] = got[lane][k];
     }
   }
-  // Every lane reads some lane's row: the lane its pattern names for ARBITRARY, which needs a lane number per
-  // column, and lane 0 otherwise. What is missing reads as 0. A bad pattern exits INVALID_XLU_PATTERN.
-  static Tile shuffle(uint32_t what, const Tile &tile, const Tile &pattern, const char *stage, uint32_t operation) {
+  // A first pop of `in` elements whose shuffle is ARBITRARY needs a lane number per column of the tile it walks, `in`
+  // before and `out` after; it is never accepted otherwise, and on Spike exits INVALID_XLU_PATTERN.
+  void patterned(Route &r, uint64_t in, uint64_t out) const {
+    const Box &box = box_.get();
+    const uint32_t operation = box.operation;
+    const uint64_t walks[2] = {in, out}, entries[2] = {box.before_entries, box.after_entries};
+    const uint32_t shuffles[2] = {operation >> 3, operation & 3};
+    for (int k = 0; k < 2; k++) {
+      const char *stage = k ? "post" : "pre";
+      const size_t width = walks[k], carried = entries[k];
+      r.require(shuffles[k] != ARBITRARY || carried == width, [stage, width, carried, operation] {
+        std::fprintf(stderr, "XLU ERROR: the %s stage walks %zu columns but lane 0 carries %zu pattern entries (SIMM5 %u)\n",
+                     stage, width, carried, operation);
+        std::exit(INVALID_XLU_PATTERN);
+      });
+    }
+  }
+  // Every lane reads some lane's row: the lane its pattern names for ARBITRARY, a lane number per column, and lane 0
+  // otherwise. What is missing reads as 0.
+  static Tile shuffle(uint32_t what, const Tile &tile, const Tile &pattern) {
     if (what == BYPASS) return tile;
     const size_t lanes = tile.size();
     size_t width = 0;
     for (const std::vector<uint32_t> &row : tile) width = row.size() > width ? row.size() : width;
-    if (what == ARBITRARY)
-      for (size_t lane = 0; lane < lanes; lane++)
-        if (pattern[lane].size() != width) {
-          std::fprintf(stderr, "XLU ERROR: the %s stage walks %zu columns but lane %zu carries %zu pattern entries (SIMM5 %u)\n",
-                       stage, width, lane, pattern[lane].size(), operation);
-          std::exit(INVALID_XLU_PATTERN);
-        }
     Tile got(lanes);
     for (size_t lane = 0; lane < lanes; lane++)
       for (size_t k = 0; k < width; k++) {

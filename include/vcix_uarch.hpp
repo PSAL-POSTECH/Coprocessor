@@ -430,13 +430,21 @@ class Route {
   // The unit never takes the instruction while `holds` is false; returns it.
   bool require(bool holds) {
     add(REQUIRE).holds = holds;
+    if (!holds) when_stuck([](uint64_t) {});
     return holds;
   }
-  // As require(holds), and on Spike never() says why the instruction is never taken and ends the run.
+  // As require(holds), with never() as the reason when_stuck() gives.
   template <class F>
-  bool require(bool holds, F &&never) {
-    if (!holds && host_) never();
+  bool require(bool holds, F never) {
+    if (!holds) when_stuck([never](uint64_t) { never(); });
     return require(holds);
+  }
+  // On Spike, once the instruction waits and nothing in its unit moves, never(got) may say why and end the run; got:
+  // the rows its waiting receive has. The first reason, or failing require(), decides; capture by value.
+  template <class F>
+  Route &when_stuck(F never) {
+    if (host_ && !stuck_) stuck_ = std::move(never);
+    return *this;
   }
   // n of the port's room this cycle.
   Route &use(Port &port, uint64_t n = 1) {
@@ -645,19 +653,26 @@ class Route {
   static uint64_t moved_at_issue(const Step &s) {
     return s.kind == RECEIVE && s.received ? std::min(s.n, s.pipe->out(s.output)) : s.n;
   }
+  // The rows the first receive could take now.
+  uint64_t got() const {
+    for (uint32_t i = 0; i < count_; i++)
+      if (steps_[i].kind == RECEIVE) return steps_[i].pipe->out(steps_[i].output);
+    return 0;
+  }
 
-  // can_accept: every step before the queue holds now, and the queue has a slot.
-  bool check(Cycle now) const {
+  // can_accept: every step before the queue holds now, and the queue has a slot. `settled`: requires aside, and a
+  // receive from a drained pipeline taken as holding, so that a reason when_stuck() gave is the one that applies.
+  bool check(Cycle now, bool settled = false) const {
     for (uint32_t i = 0; i < count_; i++) {
       const Step &s = steps_[i];
       if (!open(s)) return false;
       if (s.through && s.kind != USE && s.through->room(now) < moved_at_issue(s)) return false;
       switch (s.kind) {
-        case REQUIRE: if (!s.holds) return false; break;
+        case REQUIRE: if (!s.holds && !settled) return false; break;
         case USE: if (s.port->room(now) < s.n) return false; break;
         case ENQUEUE: if (s.queue->depth_) return s.queue->held() < s.queue->depth_; break;
         case SEND: if (s.n * s.weight > s.pipe->input_room()) return false; break;
-        case RECEIVE: if (s.n > s.pipe->out(s.output) && !(s.at_most && s.pipe->drained())) return false; break;
+        case RECEIVE: if (s.n > s.pipe->out(s.output) && !((s.at_most || settled) && s.pipe->drained())) return false; break;
         default: break;
       }
     }
@@ -754,6 +769,7 @@ class Route {
   AnyPipeline *guard_ = nullptr;
   Cycle latency_ = 1;
   Hooks *hooks_ = nullptr;
+  std::function<void(uint64_t)> stuck_;
   bool when_idle_ = false, when_enqueued_ = false;
 };
 
@@ -989,12 +1005,15 @@ class Machine : public vcix_accel::Model {
   }
   template <class V, class I>
   void clocked(V &u, const I &instruction, const Insn &insn, const Host &host) {
+    std::function<void(uint64_t)> why;
+    uint64_t got = 0;
     const auto accepts = [&] {
       Route r(Route::CHECK, insn, instruction.arg, &host);
       (u.*instruction.route)(r);
+      why = r.check(clock_, true) ? r.stuck_ : nullptr, got = r.got();
       return r.check(clock_);
     };
-    while (!accepts()) spike_cycle(u, instruction.name, accepts);
+    while (!accepts()) spike_cycle(u, instruction.name, accepts, [&] { if (why) why(got); });
     Route::Hooks hooks;
     Route r(Route::ISSUE, insn, instruction.arg, &host);
     r.hooks_ = &hooks;
@@ -1007,19 +1026,23 @@ class Machine : public vcix_accel::Model {
     const auto done = [&] {
       return (latency != vcix_accel::Unknown || Machine::ready(id, clock_)) && !queued(u, id);
     };
-    while (!done()) spike_cycle(u, instruction.name, done);
+    while (!done()) spike_cycle(u, instruction.name, done, [&] {
+      uint64_t got = 0;
+      if (r.stuck_ && drained_receive(u, id, got)) r.stuck_(got);
+    });
     r.done();
     Machine::commit(insn, id, clock_);
   }
   // One cycle Spike waits for `until`; a cycle in which nothing moves, no command still on its way and `until` not
-  // yet true, is the same every cycle after: the run ends there.
-  template <class V, class Until>
-  void spike_cycle(V &u, const char *name, Until &&until) {
+  // yet true, is the same every cycle after: the run ends there, with the reason `stuck` gives if it gives one.
+  template <class V, class Until, class Stuck>
+  void spike_cycle(V &u, const char *name, Until &&until, Stuck &&stuck) {
     motion(u, before_);
     tick(++clock_);
     if (until()) return;
     motion(u, after_);
     if (after_ != before_ || arriving(u)) return;
+    stuck();
     std::fprintf(stderr, "vcix_uarch: %s waits, and nothing in its unit moves any more: on Spike, which runs each "
                  "instruction to its end before the next, it never ends\n", name);
     std::exit(1);
@@ -1046,6 +1069,20 @@ class Machine : public vcix_accel::Model {
       for (const CommandQueue::Command &c : q.list_) any |= c.arrives >= clock_;
     }));
     return any;
+  }
+  // Whether command `id` is at its queue's head in a receive from a drained pipeline; got, the rows it has taken.
+  template <class V>
+  static bool drained_receive(V &u, Id id, uint64_t &got) {
+    bool at = false;
+    u.hardware(blocks(Ignore{}, Ignore{}, [&](CommandQueue &q) {
+      if (q.list_.empty() || q.list_.front().id != id) return;
+      const CommandQueue::Command &c = q.list_.front();
+      if (c.step == c.count || c.moves[c.step].kind != Route::RECEIVE) return;
+      const CommandQueue::Move &m = c.moves[c.step];
+      const AnyPipeline &p = *q.blocks_.pipelines[m.pipe];
+      at = p.drained(), got = c.done + p.out(m.output);
+    }));
+    return at;
   }
   template <class V>
   static bool queued(V &u, Id id) {

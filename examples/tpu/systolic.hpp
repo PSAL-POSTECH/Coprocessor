@@ -66,37 +66,35 @@ class Systolic {
     h.port(entry_), h.port(issue_), h.port(weight_push_), h.port(pop_), h.port(in_);
     h.pipeline(array_, entry_, &Systolic::stage);
     h.queue(commands_);
-    h.reg(weights_);
+    h.reg(weights_), h.reg(weighted_);
   }
 
-  // vl rows into the array, row i element i of every lane.
+  // vl rows into the array, row i element i of every lane; never accepted before a weight push of a beat or more.
   void input_push(Route &r) {
+    if (r.vl()) named(r);
+    r.require(weighted_.get(), [] { fail("systolic input push: no weight was pushed before it"); });
     r.use(issue_).enqueue(commands_);
     r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
-    r.at_issue([&](const Host &) {
-      if (r.vl()) element_format(r.insn());
-      const Weights &weights = weights_.get();
-      if (weights.empty() || weights[0].empty()) fail("systolic input push: no weight was pushed before it");
-    });
   }
   // vl beats of weights into the registers, beat i element i of every lane; a lane keeps its last `lanes`. Under
   // tpu_systolic_weight_waits they move only once the array is empty.
   void weight_push(Route &r) {
+    if (r.vl()) named(r);
     r.use(issue_).use(weight_push_).enqueue(commands_);
     if (weight_waits_) r.wait_until_empty(array_);
     r.transfer(r.vl(), [this, &r](const Host &host, uint64_t i) { latch(host, r.insn(), i); }).through(in_);
+    if (r.vl() && !weighted_.get()) r.at_issue([&] { weighted_.write() = true; });
   }
-  // Up to vl rows of the output queue, once vl are out or none is on its way, row i to element i of vd in every lane
-  // in rs1's format, rounded by frm.
+  // vl rows of the output queue, row i to element i of vd in every lane in rs1's format, rounded by frm; one that asks
+  // more than is computed never ends.
   void pop(Route &r) {
+    const uint32_t vl = r.vl();
+    named(r);
+    r.require(element_format(r.insn()) != Element::BF16, [] { fail("systolic pop: a pop to bfloat16 is not modeled"); });
     r.use(issue_).enqueue(commands_);
-    r.receive_at_most(array_, r.vl(), [&r](const Host &host, uint64_t i, Row &&row) { popped(host, r.insn(), i, row); })
-        .through(pop_);
-    r.at_issue([&](const Host &) {
-      if (element_format(r.insn()) == Element::BF16) fail("systolic pop: a pop to bfloat16 is not modeled");
-    });
-    r.when_received([&r](const Host &, uint64_t taken) {
-      if (taken < r.vl()) fail("systolic pop: %u elements asked, %llu computed", r.vl(), static_cast<unsigned long long>(taken));
+    r.receive(array_, vl, [&r](const Host &host, uint64_t i, Row &&row) { popped(host, r.insn(), i, row); }).through(pop_);
+    r.when_stuck([vl](uint64_t got) {
+      fail("systolic pop: %u elements asked, %llu computed", vl, static_cast<unsigned long long>(got));
     });
   }
 
@@ -110,14 +108,20 @@ class Systolic {
 
  private:
   // What an element is rides the push or the pop in its rs1 field, one table at every width: 0 the width's own (an
-  // integer of 8 bits, a half, a single; 64 bits are zeros), 1 an E4M3, 2 an E5M2, 3 a bfloat16; else the run ends.
-  enum class Element { INTEGER, E4M3, E5M2, HALF, BF16, SINGLE, ZERO };
+  // integer of 8 bits, a half, a single; 64 bits are zeros), 1 an E4M3, 2 an E5M2, 3 a bfloat16; else NONE.
+  enum class Element { INTEGER, E4M3, E5M2, HALF, BF16, SINGLE, ZERO, NONE };
   static Element element_format(const Insn &insn) {
     const uint32_t code = vcix_accel::rs1(insn), sew = insn.sew_bits;
     if (code == 0) return sew == 8 ? Element::INTEGER : sew == 16 ? Element::HALF : sew == 32 ? Element::SINGLE : Element::ZERO;
     if (sew == 8 && (code == 1 || code == 2)) return code == 1 ? Element::E4M3 : Element::E5M2;
     if (sew == 16 && code == 3) return Element::BF16;
-    fail("systolic: format %u names no element of %u bits", code, sew);
+    return Element::NONE;
+  }
+  // An instruction whose code names no element of its width is never accepted.
+  static void named(Route &r) {
+    const uint32_t code = vcix_accel::rs1(r.insn()), sew = r.insn().sew_bits;
+    r.require(element_format(r.insn()) != Element::NONE,
+              [code, sew] { fail("systolic: format %u names no element of %u bits", code, sew); });
   }
   // Stage k: PE (lane, k - lane) adds input k - lane times the weight it holds now to lane's sum, so a lane sums
   // k = 0.. in order; the last stage also does the anti-diagonals a hart of more lanes than the array has would need.
@@ -174,7 +178,8 @@ class Systolic {
       case Element::HALF: return half_to_float(get<uint16_t>(host, lane, reg, i));
       case Element::BF16: return bf16_to_float(get<uint16_t>(host, lane, reg, i));
       case Element::SINGLE: return get<float>(host, lane, reg, i);
-      case Element::ZERO: return 0.0f;
+      case Element::ZERO:
+      case Element::NONE: return 0.0f;
     }
     return 0.0f;
   }
@@ -192,6 +197,7 @@ class Systolic {
   vcix_uarch::Pipeline<Row> array_;
   vcix_uarch::CommandQueue commands_;
   vcix_uarch::Register<Weights> weights_;
+  vcix_uarch::Register<bool> weighted_;
   uint32_t stages_ = 1;
   bool weight_waits_ = false;
 };

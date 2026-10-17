@@ -1,11 +1,13 @@
-# Five statistics windows cut by m5ops: three pushes of four and their pops; none, a push right after its dump;
-# a push and a pop, cut by a dumpreset whose a0 and a1 ask 2000 ns of delay and a 1000 ns period; two pushes and pops; none.
+# A weight push, then five statistics windows cut by m5ops: three pushes of four and their pops; none, a push right after
+# its dump; a push and a pop, cut by a dumpreset whose a0 and a1 ask 2000 ns of delay and a 1000 ns period; two pushes
+# and pops; none.
     .option norvc
     .text
     .globl main
 main:
     li      t0, 4
     vsetvli t0, t0, e32, m1, ta, ma
+    sf.vc.iv  0x1, 0x0, v1, 0
     .insn r 0x7b, 0, 0x40, x0, x0, x0
     .rept 3
     sf.vc.iv  0x0, 0x0, v1, 0

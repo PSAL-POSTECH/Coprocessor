@@ -3,7 +3,6 @@
 #ifndef TPU_MXU_HPP
 #define TPU_MXU_HPP
 
-#include <array>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -68,7 +67,7 @@ class Mxu {
     h.port(entry_), h.port(issue_);
     for (Array &array : arrays_) h.port(array.weight_issue), h.port(array.input_issue), h.port(array.pop_issue);
     h.port(pop_);
-    for (Array &array : arrays_) h.pipeline(array.line, entry_), h.reg(array.held), h.reg(array.values);
+    for (Array &array : arrays_) h.pipeline(array.line, entry_), h.reg(array.state), h.reg(array.values);
   }
 
   // A cycle takes Shape::SLOTS of vmatprep, vmatpush and vmatmul over all arrays and, per array, one of its weights'
@@ -79,28 +78,34 @@ class Mxu {
     const uint32_t operand = vcix_accel::rs1(r.insn()) & SECOND ? INPUTS : WEIGHTS;
     Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatprep");
     if (!array) return;
-    r.require(!array->held.get()[operand]);
+    r.require(!array->state.get().held[operand]);
+    r.require(registers_ > 1, [] { fail("vmatprep: an operand of an array of lanes x lanes is one register, with no upper half"); });
+    words(r, "vmatprep");
     r.use(operand == INPUTS ? array->input_issue : array->weight_issue).use(issue_);
-    r.at_issue([&] { array->held.write()[operand] = true; });
-    r.at_issue([&](const Host &host) {
-      if (registers_ == 1) fail("vmatprep: an operand of an array of lanes x lanes is one register, with no upper half");
-      array->values.write().upper[operand] = operand_rows(host, r.insn(), "vmatprep");
+    const uint64_t rows = uint64_t{r.vl()} * rows_in_word(vcix_accel::rs1(r.insn()));
+    r.at_issue([&] {
+      State &s = array->state.write();
+      s.held[operand] = true, s.rows[operand] = rows;
     });
+    r.at_issue([&](const Host &host) { array->values.write().upper[operand] = operand_rows(host, r.insn()); });
   }
   // vmatpush stages a weight per row in every column in one half of the depth, as it issues: what it held moves down as
   // many depths, past its last is gone, and the rows take its top in their order. Nothing enters the array.
   void push(Route &r) {
     Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatpush");
     if (!array) return;
+    const uint32_t field = vcix_accel::rs1(r.insn()), half = (field & DEPTH) >> 3;
+    words(r, "vmatpush");
+    r.require(half != 0, [field] { fail("vmatpush: field %u names no half of the depth: [4:3] is 1 or 2", field); });
+    r.require(half != 3, [] { fail("vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled"); });
+    r.require(half != 2 || registers_ > 1,
+              [] { fail("vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not"); });
+    if (registers_ > 1) taken(r, *array, "vmatpush", WEIGHTS, uint64_t{r.vl()} * rows_in_word(field));
     r.use(array->weight_issue).use(issue_);
     r.at_issue([&](const Host &host) {
-      const Rows lower = operand_rows(host, r.insn(), "vmatpush");
-      const uint32_t half = (vcix_accel::rs1(r.insn()) & DEPTH) >> 3;
-      if (half == 0) fail("vmatpush: field %u names no half of the depth: [4:3] is 1 or 2", vcix_accel::rs1(r.insn()));
-      if (half == 3) fail("vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled");
-      if (half == 2 && registers_ == 1) fail("vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not");
+      const Rows lower = operand_rows(host, r.insn());
       Values &v = array->values.write();
-      const Rows upper = registers_ > 1 ? take(*array, v, "vmatpush", WEIGHTS, lower[0].size()) : Rows{};
+      const Rows upper = registers_ > 1 ? v.upper[WEIGHTS] : Rows{};
       const uint32_t lanes = host.lanes(), width = registers_ * lanes;
       const size_t rows = lower[0].size(), top = half == 1 ? 0 : lanes;
       if (v.staged.empty()) v.staged.assign(width, Row(width));
@@ -110,7 +115,10 @@ class Mxu {
         for (size_t row = 0; row < rows && row < lanes; row++) weight[row] = column < lanes ? lower[column][row] : upper[column - lanes][row];
       }
     });
-    r.at_issue([&] { array->held.write()[WEIGHTS] = false; });
+    r.at_issue([&] {
+      State &s = array->state.write();
+      s.held[WEIGHTS] = false, s.pushed = true;
+    });
   }
   // vmatmul: vl words of 1 or 2 rows into the array, a word (Shape::WORD_A_CYCLE) or a row a cycle, each row's outputs
   // made as it enters (output()). One that latches first makes the staged weights the active, as it issues.
@@ -118,43 +126,42 @@ class Mxu {
     Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatmul");
     if (!array) return;
     const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = Shape::WORD_A_CYCLE ? in_word : 1;
+    const bool latch = vcix_accel::rs1(r.insn()) & LATCH;
+    words(r, "vmatmul");
+    if (registers_ > 1) taken(r, *array, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);
+    if (latch) r.require(array->state.get().pushed, [] { fail("vmatmul: no weight was pushed before it"); });
+    else r.require(array->state.get().latched, [] { fail("vmatmul: no weights were latched before it, and it does not latch"); });
     r.use(array->input_issue).use(issue_);
     r.send(array->line, uint64_t{r.vl()} * in_word / weight, weight,
            [this, array, &r](const Host &host, uint64_t row) { return output(host, r.insn(), *array, row); });
-    r.at_issue([&](const Host &host) {
-      operand_format(r.insn(), "vmatmul");
+    r.at_issue([&](const Host &) {
       Values &v = array->values.write();
-      if (registers_ > 1) take(*array, v, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);
-      if (vcix_accel::rs1(r.insn()) & LATCH) {
-        if (v.staged.empty()) fail("vmatmul: no weight was pushed before it");
-        v.active = v.staged;
-      }
-      if (v.active.empty()) fail("vmatmul: no weights were latched before it, and it does not latch");
+      if (latch) v.active = v.staged;
     });
-    r.at_issue([&] { array->held.write()[INPUTS] = false; });
+    r.at_issue([&] {
+      State &s = array->state.write();
+      s.held[INPUTS] = false, s.latched |= latch;
+    });
   }
-  // vpop: up to vl rows of the lower or the upper half of the columns, once vl are out or none is on its way, row i to
-  // element i of vd; the pops of all arrays share the pop port's rows. As singles; fewer than vl computed ends the run.
+  // vpop: vl rows of the lower or the upper half of the columns, row i to element i of vd; the pops of all arrays share
+  // the pop port's rows. As singles; one that asks more than is computed never ends.
   void pop(Route &r) {
     Array *array = array_for(r, vcix_accel::rs2(r.insn()), "vpop");
     if (!array) return;
-    const uint32_t half = vcix_accel::rs1(r.insn()) & SECOND ? 1 : 0;
+    const uint32_t half = vcix_accel::rs1(r.insn()) & SECOND ? 1 : 0, format = vcix_accel::rs1(r.insn()) & FORMAT;
+    const uint32_t sew = r.insn().sew_bits, vl = r.vl();
+    r.require(sew == 32 && !format,
+              [format, sew] { fail("vpop: a result is a single, and format %u of %u bits was asked", format, sew); });
+    r.require(!half || registers_ > 1,
+              [] { fail("vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not"); });
     r.use(array->pop_issue);
-    r.receive_at_most(array->line, r.vl(), [&r, half](const Host &host, uint64_t i, Row &&row) {
+    r.receive(array->line, vl, [&r, half](const Host &host, uint64_t i, Row &&row) {
       const uint32_t lanes = host.lanes(), first = half ? lanes : 0, vd = vcix_accel::rd(r.insn());
       for (uint32_t lane = 0; lane < lanes; lane++) put<float>(host, lane, vd, static_cast<uint32_t>(i), row[first + lane]);
     });
     r.from_output(half).through_received(pop_);
-    r.at_issue([&](const Host &) {
-      if (r.insn().sew_bits != 32 || (vcix_accel::rs1(r.insn()) & FORMAT))
-        fail("vpop: a result is a single, and format %u of %u bits was asked", vcix_accel::rs1(r.insn()) & FORMAT,
-             r.insn().sew_bits);
-      if (half && registers_ == 1)
-        fail("vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not");
-    });
-    r.when_received([&r, half](const Host &, uint64_t taken) {
-      if (taken < r.vl())
-        fail("vpop: %u rows asked of the %s half, %zu computed", r.vl(), half ? "upper" : "lower", static_cast<size_t>(taken));
+    r.when_stuck([vl, half](uint64_t got) {
+      fail("vpop: %u rows asked of the %s half, %zu computed", vl, half ? "upper" : "lower", static_cast<size_t>(got));
     });
   }
 
@@ -181,14 +188,21 @@ class Mxu {
 
  private:
   enum Operand : uint32_t { WEIGHTS, INPUTS };
+  // One array's state: whether each operand's upper half is held, and of how many rows; whether a push has staged
+  // weights, and a latch made them active.
+  struct State {
+    bool held[2] = {false, false};
+    uint64_t rows[2] = {0, 0};
+    bool pushed = false, latched = false;
+  };
   // One array's values: the upper half each operand's vmatprep holds; per column, of registers x lanes, its weight at
   // each depth as the pushes left them (staged) and as the last latch took them (active), empty until the first.
   struct Values {
     Rows upper[2];
     Rows staged, active;
   };
-  // One array: its issue slots, one instruction a cycle each; its pipeline, whose rows carry its outputs; whether each
-  // operand's upper half is held; its values.
+  // One array: its issue slots, one instruction a cycle each; its pipeline, whose rows carry its outputs; its state;
+  // its values.
   struct Array {
     explicit Array(const char *unit)
         : weight_issue{unit, "weight_issue", "instructions", 1},
@@ -196,16 +210,32 @@ class Mxu {
           pop_issue{unit, "pop_issue", "instructions", 1} {}
     Port weight_issue, input_issue, pop_issue;
     vcix_uarch::Pipeline<Row> line;
-    vcix_uarch::Register<std::array<bool, 2>> held;
+    vcix_uarch::Register<State> state;
     vcix_uarch::Register<Values> values;
   };
 
   static bool is_pop(const Insn &insn) { return (insn.bits & FORM) == 0x0800305B; }
-  // The array an instruction names; one the machine lacks is never accepted, and on Spike ends the run.
+  // The array an instruction names; one the machine lacks is never accepted.
   Array *array_for(Route &r, uint32_t which, const char *what) {
-    if (r.require(which < arrays_.size(), [&] { fail("%s: array %u, and the machine has %zu (tpu_mxu_units)", what, which, arrays_.size()); }))
+    const size_t arrays = arrays_.size();
+    if (r.require(which < arrays, [what, which, arrays] { fail("%s: array %u, and the machine has %zu (tpu_mxu_units)", what, which, arrays); }))
       return &arrays_[which];
     return nullptr;
+  }
+  // An operand is words of 32 bits of format 0, 1 or 3; one of others is never accepted.
+  static void words(Route &r, const char *what) {
+    const uint32_t sew = r.insn().sew_bits, format = vcix_accel::rs1(r.insn()) & FORMAT;
+    r.require(sew == 32, [what, sew] { fail("%s: its elements are words of 32 bits, not of %u", what, sew); });
+    r.require(format != 2, [what] { fail("%s: format 2 names nothing a word holds", what); });
+  }
+  // The upper half a vmatprep of the operand holds, of as many rows, is taken; never accepted otherwise.
+  static void taken(Route &r, const Array &array, const char *what, Operand operand, uint64_t rows) {
+    const State &s = array.state.get();
+    const uint64_t held = s.rows[operand];
+    if (r.require(s.held[operand], [what] { fail("%s: no vmatprep of its upper half came before it", what); }))
+      r.require(held == rows, [what, rows, held] {
+        fail("%s: %zu rows, and the vmatprep before it held %zu", what, static_cast<size_t>(rows), static_cast<size_t>(held));
+      });
   }
   static float word_element(uint32_t word, uint32_t slot, uint32_t format) {
     if (format == 0) {
@@ -216,30 +246,15 @@ class Mxu {
     const uint16_t part = static_cast<uint16_t>(word >> (16 * slot));
     return format == 3 ? bf16_to_float(part) : half_to_float(part);
   }
-  // What a word of the operand holds: words of 32 bits of format 0, 1 or 3.
-  static uint32_t operand_format(const Insn &insn, const char *what) {
-    if (insn.sew_bits != 32) fail("%s: its elements are words of 32 bits, not of %u", what, insn.sew_bits);
-    const uint32_t format = vcix_accel::rs1(insn) & FORMAT;
-    if (format == 2) fail("%s: format 2 names nothing a word holds", what);
-    return format;
-  }
   // The rows of one register group, per lane.
-  static Rows operand_rows(const Host &host, const Insn &insn, const char *what) {
-    const uint32_t format = operand_format(insn, what), pack = rows_in_word(format);
+  static Rows operand_rows(const Host &host, const Insn &insn) {
+    const uint32_t format = vcix_accel::rs1(insn) & FORMAT, pack = rows_in_word(format);
     Rows rows(host.lanes(), Row(uint64_t{insn.vl} * pack));
     for (uint32_t lane = 0; lane < host.lanes(); lane++)
       for (uint32_t i = 0; i < insn.vl; i++)
         for (uint32_t slot = 0; slot < pack; slot++)
           rows[lane][i * pack + slot] = word_element(get<uint32_t>(host, lane, vcix_accel::rs2(insn), i), slot, format);
     return rows;
-  }
-  // The upper half a vmatprep of this operand holds, which must be of as many rows; its values stay until the next
-  // vmatprep of the operand.
-  static const Rows &take(const Array &array, const Values &v, const char *what, Operand operand, size_t rows) {
-    if (!array.held.get()[operand]) fail("%s: no vmatprep of its upper half came before it", what);
-    if (v.upper[operand][0].size() != rows)
-      fail("%s: %zu rows, and the vmatprep before it held %zu", what, rows, v.upper[operand][0].size());
-    return v.upper[operand];
   }
   // Row `row` of a vmatmul's input, as it enters: a column's output is its active weights times the row, one input
   // vector of registers x lanes, the lower lanes from vs2 and the upper from the vmatprep the vmatmul took.
