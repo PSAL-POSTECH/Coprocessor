@@ -358,6 +358,7 @@ class CommandQueue {
     reset();
   }
   uint32_t depth() const { return depth_; }
+  bool idle() const { return list_.empty(); }
 
  private:
   friend class Route;
