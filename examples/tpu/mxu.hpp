@@ -3,6 +3,7 @@
 #ifndef TPU_MXU_HPP
 #define TPU_MXU_HPP
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -67,24 +68,23 @@ class Mxu {
     h.port(entry_), h.port(issue_);
     for (Array &array : arrays_) h.port(array.weight_issue), h.port(array.input_issue), h.port(array.pop_issue);
     h.port(pop_);
-    for (Array &array : arrays_) h.pipeline(array.line, entry_), h.reg(array.values);
+    for (Array &array : arrays_) h.pipeline(array.line, entry_), h.reg(array.held), h.reg(array.values);
   }
 
   // A cycle takes Shape::SLOTS of vmatprep, vmatpush and vmatmul over all arrays and, per array, one of its weights'
   // (a vmatprep of weights or a vmatpush), one of its inputs' (a vmatprep of inputs or a vmatmul) and one vpop.
-  // vmatprep holds the upper half of its operand until the next vmatpush or vmatmul of that operand takes it.
+  // vmatprep holds the upper half of its operand until the next vmatpush or vmatmul of that operand takes it, and
+  // waits while the half held before is not taken.
   void prep(Route &r) {
     const uint32_t operand = vcix_accel::rs1(r.insn()) & SECOND ? INPUTS : WEIGHTS;
     Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatprep");
     if (!array) return;
+    r.require(!array->held.get()[operand]);
     r.use(operand == INPUTS ? array->input_issue : array->weight_issue).use(issue_);
+    r.at_issue([&] { array->held.write()[operand] = true; });
     r.at_issue([&](const Host &host) {
       if (registers_ == 1) fail("vmatprep: an operand of an array of lanes x lanes is one register, with no upper half");
-      Rows rows = operand_rows(host, r.insn(), "vmatprep");
-      Values &v = array->values.write();
-      if (v.held[operand])
-        fail("vmatprep: the upper half of the %s a vmatprep held before it was taken by no %s", OPERAND[operand], TAKER[operand]);
-      v.held[operand] = true, v.upper[operand] = std::move(rows);
+      array->values.write().upper[operand] = operand_rows(host, r.insn(), "vmatprep");
     });
   }
   // vmatpush stages a weight per row in every column in one half of the depth, as it issues: what it held moves down as
@@ -100,7 +100,7 @@ class Mxu {
       if (half == 3) fail("vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled");
       if (half == 2 && registers_ == 1) fail("vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not");
       Values &v = array->values.write();
-      const Rows upper = registers_ > 1 ? take(v, "vmatpush", WEIGHTS, lower[0].size()) : Rows{};
+      const Rows upper = registers_ > 1 ? take(*array, v, "vmatpush", WEIGHTS, lower[0].size()) : Rows{};
       const uint32_t lanes = host.lanes(), width = registers_ * lanes;
       const size_t rows = lower[0].size(), top = half == 1 ? 0 : lanes;
       if (v.staged.empty()) v.staged.assign(width, Row(width));
@@ -110,6 +110,7 @@ class Mxu {
         for (size_t row = 0; row < rows && row < lanes; row++) weight[row] = column < lanes ? lower[column][row] : upper[column - lanes][row];
       }
     });
+    r.at_issue([&] { array->held.write()[WEIGHTS] = false; });
   }
   // vmatmul: vl words of 1 or 2 rows into the array, a word (Shape::WORD_A_CYCLE) or a row a cycle, each row's outputs
   // made as it enters (output()). One that latches first makes the staged weights the active, as it issues.
@@ -123,13 +124,14 @@ class Mxu {
     r.at_issue([&](const Host &host) {
       operand_format(r.insn(), "vmatmul");
       Values &v = array->values.write();
-      if (registers_ > 1) take(v, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);
+      if (registers_ > 1) take(*array, v, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);
       if (vcix_accel::rs1(r.insn()) & LATCH) {
         if (v.staged.empty()) fail("vmatmul: no weight was pushed before it");
         v.active = v.staged;
       }
       if (v.active.empty()) fail("vmatmul: no weights were latched before it, and it does not latch");
     });
+    r.at_issue([&] { array->held.write()[INPUTS] = false; });
   }
   // vpop: up to vl rows of the lower or the upper half of the columns, once vl are out or none is on its way, row i to
   // element i of vd; the pops of all arrays share the pop port's rows. As singles; fewer than vl computed ends the run.
@@ -179,15 +181,14 @@ class Mxu {
 
  private:
   enum Operand : uint32_t { WEIGHTS, INPUTS };
-  static constexpr const char *OPERAND[] = {"weights", "inputs"}, *TAKER[] = {"vmatpush", "vmatmul"};
   // One array's values: the upper half each operand's vmatprep holds; per column, of registers x lanes, its weight at
   // each depth as the pushes left them (staged) and as the last latch took them (active), empty until the first.
   struct Values {
-    bool held[2] = {};
     Rows upper[2];
     Rows staged, active;
   };
-  // One array: its issue slots, one instruction a cycle each; its pipeline, whose rows carry its outputs; its values.
+  // One array: its issue slots, one instruction a cycle each; its pipeline, whose rows carry its outputs; whether each
+  // operand's upper half is held; its values.
   struct Array {
     explicit Array(const char *unit)
         : weight_issue{unit, "weight_issue", "instructions", 1},
@@ -195,6 +196,7 @@ class Mxu {
           pop_issue{unit, "pop_issue", "instructions", 1} {}
     Port weight_issue, input_issue, pop_issue;
     vcix_uarch::Pipeline<Row> line;
+    vcix_uarch::Register<std::array<bool, 2>> held;
     vcix_uarch::Register<Values> values;
   };
 
@@ -231,13 +233,12 @@ class Mxu {
           rows[lane][i * pack + slot] = word_element(get<uint32_t>(host, lane, vcix_accel::rs2(insn), i), slot, format);
     return rows;
   }
-  // The upper half a vmatprep of this operand holds, which must be of as many rows; it is no longer held, and stays
-  // until the next vmatprep of the operand.
-  static const Rows &take(Values &v, const char *what, Operand operand, size_t rows) {
-    if (!v.held[operand]) fail("%s: no vmatprep of its upper half came before it", what);
+  // The upper half a vmatprep of this operand holds, which must be of as many rows; its values stay until the next
+  // vmatprep of the operand.
+  static const Rows &take(const Array &array, const Values &v, const char *what, Operand operand, size_t rows) {
+    if (!array.held.get()[operand]) fail("%s: no vmatprep of its upper half came before it", what);
     if (v.upper[operand][0].size() != rows)
       fail("%s: %zu rows, and the vmatprep before it held %zu", what, rows, v.upper[operand][0].size());
-    v.held[operand] = false;
     return v.upper[operand];
   }
   // Row `row` of a vmatmul's input, as it enters: a column's output is its active weights times the row, one input
