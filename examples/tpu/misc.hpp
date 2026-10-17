@@ -48,6 +48,13 @@ class Misc {
   void dma(Route &r) {
     r.use(issue_).at_issue([&](const Host &host) { (dma_.write().*V)(host, r.insn()); });
   }
+  // The same, for a transfer, NAME: never accepted on a machine with no scratchpad.
+  template <DmaValues V, const char *NAME>
+  void transfer(Route &r) {
+    r.require(dma_.get().scratchpad(), [] { fail("%s: the machine description has no %s", NAME, Dma::SPAD_LANE_KEY); });
+    dma<V>(r);
+  }
+  static constexpr char MVIN[] = "mvin", MVOUT[] = "mvout";
 
  private:
   static void nothing(const Host &, const Insn &) {}
@@ -111,12 +118,12 @@ class Misc {
   static constexpr vcix_uarch::Instruction<Misc> INSTRUCTIONS[] = {
       {0x0000305B, FUNCTION, "vlane_idx", &Misc::one<&Misc::vlane_idx>},
       {0x0600305B, FUNCTION, "compute", &Misc::one<&Misc::nothing>},
-      {0x0200302B, FUNCTION, "mvin2", &Misc::dma<&Dma::mvin>},
-      {0x0400302B, FUNCTION, "mvin", &Misc::dma<&Dma::mvin>},
-      {0x0600302B, FUNCTION, "mvout", &Misc::dma<&Dma::mvout>},
+      {0x0200302B, FUNCTION, "mvin2", &Misc::transfer<&Dma::mvin, MVIN>},
+      {0x0400302B, FUNCTION, "mvin", &Misc::transfer<&Dma::mvin, MVIN>},
+      {0x0600302B, FUNCTION, "mvout", &Misc::transfer<&Dma::mvout, MVOUT>},
       {0x0E00302B, FUNCTION, "dma_config_desc", &Misc::dma<&Dma::dma_config_desc>},
       {0x1000302B, FUNCTION, "dma_index_key", &Misc::dma<&Dma::dma_index_key>},
-      {0x1C00302B, FUNCTION, "mvin3", &Misc::dma<&Dma::mvin>},
+      {0x1C00302B, FUNCTION, "mvin3", &Misc::transfer<&Dma::mvin, MVIN>},
       {0x2800005B, FUNCTION, "pack", &Misc::one<&Misc::pack>},
       {0x2804305B, FIELD, "unpack_lo", &Misc::one<&Misc::unpack_lo>},
       {0x2804B05B, FIELD, "unpack_hi", &Misc::one<&Misc::unpack_hi>},

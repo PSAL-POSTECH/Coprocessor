@@ -1,6 +1,6 @@
 // The tpu units' ports, read through the C table with no simulator: cases whose counts can be worked out by hand.
-// A 4 x 4 array (7 slots, queues of 8), a cross-lane unit of 3 slots, a special-function unit of depth 4, misc 2 wide.
-// Usage: tpu_ports libtpu.so
+// A 4 x 4 array (7 slots, queues of 8; input pushes after a weight push in cycle 0), a cross-lane unit of 3 slots, a
+// special-function unit of depth 4, misc 2 wide with a scratchpad. Usage: tpu_ports libtpu.so
 #include <dlfcn.h>
 
 #include <cinttypes>
@@ -36,7 +36,7 @@ class Run {
                             static const std::map<std::string, std::string> machine = {
                                 {"vpu_num_lanes", "4"},          {"tpu_systolic_queue_entries", "8"},
                                 {"tpu_xlu_latency_cycles", "3"}, {"tpu_xlu_queue_entries", "8"},
-                                {"tpu_sfu_latency_cycles", "4"}};
+                                {"tpu_sfu_latency_cycles", "4"}, {"vpu_spad_size_kb_per_lane", "512"}};
                             const auto found = machine.find(key);
                             return found == machine.end() ? nullptr : found->second.c_str();
                           }};
@@ -126,6 +126,7 @@ void list() {
 // One row through a 7-slot array: it enters in the tick after its push and is held 7 cycles.
 void one_row() {
   Run run;
+  run.issue(WEIGHT_PUSH, 1);
   run.next();
   run.issue(INPUT_PUSH, 1);
   for (int c = 2; c <= 20; c++) run.next();
@@ -156,6 +157,7 @@ void continuous() {
   const int cycles = 4000;
   uint64_t short_by = 0, unpopped = 0;
   bool bounded = true;
+  run.issue(WEIGHT_PUSH, 1);
   for (int c = 1; c <= cycles; c++) {
     run.next();
     if (unpopped && run.issue(POP, 2))
@@ -239,6 +241,7 @@ void misc() {
 void squashed() {
   Run with, without;
   for (Run *run : {&with, &without}) {
+    run->issue(WEIGHT_PUSH, 1);
     run->next();
     run->issue(INPUT_PUSH, 3);
     run->next();
@@ -267,26 +270,35 @@ int wait_for(Run &run, uint32_t bits, uint32_t vl) {
   return waited;
 }
 
-// `box`: a pop is issued at once and waits in a queue of one for what it takes.
+// `box`: a pop is issued at once and waits in a queue of one for what it takes. `weights`: what its pushes follow, or
+// 0; `exact`: a pop of more than is computed is never accepted.
 struct Unit {
   const char *name;
   uint32_t push, pop;
   int slots;
   bool box;
+  uint32_t weights;
+  bool exact;
 };
-const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7, false}, MSA = {"msa", MSA_PUSH, MSA_POP, 7, false},
-           XLU = {"xlu", XLU_PUSH, XLU_POP, 3, true};
+const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7, false, WEIGHT_PUSH, true},
+           MSA = {"msa", MSA_PUSH, MSA_POP, 7, false, 0, false}, XLU = {"xlu", XLU_PUSH, XLU_POP, 3, true, 0, false};
+// A run of the unit, its weights issued in cycle 0.
+void begin(Run &run, const Unit &unit) {
+  if (unit.weights) run.issue(unit.weights, 1);
+}
 
-// A pop of more than was pushed ends once nothing more is on its way. Issued then, 1 + slots after the push, the pop
-// after it follows in 1. Issued at once, it takes the element 1 + slots after it, makes its slot in the next, takes it
-// 3 after that and learns in the next that nothing more comes: the pop after it follows slots + 6 after the first.
+// A pop of more than was pushed: never accepted (`exact`), or ends once nothing more comes. Issued then, 1 + slots after
+// the push, the pop after it follows in 1; issued at once, it takes the element 1 + slots after it, makes its slot in the
+// next, takes it 3 after, learns in the next that nothing more comes, and the pop after it follows slots + 6 after.
 void fewer_pushed(const Unit &unit) {
   Run run;
+  begin(run, unit);
   run.next();
   run.issue(unit.push, 1);
   const int first = wait_for(run, unit.pop, 2);
   const int second = wait_for(run, unit.pop, 2);
-  const int want_first = unit.box ? 1 : 1 + unit.slots, want_second = unit.box ? unit.slots + 6 : 1;
+  const int want_first = unit.exact ? 100 : unit.box ? 1 : 1 + unit.slots;
+  const int want_second = unit.exact ? 100 : unit.box ? unit.slots + 6 : 1;
   check(first == want_first && second == want_second,
         std::string(unit.name) + ": a push of 1 is popped by 2 after " + n(first) + " cycles, and popped again after " +
             n(second) + "; expected " + n(want_first) + ", " + n(want_second) + " (" + n(unit.slots) + " slots)");
@@ -296,6 +308,7 @@ void fewer_pushed(const Unit &unit) {
 // fills, the array stops and a push waits for good. Nothing drops what was left: the program is the one at fault.
 void more_pushed(const Unit &unit) {
   Run run;
+  begin(run, unit);
   int done = 0;
   for (; done < 100; done++)
     if (wait_for(run, unit.push, 4) == 100 || wait_for(run, unit.pop, 2) == 100) break;
@@ -329,6 +342,7 @@ void xlu_shallower() {
 // matched stream, whose timing the rule for an unmatched one must not move. 48 rows at one a cycle, then 7 slots and the pop.
 void interleaved(const Unit &unit, int expected) {
   Run run;
+  begin(run, unit);
   std::vector<uint32_t> program(4, unit.push);
   for (int t = 4; t < 12; t++) {
     program.push_back(unit.pop);

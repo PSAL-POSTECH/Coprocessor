@@ -34,45 +34,44 @@ class Msa {
       throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
     array_.configure(2 * lanes - 1, entries, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
     pop_.set_capacity(entries);
+    lanes_ = static_cast<uint32_t>(lanes);
   }
   template <class H>
   void hardware(H &&h) {
     h.port(entry_), h.port(issue_), h.port(weight_push_), h.port(pop_);
     h.pipeline(array_, entry_);
-    h.reg(weights_);
+    h.reg(weights_), h.reg(format_);
   }
 
   // The field at 19:15: [4] weights or inputs, [3:2] how many columns compute (all shifted right by it), [1:0] what a
   // word holds. A weight push takes its own slot and writes the matrix as it issues, and changing the format or the
   // width empties it; an input push sends vl rows, element i of every lane one input row (row()).
   void push(Route &r) {
-    const bool weights = vcix_accel::rs1(r.insn()) & WEIGHT;
+    const uint32_t field = vcix_accel::rs1(r.insn()), sew = r.insn().sew_bits, format = field & 3, shift = (field >> 2) & 3;
+    const uint32_t pack = elements(format), held = elements(format_.get()), columns = lanes_;
+    const bool weights = field & WEIGHT;
+    r.require(sew == 32, [sew] { fail("msa push: its elements are words of 32 bits, not of %u", sew); });
+    if (weights) r.require(columns >> shift != 0, [columns, shift] { fail("msa push: no column is left of %u when shifted by %u", columns, shift); });
+    else r.require(pack == held, [pack, held] { fail("msa push: inputs of %u to a word, weights of %u", pack, held); });
     r.use(issue_);
     if (weights) r.use(weight_push_);
     else r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return row(host, r.insn(), i); });
+    if (!weights) return;
     r.at_issue([&](const Host &host) {
-      if (r.insn().sew_bits != 32) fail("msa push: its elements are words of 32 bits, not of %u", r.insn().sew_bits);
-      const uint32_t lanes = host.lanes(), field = vcix_accel::rs1(r.insn()), vs = vcix_accel::rs2(r.insn());
-      const uint32_t format = field & 3, pack = elements(format);
-      if (weights) {
-        const uint32_t shift = (field >> 2) & 3;
-        if (lanes >> shift == 0) fail("msa push: no column is left of %u when shifted by %u", lanes, shift);
-        Weights &w = weights_.write();
-        if (w.columns.size() != lanes) w.columns.assign(lanes, {});
-        if (format != w.format || shift != w.shift)
-          for (std::deque<float> &column : w.columns) column.clear();
-        w.format = format, w.shift = shift;
-        for (uint32_t lane = 0; lane < lanes; lane++)
-          for (uint32_t i = 0; i < r.vl(); i++)
-            for (uint32_t slot = 0; slot < pack; slot++) {
-              if (w.columns[lane].size() == lanes * pack) w.columns[lane].pop_front();
-              w.columns[lane].push_back(element(get<uint32_t>(host, lane, vs, i), slot, format));
-            }
-        return;
-      }
-      if (pack != elements(weights_.get().format))
-        fail("msa push: inputs of %u to a word, weights of %u", pack, elements(weights_.get().format));
+      const uint32_t lanes = host.lanes(), vs = vcix_accel::rs2(r.insn());
+      Weights &w = weights_.write();
+      if (w.columns.size() != lanes) w.columns.assign(lanes, {});
+      if (format != format_.get() || shift != w.shift)
+        for (std::deque<float> &column : w.columns) column.clear();
+      w.shift = shift;
+      for (uint32_t lane = 0; lane < lanes; lane++)
+        for (uint32_t i = 0; i < r.vl(); i++)
+          for (uint32_t slot = 0; slot < pack; slot++) {
+            if (w.columns[lane].size() == lanes * pack) w.columns[lane].pop_front();
+            w.columns[lane].push_back(element(get<uint32_t>(host, lane, vs, i), slot, format));
+          }
     });
+    if (format != format_.get()) r.at_issue([&] { format_.write() = format; });
   }
   // Up to vl rows of the output queue, once vl are out or none is on its way: what is there and no more, row i to
   // element i of vd. To fewer bits it rounds to nearest even; 8 bits are E5M2 when the field's [1:0] says so and E4M3
@@ -95,10 +94,10 @@ class Msa {
                                                                   {0x0C00305B, FORM, "msa pop", &Msa::pop}};
 
  private:
-  // Per lane its column of the matrix, and the format and the width the last weight push said.
+  // Per lane its column of the matrix, and the width the last weight push said (its format is unit state, format_).
   struct Weights {
     std::vector<std::deque<float>> columns;
-    uint32_t format = 0, shift = 0;
+    uint32_t shift = 0;
   };
   // Input row i of a push, as it enters: per lane, its column of the matrix times element i of every lane; a column
   // past the width computes 0.
@@ -139,6 +138,8 @@ class Msa {
   vcix_uarch::Port entry_, issue_, weight_push_, pop_;
   vcix_uarch::Pipeline<Row> array_;
   vcix_uarch::Register<Weights> weights_;
+  vcix_uarch::Register<uint32_t> format_;
+  uint32_t lanes_ = 128;
 };
 
 }  // namespace tpu
