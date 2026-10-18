@@ -34,7 +34,7 @@ unit_stat() { awk -v want=".vcix.$2.$3" 'substr($1, length($1) - length(want) + 
 # units <run>: the units in the run's dump, as gem5 sorts them
 units() { sed -n 's/^.*\.vcix\.\([^.]*\)\.admitted .*$/\1/p' "$BUILD/m5out-tpuv6e-$1/stats.txt" | tr '\n' ' ' | sed 's/ $//'; }
 
-for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops scratchpad valu ../tpu/loads ../tpu/addresses; do
+for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops sfu scratchpad valu ../tpu/loads ../tpu/addresses; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv6e-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 
@@ -117,6 +117,17 @@ pops=$(said mxu_pops "issue vpop: 19 cycles after the last issue, 0 in flight, a
   "issue vpop: 1 cycles after the last issue, 0 in flight, array 1, input queue 0, output queues 4 and 4")
 report "exit ${rc[mxu_pops]}, lines $pops of $(lines mxu_pops issue)" "exit 0, lines 2 of 4" \
   "each array's four rows are out in one cycle and the pop port takes four rows a cycle, so array 1's vpop waits a cycle behind array 0's"
+
+echo "-- special-function unit, 4 lanes: an EUP push of eight registers, then their pop"
+printf 'tpu_trace: 1\nvpu_num_lanes: 4\n' > "$BUILD/tpuv6e-sfu.yml"
+printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpuv6e-sfu-4.yml"
+on_gem5 sfu sfu "$BUILD/tpuv6e-sfu.yml"
+on_gem5 sfu-4 sfu "$BUILD/tpuv6e-sfu-4.yml"
+eup=$(said sfu "issue sfu_push: the first, input queue 0, output queue 0" \
+  "issue sfu_pop: 18 cycles after the last issue, 0 in flight, input queue 0, output queue 8")
+eup4=$(said sfu-4 "issue sfu_pop: 12 cycles after the last issue, 0 in flight, input queue 0, output queue 8")
+report "exit ${rc[sfu]} ${rc[sfu-4]}, lines $eup of $(lines sfu issue), $eup4 of $(lines sfu-4 issue)" "exit 0 0, lines 2 of 2, 1 of 2" \
+  "the push's eight registers enter the EUP one a cycle and leave tpu_sfu_latency_cycles later, so the pop is issued 8 + 10 cycles after the push, and 8 + 4 with a latency of 4"
 
 echo "-- the machine PyTorchSim measures on (examples/tpuv6e/gem5)"
 
