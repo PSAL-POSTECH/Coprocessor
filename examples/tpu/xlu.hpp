@@ -70,7 +70,7 @@ class Xlu {
   void push(Route &r) {
     const uint32_t field = vcix_accel::rs1(r.insn());
     const bool load = !r.arg() && field >> 3 == LOAD;
-    if (!load) r.require(pops_.idle() && stages_.input_entries() + r.vl() <= entries_);
+    if (!load) r.require(pops_.idle() && stages_.input_rows() + r.vl() <= entries_);
     if (!load) {
       const uint64_t held = box_.get().elements;
       r.require(held + r.vl() <= MAX_SLOTS, [held] {
@@ -137,8 +137,8 @@ class Xlu {
   }
   // What the [tpu] trace adds to an issue: the stages' input queue and the buffer they leave into.
   void trace_queues(const Insn &) const {
-    std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(stages_.input_entries()),
-                static_cast<uint32_t>(stages_.output_entries()));
+    std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(stages_.input_rows()),
+                static_cast<uint32_t>(stages_.output_rows()));
   }
 
   static constexpr uint32_t FORM = 0xFE00707F;

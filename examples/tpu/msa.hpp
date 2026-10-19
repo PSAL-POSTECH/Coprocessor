@@ -28,7 +28,7 @@ class Msa {
         pop_{name, "pop", "rows", 256} {}
   void configure(const vcix_uarch::Config &config) {
     const uint64_t lanes = config.uint(LANES_KEY, 128), entries = config.uint(QUEUE_KEY, 256);
-    if (lanes < 1 || lanes > MAX_LANES)
+    if (lanes < 1)
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 1 || entries > UINT32_MAX)
       throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
@@ -131,7 +131,6 @@ class Msa {
   }
 
   static constexpr uint32_t WEIGHT = 0x10, E5M2_FORMAT = 3;
-  static constexpr uint64_t MAX_LANES = 1u << 20;
   static constexpr const char *LANES_KEY = "vpu_num_lanes";
   static constexpr const char *QUEUE_KEY = "tpu_systolic_queue_entries";
 
