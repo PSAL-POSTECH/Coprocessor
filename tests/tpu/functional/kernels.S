@@ -259,3 +259,16 @@ k_unpack:
     vse32.v v17, (t1)
     mv      a0, t0
     ret
+
+# A tile folded across the lanes (xlu_push_reduce, sf.vc.ivv 2): the field at 19:15 is the kind, 0 max, 1 sum.
+.macro cross_fold name, kind
+    .globl \name
+\name:
+    vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a0)
+    sf.vc.ivv 0x2, v24, v8, \kind
+    mv      a0, t0
+    ret
+.endm
+    cross_fold k_cross_fold_max, 0
+    cross_fold k_cross_fold_sum, 1

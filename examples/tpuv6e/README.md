@@ -232,7 +232,7 @@ matrix unit does. The four VALUs do not change it.
 | `tpu_mxu_units` | 1 | how many arrays the matrix unit has, each with its own queues, delay line and weights; 1 to 32, what an instruction's field of 5 bits names |
 | `tpu_sfu_latency_cycles`, `tpu_sfu_queue_registers` | 10, 16 | as in `examples/tpu` |
 | `tpu_misc_issue_width` | 2 | as in `examples/tpu` |
-| `tpu_xlu_latency_cycles`, `tpu_xlu_queue_entries` | 10, 256 | as in `examples/tpu` |
+| `tpu_xlu_latency_cycles`, `tpu_xlu_queue_entries`, `tpu_xlu_elements_per_cycle`, `tpu_xlu_issue_per_cycle` | 10, 256, 1, 1 | as in `examples/tpu`. Measured on a v6e (tpu-perf-archive run v6e/xlu_chain/2026-10-19_pallas): a lane reduce of one (8,128) f32 vreg comes back 137 cycles after its push, and independent reduces add about one cycle each, one push and its pop a cycle; with 137, 16, 2 a push and a pop share the 2 issues a cycle |
 | `tpu_trace` | 0 | as in `examples/tpu`; an issue of the matrix unit also reports its array, when there is more than one, and that array's input queue and the two halves' output queues (one, bound to the lanes) |
 | `vpu_spad_size_kb_per_lane`, `vpu_spad_base_vaddr`, `run_base_path` | | the DMA's, as in `examples/tpu` |
 
