@@ -173,7 +173,7 @@ if [ "$rc" = 0 ] && grep -Fq ", 0 wrong" "$OUT/unpack.out"; then printf 'PASS'; 
 echo "  the bf16 unpack (sf.vc.v.iv 8, 9): $(tail -n1 "$OUT/unpack.out") (exit $rc)"
 on_model xlu_fold -- xlu_fold; rc=$?
 if [ "$rc" = 0 ] && grep -Fxq "xlu_fold: all pass" "$OUT/xlu_fold.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-echo "  the cross-lane fold (sf.vc.ivv 2, max and sum): $(tail -n1 "$OUT/xlu_fold.out") (exit $rc)"
+echo "  the cross-lane fold (sf.vc.ivv 2, max, sum, min, argmax, argmin; bf16 max, min): $(tail -n1 "$OUT/xlu_fold.out") (exit $rc)"
 
 # refused <which> <exit> <text>: the run ends there, with this on standard error.
 refused() {
@@ -191,6 +191,7 @@ refused bf16-pop 1 "tpu: systolic pop: a pop to bfloat16 is not modeled"
 refused pop-format 1 "tpu: systolic: format 1 names no element of 32 bits"
 refused pattern 201 "XLU ERROR: the pre stage walks 1 columns but lane 0 carries 0 pattern entries (SIMM5 16)"
 refused xlu-pop 1 "tpu: xlu pop: 8 elements asked, 3 left"
+refused bf16-sum 1 "tpu: xlu push_reduce: fold 1 of 16-bit elements; every fold takes f32, max and min also bf16"
 refused msa-pop 1 "tpu: msa pop: 8 elements asked, 3 computed"
 refused words 1 "tpu: msa push: its elements are words of 32 bits, not of 16"
 refused overflow 200 "MVIN ERROR: Scratchpad address overflow: 0xd0080000"

@@ -260,15 +260,22 @@ k_unpack:
     mv      a0, t0
     ret
 
-# A tile folded across the lanes (xlu_push_reduce, sf.vc.ivv 2): the field at 19:15 is the kind, 0 max, 1 sum.
-.macro cross_fold name, kind
+# A tile folded across the lanes (xlu_push_reduce, sf.vc.ivv 2): the field at 19:15 is the kind, 0 max, 1 sum,
+# 2 min, 3 argmax, 4 argmin; f32 (e32) for every kind, bf16 (e16) for max and min.
+.macro cross_fold name, kind, sew=32, lmul=m8
     .globl \name
 \name:
-    vsetvli t0, a2, e32, m8, ta, ma
-    vle32.v v8, (a0)
+    vsetvli t0, a2, e\sew, \lmul, ta, ma
+    vle\sew\().v v8, (a0)
     sf.vc.ivv 0x2, v24, v8, \kind
     mv      a0, t0
     ret
 .endm
     cross_fold k_cross_fold_max, 0
     cross_fold k_cross_fold_sum, 1
+    cross_fold k_cross_fold_min, 2
+    cross_fold k_cross_fold_argmax, 3
+    cross_fold k_cross_fold_argmin, 4
+    cross_fold k_cross_fold_max_16, 0, 16, m4
+    cross_fold k_cross_fold_min_16, 2, 16, m4
+    cross_fold k_cross_fold_sum_16, 1, 16, m4
