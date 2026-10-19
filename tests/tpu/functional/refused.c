@@ -1,7 +1,7 @@
 // What the model cannot carry out, one per run. Usage: refused <which>
 #include "common.h"
 
-kernel k_vexp_64, k_cross_pop_32;
+kernel k_vexp_64, k_cross_pop_32, k_cross_fold_sum_16;
 kernel_with k_pop_16, k_pop_32, k_input_16, k_input_32, k_weight_8, k_weight_16, k_weight_32, k_cross_push_32, k_msa_push_16,
     k_msa_push_32, k_msa_pop_32;
 
@@ -47,6 +47,8 @@ int main(int argc, char **argv) {
   } else if (!strcmp(which, "xlu-pop")) {     // a cross-lane pop of more than is left
     k_cross_push_32(spad(0, 0), 0, 3, 0, 0);
     k_cross_pop_32(0, spad(0, 0), 8);
+  } else if (!strcmp(which, "bf16-sum")) {    // a fold the v6e has no bf16 form of: its lane sum is taken in f32
+    k_cross_fold_sum_16(spad(0, 0), 0, 4);
   } else if (!strcmp(which, "msa-pop")) {     // a multi-precision pop of more than was computed
     k_msa_push_32(spad(0, 0), 0, 3, 0, 0);
     k_msa_pop_32(0, spad(0, 0), 8, 0, 0);

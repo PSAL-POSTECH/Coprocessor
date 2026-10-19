@@ -29,6 +29,12 @@ inline float maximum(float a, float b) {
   if (a == b) return std::signbit(a) ? b : a;
   return a > b ? a : b;
 }
+// vmin.f32 the same way, as arith.minimumf: a NaN on either side is the result, and -0 is below +0.
+inline float minimum(float a, float b) {
+  if (std::isnan(a) || std::isnan(b)) return std::numeric_limits<float>::quiet_NaN();
+  if (a == b) return std::signbit(a) ? a : b;
+  return a < b ? a : b;
+}
 
 class Xlu {
   using Host = vcix_uarch::Host;
@@ -38,7 +44,7 @@ class Xlu {
   using Elements = std::vector<uint32_t>;
   using Column = std::vector<std::optional<uint32_t>>;
   struct Box {
-    uint32_t operation = 0, fold = 0;  // fold: 0 none, else the fold kind + 1
+    uint32_t operation = 0, fold = 0, fold_bits = 0;  // fold: 0 none, else the fold kind + 1, of fold_bits elements
     uint64_t elements = 0, before_entries = 0, after_entries = 0;
     Tile before, after;
     std::vector<Elements> tile;
@@ -86,19 +92,27 @@ class Xlu {
   // Field 19:15: [4:3] shuffle before, [2] exchange, [1:0] shuffle after; [4:3] 3 only loads the after's pattern from
   // rs2. Elements (32 raw bits each) wait for the pop before them and for room in the input queue, and take vl slots;
   // the box holds at most MAX_SLOTS between pops. arg() 1: xlu_push_pattern, whose rd holds the before's pattern.
-  // arg() 2: xlu_push_reduce, a tile of f32 folded across the lanes, the field the fold (0 max, 1 sum), as the v6e's
-  // vmax.xlane / vadd.xlane; a tile is one kind, and a fold pushed into a move, or a move into a fold, stops the run.
+  // arg() 2: xlu_push_reduce, a tile folded across the lanes, the field the fold: 0 max, 1 sum, 2 min, 3 argmax,
+  // 4 argmin, as the v6e's v{max,add,min}.xlane.f32, v{max,min}.index.xlane.f32 and v{max,min}.xlane.bf16 -- f32
+  // (e32) for every fold, bf16 (e16) for max and min. A tile is one kind and one width, and a fold pushed into a
+  // move, or a move into a fold, stops the run.
   void push(Route &r) {
-    const uint32_t field = vcix_accel::rs1(r.insn());
+    const uint32_t field = vcix_accel::rs1(r.insn()), bits = r.insn().sew_bits;
     const bool load = !r.arg() && field >> 3 == LOAD, fold = r.arg() == 2;
-    if (fold && field > FOLD_SUM)
-      r.require(false, [field] { fail("xlu push_reduce: fold %u, which is neither max (0) nor sum (1)", field); });
+    if (fold && field > FOLD_ARGMIN)
+      r.require(false, [field] {
+        fail("xlu push_reduce: fold %u, which is none of max (0), sum (1), min (2), argmax (3), argmin (4)", field);
+      });
+    if (fold && bits != 32 && !(bits == 16 && (field == FOLD_MAX || field == FOLD_MIN)))
+      r.require(false, [field, bits] {
+        fail("xlu push_reduce: fold %u of %u-bit elements; every fold takes f32, max and min also bf16", field, bits);
+      });
     if (!load) {
       const Box &box = box_.get();
       const bool open = box.elements && !popped_.get();
       const uint32_t kind = fold ? field + 1 : 0;
-      r.require(!open || box.fold == kind, [kind] {
-        fail("xlu push: a tile of one kind takes a push of another (fold %u)", kind);
+      r.require(!open || (box.fold == kind && (!fold || box.fold_bits == bits)), [kind] {
+        fail("xlu push: a tile of one kind takes a push of another (fold %u, or another width)", kind);
       });
     }
     if (!load) r.require(pops_.idle() && stages_.input_rows() + r.vl() <= entries_);
@@ -117,7 +131,7 @@ class Xlu {
       }
       if (popped_.get()) stages_.flush(), out_.flush(), popped_.write() = false;
       if (fold)
-        box.fold = field + 1;
+        box.fold = field + 1, box.fold_bits = r.insn().sew_bits;
       else
         box.operation = field, box.fold = 0;
       box.elements += r.vl();
@@ -191,7 +205,7 @@ class Xlu {
 
  private:
   enum Shuffle : uint32_t { BYPASS = 0, REPLICATE = 1, ARBITRARY = 2, LOAD = 3 };
-  enum Fold : uint32_t { FOLD_MAX = 0, FOLD_SUM = 1 };
+  enum Fold : uint32_t { FOLD_MAX = 0, FOLD_SUM = 1, FOLD_MIN = 2, FOLD_ARGMAX = 3, FOLD_ARGMIN = 4 };
   static constexpr uint32_t EXCHANGE = 4;
   static constexpr int INVALID_XLU_PATTERN = 201;
   static Tile &sized(Tile &tile, const Host &host) {
@@ -221,17 +235,32 @@ class Xlu {
       for (uint32_t lane = 0; lane < lanes; lane++) tile[lane].push_back(slot[lane]);
     box.tile.clear();
     if (box.fold) {
-      // each column's fold over the lanes in lane order, the same in every lane
+      // each column's fold over the lanes in lane order, the same in every lane: the value, of the pushed width, or
+      // for argmax / argmin the first lane that holds it (a NaN is above and below every number, as torch's)
+      const uint32_t kind = box.fold - 1;
+      const bool bf16 = box.fold_bits == 16;
       for (uint64_t k = 0; k < out; k++) {
         float acc = 0.0f;
+        uint32_t at = 0;
         for (uint32_t lane = 0; lane < lanes; lane++) {
           float x;
-          std::memcpy(&x, &tile[lane][k], sizeof x);
-          acc = !lane ? x : box.fold - 1 == FOLD_MAX ? maximum(acc, x) : acc + x;
+          const uint32_t raw = bf16 ? tile[lane][k] << 16 : tile[lane][k];
+          std::memcpy(&x, &raw, sizeof x);
+          if (!lane) {
+            acc = x;
+            continue;
+          }
+          switch (kind) {
+            case FOLD_MAX: acc = maximum(acc, x); break;
+            case FOLD_MIN: acc = minimum(acc, x); break;
+            case FOLD_SUM: acc = acc + x; break;
+            default:
+              if (!std::isnan(acc) && (std::isnan(x) || (kind == FOLD_ARGMAX ? x > acc : x < acc))) acc = x, at = lane;
+          }
         }
         uint32_t bits;
         std::memcpy(&bits, &acc, sizeof bits);
-        box.result.emplace_back(lanes, bits);
+        box.result.emplace_back(lanes, kind >= FOLD_ARGMAX ? at : bf16 ? bits >> 16 : bits);
       }
       box.fold = 0;
       return;
