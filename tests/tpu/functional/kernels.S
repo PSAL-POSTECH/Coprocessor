@@ -30,6 +30,27 @@
     special k_vexp_\sew, \sew, 0x3, 0
 .endr
 
+# The EUP: a push of 2^x of the source, and a pop of the oldest pushed group into the destination.
+    .globl k_vlmax_32
+k_vlmax_32:
+    vsetvli t0, a2, e32, m8, ta, ma
+    mv      a0, t0
+    ret
+    .globl k_eup_push_32
+k_eup_push_32:
+    vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a0)
+    sf.vc.vv 0x3, 0x0, v8, v8
+    mv      a0, t0
+    ret
+    .globl k_eup_pop_32
+k_eup_pop_32:
+    vsetvli t0, a2, e32, m8, ta, ma
+    sf.vc.v.x 0x3, 0x0, v16, zero
+    vse32.v v16, (a1)
+    mv      a0, t0
+    ret
+
 # The systolic array: a push of the source, and a pop into the destination, which keeps what the pop leaves.
 # a3 = what an element is, the number that rides the instruction in its rs1 field: 0 to 3.
 .macro systolic_push name, sew, p
