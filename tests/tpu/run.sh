@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu loads addresses; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu xlu_fold loads addresses; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -105,6 +105,21 @@ report "exit ${rc[msa]}, lines $delay of $(lines msa issue)" "exit 0, lines 3 of
 
 echo "-- cross-lane unit: a delay line of 3 slots, an input queue of 8, a buffer of any tile"
 on_gem5 xlu xlu "$HERE/xlu.yml"
+on_gem5 xlu-fold xlu_fold "$HERE/xlu.yml"
+on_gem5 xlu-wide xlu_fold "$HERE/xlu_wide.yml"
+on_gem5 xlu-issue xlu_fold "$HERE/xlu_issue.yml"
+folded=$(said xlu-fold "issue xlu_push_reduce: the first, input queue 0, output queue 0" \
+  "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0")
+report "exit ${rc[xlu-fold]}, lines $folded, commits $(times xlu-fold "commit xlu_pop: 9 cycles after its issue")" \
+  "exit 0, lines 2, commits 1" \
+  "a fold push of 2 (xlu_push_reduce) is timed as xlu_push: one element a cycle into the 3 stages, then its pop"
+wide=$(said xlu-wide "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
+report "exit ${rc[xlu-wide]}, lines $wide, commits $(times xlu-wide "commit xlu_pop: 8 cycles after its issue")" \
+  "exit 0, lines 1, commits 1" \
+  "with tpu_xlu_elements_per_cycle: 2 both elements enter the stages in one cycle: the pop ends a cycle sooner"
+issued=$(said xlu-issue "issue xlu_pop: 0 cycles after the last issue, 1 in flight, input queue 2, output queue 0")
+report "exit ${rc[xlu-issue]}, lines $issued" "exit 0, lines 1" \
+  "with tpu_xlu_issue_per_cycle: 2 the pop issues in the push's cycle"
 
 delay=$(said xlu "issue xlu_push: the first, input queue 0, output queue 0" \
   "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0")

@@ -1,0 +1,5 @@
+# The cross-lane unit of xlu.yml taking 2 elements a cycle into its stages.
+tpu_trace: 1
+tpu_xlu_latency_cycles: 3
+tpu_xlu_queue_entries: 8
+tpu_xlu_elements_per_cycle: 2
