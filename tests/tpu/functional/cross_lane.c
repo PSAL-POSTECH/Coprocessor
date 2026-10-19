@@ -1,6 +1,6 @@
 // The cross-lane unit and vlane_idx. Usage: cross_lane lanes | cross_lane <operation 0 to 23>... Each operation at
-// each element width: tiles of several depths, pushed in one or two pieces, with the patterns it reads, popped short,
-// exactly and long. Output: what each pop left in every lane.
+// each element width: tiles of several depths, pushed in one or two pieces, with the patterns it reads, popped in
+// pieces or whole. Output: what each pop left in every lane.
 #include <stdlib.h>
 
 #include "common.h"
@@ -22,7 +22,7 @@ static void lane_numbers(unsigned long count) {
   for (unsigned lane = 0; lane < LANES; lane++)
     for (unsigned long i = 0; i < count; i++) *(uint32_t *)spad(lane, LANE_NUMBERS + 4 * i) = random_below(LANES + 2);
 }
-static unsigned long pushed;  // elements per lane since the last pop
+static unsigned long pushed, left;  // elements per lane since the last pop; slots of the result not yet popped
 // The shuffle before the crossing reads a pattern when the field's [4:3] is 2: the push carries it.
 static void push(unsigned width, unsigned operation, unsigned long count) {
   const unsigned bytes = 1u << width;
@@ -38,14 +38,18 @@ static void push(unsigned width, unsigned operation, unsigned long count) {
   if (done != count) puts("a push did not take every element");
   pushed += count;
 }
-// The shuffle after reads one when the field's [1:0] is 2: it is loaded, as wide as the tile is by then.
+// At most what is left of the result: a slot an element, LANES for an exchange ([2]). The shuffle after reads a
+// pattern when the field's [1:0] is 2: it is loaded, as wide as the tile is by then.
 static void pop(unsigned width, unsigned operation, unsigned long count) {
+  if (pushed) left = operation & 4 ? LANES : pushed;
   if (pushed && (operation & 3) == 2) {
     const unsigned long columns = operation & 4 ? LANES : pushed;
     lane_numbers(columns);
     if (k_cross_load(spad(0, LANE_NUMBERS), 0, columns) != columns) puts("a load did not take every element");
   }
   pushed = 0;
+  if (count > left) count = left;
+  left -= count;
   for (unsigned lane = 0; lane < LANES; lane++) memset(spad(lane, OUT), 0xA5, 64);
   if (POP[width](0, spad(0, OUT), count) != count) puts("a pop did not take every element");
   emit_lanes(OUT, 64);
@@ -81,7 +85,7 @@ int main(int argc, char **argv) {
         push(width, operation, depth);
         pop(width, operation, depth);
       }
-      // Two pieces, then a pop that takes less than there is, and one that asks for more than is left.
+      // Two pieces, then a pop that takes less than there is, and one that takes the rest.
       push(width, operation, 3);
       push(width, operation, 2);
       pop(width, operation, 2);

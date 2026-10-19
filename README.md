@@ -278,8 +278,8 @@ copyable class with `configure(Config)`, `hardware(h)`, which lists its blocks
 (`h.port`, `h.pipeline`, `h.queue`, `h.reg`), and `INSTRUCTIONS`, each
 `{match, mask, name, &Unit::route}`. A route function declares the steps an
 instruction takes through the blocks (`require`, `use`, `enqueue`, `send`,
-`receive`, `receive_at_most`, `transfer`, `through`, `wait_until_empty`,
-`done_after`, `done_when_idle`, `done_when_enqueued`, `when_stuck`) and the
+`receive`, `transfer`, `through`, `wait_until_empty`, `done_after`,
+`done_when_idle`, `done_when_enqueued`, `when_stuck`) and the
 values they carry (`at_issue`, `when_received`, `when_done`, and the functions
 given to `send`, `receive` and `transfer`). `vcix_uarch::Machine<Units...>` is
 the `Model`: gem5's `can_accept` and `issue` read the steps, and Spike's

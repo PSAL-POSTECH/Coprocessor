@@ -97,9 +97,9 @@ class Xlu {
     });
     if (!load) r.send(stages_, r.vl(), [&r](const Host &host, uint64_t i) { return element(host, r.insn(), i); });
   }
-  // Up to vl slots of the output queue as they come out, slot i to element i of vd in the lanes it holds. The first
-  // pop after pushes takes the whole tile from the buffer at once when it is all there and makes the result's slots,
-  // one an element or vpu_num_lanes for an exchange, which leave the box together as one entry of that many rows.
+  // vl slots of the output queue, slot i to element i of vd in the lanes it holds; one asking more than is left never
+  // ends. The first pop after pushes takes the whole tile at once and makes the result's slots, one an element or
+  // vpu_num_lanes for an exchange, which leave the box together as one entry of that many rows.
   void pop(Route &r) {
     const bool first = !popped_.get();
     const uint64_t in = first ? box_.get().elements : 0;
@@ -115,7 +115,7 @@ class Xlu {
     r.enqueue(pops_);
     if (first) {
       r.wait_until_empty(stages_).receive(stages_, in, [&](const Host &, uint64_t, Elements &&slot) { box_.write().tile.push_back(std::move(slot)); })
-          .when_received([&, out](const Host &host, uint64_t) { transform(host, out); });
+          .when_received([&, out](const Host &host) { transform(host, out); });
       r.send(out_, out ? 1 : 0, out ? out : 1, [&](const Host &, uint64_t) {
         Box &box = box_.write();
         Column slot = std::move(box.result.front());
@@ -123,7 +123,8 @@ class Xlu {
         return slot;
       });
     }
-    r.receive_at_most(out_, r.vl(), [&r](const Host &host, uint64_t i, Column &&slot) {
+    const uint32_t vl = r.vl();
+    r.receive(out_, vl, [&r](const Host &host, uint64_t i, Column &&slot) {
       const uint32_t vd = vcix_accel::rd(r.insn()), at = static_cast<uint32_t>(i);
       for (uint32_t lane = 0; lane < slot.size() && lane < host.lanes(); lane++) {
         if (!slot[lane]) continue;
@@ -133,6 +134,9 @@ class Xlu {
           default: put<uint32_t>(host, lane, vd, at, *slot[lane]); break;
         }
       }
+    });
+    r.when_stuck([vl](uint64_t got) {
+      fail("xlu pop: %u elements asked, %llu left", vl, static_cast<unsigned long long>(got));
     });
   }
   // What the [tpu] trace adds to an issue: the stages' input queue and the buffer they leave into.

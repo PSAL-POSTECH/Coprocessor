@@ -73,11 +73,11 @@ class Msa {
     });
     if (format != format_.get()) r.at_issue([&] { format_.write() = format; });
   }
-  // Up to vl rows of the output queue, once vl are out or none is on its way: what is there and no more, row i to
-  // element i of vd. To fewer bits it rounds to nearest even; 8 bits are E5M2 when the field's [1:0] says so and E4M3
-  // otherwise.
+  // vl rows of the output queue, row i to element i of vd, rounded to nearest even to fewer bits (8 bits E5M2 when
+  // the field's [1:0] says so, else E4M3); one that asks more than is computed never ends.
   void pop(Route &r) {
-    r.use(issue_).receive_at_most(array_, r.vl(), [&r](const Host &host, uint64_t i, Row &&row) {
+    const uint32_t vl = r.vl();
+    r.use(issue_).receive(array_, vl, [&r](const Host &host, uint64_t i, Row &&row) {
       const uint32_t vd = vcix_accel::rd(r.insn()), at = static_cast<uint32_t>(i);
       const Narrow &byte = (vcix_accel::rs1(r.insn()) & 3) == E5M2_FORMAT ? E5M2 : E4M3;
       for (uint32_t lane = 0; lane < host.lanes(); lane++) switch (r.insn().sew_bits) {
@@ -86,6 +86,9 @@ class Msa {
           default: put<float>(host, lane, vd, at, row[lane]); break;
         }
     }).through(pop_);
+    r.when_stuck([vl](uint64_t got) {
+      fail("msa pop: %u elements asked, %llu computed", vl, static_cast<unsigned long long>(got));
+    });
   }
 
   // funct6, vm and funct3 of custom-2: sf.vc.iv 2 and sf.vc.v.i 3.
