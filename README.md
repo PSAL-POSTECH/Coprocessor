@@ -362,7 +362,8 @@ examples/tpu/             a model made of units: the timing of a TPU's special-f
 examples/tpu/gem5/        the machine the tpu example is measured on: PyTorchSim's
                           gem5 CPU and memory configuration, with two load/store
                           ports and two more integer units
-examples/copier/          examples/rtl/copier/copier.sv as a vcix_uarch unit
+examples/copier/          the timing of examples/rtl/copier/copier.sv as a
+                          vcix_uarch unit; on Spike it copies at issue
 examples/tpuv6e/          a TPU v6e: the tpu example's units with a matrix unit
                           as the array, its own model and library
 examples/tpuv6e/gem5/     the machine the tpuv6e example is measured on: the tpu
@@ -393,9 +394,9 @@ tests/tpuv6e/             the tpuv6e example's timing on gem5; functional/: what
 tests/tpuv3/              the same, of the tpuv3 example
 tests/stats/              the tpu model's unit statistics in gem5's dumps
 tests/rtl/                the examples/rtl models on both simulators, under the
-                          default and the check schedules, and the array's stall
-                          against the tpu array's with no simulator; skipped
-                          when not built
+                          default and the check schedules; with no simulator,
+                          the array's stall against the tpu array's and
+                          libcopier against the copier; skipped when not built
 setup/                    the pinned environment: versions.env, the scripts
                           that build it, and the image
 scripts/                  build this repository; how each simulator is started

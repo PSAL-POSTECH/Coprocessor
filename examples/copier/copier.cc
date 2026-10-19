@@ -1,6 +1,6 @@
-// examples/rtl/copier/copier.sv as a vcix_uarch unit, libcopier.so: commands queue 4 deep and are done as the queue
-// takes them; the head gives back its slot as it starts (a cycle), then a copy is 2 requests of 8 bytes a word on the
-// memory port, one a cycle. A wait is done once every command that reached the queue is finished.
+// copier.sv's timing as a vcix_uarch unit, libcopier.so: commands done as a queue of 4 takes them, the head freeing its
+// slot as it starts, a copy then 2 requests a word of 8 bytes, one a cycle; a wait done once all are finished. On Spike
+// a copy writes memory as it issues, the RTL's only as its unit is clocked: without a wait the two programs differ.
 #include "vcix_uarch.hpp"
 
 namespace {
