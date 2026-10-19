@@ -26,7 +26,7 @@ KERNEL_BASE=0x2000000
 KERNEL_RANGE=2000000:2100000
 
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c "$HERE/kernels.S" -o "$OUT/kernels.o" || { echo "FAIL  kernels.S does not build"; exit 2; }
-for program in special systolic cross_lane msa dma refused pack unpack; do
+for program in special systolic cross_lane msa dma refused pack unpack eup; do
   riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -Wl,--section-start=.kernel=$KERNEL_BASE \
     "$HERE/$program.c" "$OUT/kernels.o" -o "$OUT/$program" || { echo "FAIL  $program.c does not build"; exit 2; }
 done
@@ -113,6 +113,11 @@ EOF
   if [ "$rc" = 0 ] && [ "$within" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
   echo "  $what (exit $rc, $why)"
 }
+
+echo "-- the EUP, which the old Spike did not have"
+on_model eup -- eup; rc=$?
+if [ "$rc" = 0 ] && grep -q "^eup ok" "$OUT/eup.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  sfu_push and sfu_pop: two groups of 2^x popped in push order, every element exact ($(head -1 "$OUT/eup.out"), exit $rc)"
 
 echo "-- as the old Spike did it"
 close special "the seven special functions: every half, 4096 singles a lane, 1024 doubles a lane for vlog and vatan"
