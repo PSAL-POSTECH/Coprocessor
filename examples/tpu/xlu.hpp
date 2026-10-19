@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <cstdlib>
 #include <deque>
@@ -21,6 +22,13 @@
 #include "values.hpp"
 
 namespace tpu {
+
+// The v6e's vmax.f32, as MLIR's arith.maximumf: a NaN on either side is the result, and -0 is below +0.
+inline float maximum(float a, float b) {
+  if (std::isnan(a) || std::isnan(b)) return std::numeric_limits<float>::quiet_NaN();
+  if (a == b) return std::signbit(a) ? b : a;
+  return a > b ? a : b;
+}
 
 class Xlu {
   using Host = vcix_uarch::Host;
@@ -219,7 +227,7 @@ class Xlu {
         for (uint32_t lane = 0; lane < lanes; lane++) {
           float x;
           std::memcpy(&x, &tile[lane][k], sizeof x);
-          acc = !lane ? x : box.fold - 1 == FOLD_MAX ? std::fmax(acc, x) : acc + x;
+          acc = !lane ? x : box.fold - 1 == FOLD_MAX ? maximum(acc, x) : acc + x;
         }
         uint32_t bits;
         std::memcpy(&bits, &acc, sizeof bits);
