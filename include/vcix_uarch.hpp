@@ -369,7 +369,7 @@ class CommandQueue {
     uint32_t kind;
     uint64_t n;
     uint32_t weight, output;
-    bool at_most, received;
+    bool received;
     int32_t through, pipe, guard;
   };
   // `values`: the route Spike issued it from, alive until the command is done, which gives its moves their values.
@@ -470,13 +470,6 @@ class Route {
     s.pipe = &p, s.n = n;
     return *this;
   }
-  // Up to n: once n are out, or with what is out once nothing more is on its way.
-  template <class T>
-  Route &receive_at_most(Pipeline<T> &p, uint64_t n) {
-    receive(p, n);
-    last().at_most = true;
-    return *this;
-  }
   // n beats into the unit's own registers or through a port, not into a pipeline.
   Route &transfer(uint64_t n) {
     add(TRANSFER).n = n;
@@ -496,7 +489,7 @@ class Route {
   Route &send(Pipeline<T> &p, uint64_t n, F value_of) {
     return send(p, n, 1, std::move(value_of));
   }
-  // As receive and receive_at_most, with values (Spike): take(host, i, T &&) gets the i-th row as it is taken.
+  // As receive, with values (Spike): take(host, i, T &&) gets the i-th row as it is taken.
   template <class T, class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t, T &&>, int> = 0>
   Route &receive(Pipeline<T> &p, uint64_t n, F take) {
     receive(p, n);
@@ -504,19 +497,13 @@ class Route {
       take(host, i, p.taken(output, row));
     });
   }
-  template <class T, class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t, T &&>, int> = 0>
-  Route &receive_at_most(Pipeline<T> &p, uint64_t n, F take) {
-    receive(p, n, std::move(take));
-    last().at_most = true;
-    return *this;
-  }
   // As transfer, with values (Spike): beat(host, i) as the i-th beat moves.
   template <class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t>, int> = 0>
   Route &transfer(uint64_t n, F beat) {
     transfer(n);
     return on_moves([beat](const Host &host, uint64_t i, uint64_t, uint32_t) mutable { beat(host, i); });
   }
-  // received(host, taken) as the last receive ends, `taken` of its n (Spike).
+  // received(host) as the last receive ends (Spike).
   template <class F>
   Route &when_received(F received) {
     if (keeps_values() && count_) hooks_->received.push_back({count_ - 1, std::move(received)});
@@ -588,12 +575,12 @@ class Route {
     Kind kind;
     uint64_t n;
     uint32_t weight, output;
-    bool holds, at_most, received;
+    bool holds, received;
     Port *port, *through;
     AnyPipeline *pipe, *guard;
     CommandQueue *queue;
     static Step made(Kind k) {
-      Step s{k, 0, 1, 0, true, false, false, nullptr, nullptr, nullptr, nullptr, nullptr};
+      Step s{k, 0, 1, 0, true, false, nullptr, nullptr, nullptr, nullptr, nullptr};
       return s;
     }
   };
@@ -604,7 +591,7 @@ class Route {
   };
   struct Received {
     uint32_t at;
-    std::function<void(const Host &, uint64_t)> taken;
+    std::function<void(const Host &)> done;
   };
   // The functions Spike's issue of the route keeps for its values until it is done.
   struct Hooks {
@@ -642,7 +629,7 @@ class Route {
       std::fprintf(stderr, "vcix_uarch: use(), require() and enqueue() come before enqueue()\n");
       std::abort();
     }
-    return {s.kind, s.n, s.weight, s.output, s.at_most, s.received, place(b.ports, s.through), place(b.pipelines, s.pipe),
+    return {s.kind, s.n, s.weight, s.output, s.received, place(b.ports, s.through), place(b.pipelines, s.pipe),
             place(b.pipelines, s.guard)};
   }
   uint32_t queued_from() const {
@@ -674,7 +661,7 @@ class Route {
         case USE: if (s.port->room(now) < s.n) return false; break;
         case ENQUEUE: if (s.queue->depth_) return s.queue->held() < s.queue->depth_; break;
         case SEND: if (s.n * s.weight > s.pipe->input_room()) return false; break;
-        case RECEIVE: if (s.n > s.pipe->out(s.output) && !((s.at_most || settled) && s.pipe->drained())) return false; break;
+        case RECEIVE: if (s.n > s.pipe->out(s.output) && !(settled && s.pipe->drained())) return false; break;
         default: break;
       }
     }
@@ -692,13 +679,11 @@ class Route {
           move(values(), i, 0, s.n, SEND, s.pipe, s.weight, s.output);
           s.pipe->end_cycle();
           break;
-        case RECEIVE: {
-          const uint64_t taken = std::min(s.n, s.pipe->out(s.output));
-          move(values(), i, 0, taken, RECEIVE, s.pipe, s.weight, s.output);
-          received(values(), i, taken);
+        case RECEIVE:
+          move(values(), i, 0, s.n, RECEIVE, s.pipe, s.weight, s.output);
+          received(values(), i);
           s.pipe->end_cycle();
           break;
-        }
         case TRANSFER: move(values(), i, 0, s.n, TRANSFER, nullptr, 0, 0); break;
         case ENQUEUE: {
           CommandQueue &q = *s.queue;
@@ -707,7 +692,7 @@ class Route {
           for (uint32_t j = i + 1; j < count_; j++) work += steps_[j].n;
           if (!work) {
             for (uint32_t j = i + 1; j < count_; j++)
-              if (steps_[j].kind == RECEIVE) received(values(), j, 0);
+              if (steps_[j].kind == RECEIVE) received(values(), j);
             ready.push_back(id);
             return vcix_accel::Unknown;
           }
@@ -752,10 +737,10 @@ class Route {
     if (hook)
       for (uint64_t i = 0; i < n; i++) hook->each(*values->host_, from + i, row + i * (kind == SEND ? weight : 1), output);
   }
-  static void received(Route *values, uint32_t at, uint64_t taken) {
+  static void received(Route *values, uint32_t at) {
     if (values)
       for (Received &r : values->hooks_->received)
-        if (r.at == at) r.taken(*values->host_, taken);
+        if (r.at == at) r.done(*values->host_);
   }
   void done() {
     if (keeps_values())
@@ -975,13 +960,10 @@ class Machine : public vcix_accel::Model {
       const bool open = s.guard < 0 || q.blocks_.pipelines[s.guard]->drained();
       const uint64_t left = s.n - c.done, width = through ? through->room(now) : UNLIMITED;
       uint64_t moved = 0;
-      bool finished = false;
       if (s.kind == Route::SEND) {
         if (open) moved = std::min({left, pipe->input_room() / s.weight, width});
       } else if (s.kind == Route::RECEIVE) {
-        const uint64_t out = pipe->out(s.output);
-        if (open) moved = std::min({left, out, width});
-        finished = s.at_most && !out && pipe->drained();
+        if (open) moved = std::min({left, pipe->out(s.output), width});
       } else if (open) {
         moved = std::min(left, width);
       }
@@ -990,8 +972,8 @@ class Machine : public vcix_accel::Model {
       else Route::move(c.values, at, c.done, moved, s.kind, pipe, s.weight, s.output);
       if (through && moved) through->admit(moved, now);
       c.done += moved;
-      if ((finished || c.done == s.n) && s.kind == Route::RECEIVE) Route::received(c.values, at, c.done);
-      if (finished || c.done == s.n) c.step++, c.done = 0;
+      if (c.done == s.n && s.kind == Route::RECEIVE) Route::received(c.values, at);
+      if (c.done == s.n) c.step++, c.done = 0;
       else if (!moved) break;
       if (moved) break;
     }

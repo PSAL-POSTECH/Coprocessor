@@ -45,9 +45,9 @@ static void pop(kernel_with *function, unsigned long count, unsigned field) {
 }
 
 int main(void) {
-  // Inputs before any weight compute zeros; a pop of more than is there takes what is there.
+  // Inputs before any weight compute zeros.
   push(SINGLE, 3);
-  pop(k_msa_pop_32, 8, 0);
+  pop(k_msa_pop_32, 3, 0);
   for (unsigned format = SINGLE; format <= E5M2; format++) {
     // A full matrix, then two words more: the oldest weights are gone.
     push(WEIGHT | format, 4);

@@ -271,25 +271,23 @@ int wait_for(Run &run, uint32_t bits, uint32_t vl) {
 }
 
 // `box`: a pop is issued at once and waits in a queue of one for what it takes. `weights`: what its pushes follow, or
-// 0; `exact`: a pop of more than is computed is never accepted.
+// 0.
 struct Unit {
   const char *name;
   uint32_t push, pop;
   int slots;
   bool box;
   uint32_t weights;
-  bool exact;
 };
-const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7, false, WEIGHT_PUSH, true},
-           MSA = {"msa", MSA_PUSH, MSA_POP, 7, false, 0, false}, XLU = {"xlu", XLU_PUSH, XLU_POP, 3, true, 0, false};
+const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7, false, WEIGHT_PUSH},
+           MSA = {"msa", MSA_PUSH, MSA_POP, 7, false, 0}, XLU = {"xlu", XLU_PUSH, XLU_POP, 3, true, 0};
 // A run of the unit, its weights issued in cycle 0.
 void begin(Run &run, const Unit &unit) {
   if (unit.weights) run.issue(unit.weights, 1);
 }
 
-// A pop of more than was pushed: never accepted (`exact`), or ends once nothing more comes. Issued then, 1 + slots after
-// the push, the pop after it follows in 1; issued at once, it takes the element 1 + slots after it, makes its slot in the
-// next, takes it 3 after, learns in the next that nothing more comes, and the pop after it follows slots + 6 after.
+// A pop of more than was pushed never ends: an array never accepts it; the cross-lane unit's is issued at once and
+// never finishes, so the pop after it is never accepted.
 void fewer_pushed(const Unit &unit) {
   Run run;
   begin(run, unit);
@@ -297,8 +295,7 @@ void fewer_pushed(const Unit &unit) {
   run.issue(unit.push, 1);
   const int first = wait_for(run, unit.pop, 2);
   const int second = wait_for(run, unit.pop, 2);
-  const int want_first = unit.exact ? 100 : unit.box ? 1 : 1 + unit.slots;
-  const int want_second = unit.exact ? 100 : unit.box ? unit.slots + 6 : 1;
+  const int want_first = unit.box ? 1 : 100, want_second = 100;
   check(first == want_first && second == want_second,
         std::string(unit.name) + ": a push of 1 is popped by 2 after " + n(first) + " cycles, and popped again after " +
             n(second) + "; expected " + n(want_first) + ", " + n(want_second) + " (" + n(unit.slots) + " slots)");
