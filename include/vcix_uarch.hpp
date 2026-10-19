@@ -522,12 +522,14 @@ class Route {
     if (keeps_values() && count_) hooks_->received.push_back({count_ - 1, std::move(received)});
     return *this;
   }
-  // The last transfer's n pass this port, at most its width a cycle; at issue the whole n must fit this cycle.
+  // The last step's n (sent, received or transferred) pass this port, at most its width a cycle; at issue the whole n
+  // must fit this cycle.
   Route &through(Port &port) {
     last().through = &port;
     return *this;
   }
-  // As through(), for what the last receive_at_most actually takes rather than the n it asks.
+  // As through(), counting at most what is out: the same once the receive can issue, but a stuck receive of more than
+  // the port's width still gets its when_stuck() reason on Spike.
   Route &through_received(Port &port) {
     through(port);
     last().received = true;
@@ -649,7 +651,7 @@ class Route {
     return count_;
   }
   static bool open(const Step &s) { return !s.guard || s.guard->drained(); }
-  // What a step moves at issue: n, or for a receive_at_most whose port counts what it takes, what is out.
+  // What a step's through() port counts: n, or for through_received() at most what is out.
   static uint64_t moved_at_issue(const Step &s) {
     return s.kind == RECEIVE && s.received ? std::min(s.n, s.pipe->out(s.output)) : s.n;
   }

@@ -69,10 +69,8 @@ class Mxu {
     for (Array &array : arrays_) h.pipeline(array.line, entry_), h.reg(array.state), h.reg(array.values);
   }
 
-  // A cycle takes Shape::SLOTS of vmatprep, vmatpush and vmatmul over all arrays and, per array, one of its weights'
-  // (a vmatprep of weights or a vmatpush), one of its inputs' (a vmatprep of inputs or a vmatmul) and one vpop.
-  // vmatprep holds the upper half of its operand until the next vmatpush or vmatmul of that operand takes it, and
-  // waits while the half held before is not taken.
+  // vmatprep: one of the Shape::SLOTS a cycle, and of its array's weight or input slot; it holds the upper half of its
+  // operand until the next vmatpush or vmatmul of that operand takes it, and waits while the half held before is not.
   void prep(Route &r) {
     const uint32_t operand = vcix_accel::rs1(r.insn()) & SECOND ? INPUTS : WEIGHTS;
     Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatprep");

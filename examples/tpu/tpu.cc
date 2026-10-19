@@ -1,4 +1,4 @@
-// Example: the timing of a TPU's units as one model, libtpu.so; each call goes to the unit that owns the instruction.
+// Example: a TPU's units as one model, libtpu.so; each call goes to the unit that owns the instruction.
 #include "vcix_accel.hpp"
 
 #include "machine.hpp"

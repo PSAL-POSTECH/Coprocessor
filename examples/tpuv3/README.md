@@ -131,10 +131,11 @@ On this machine (`tests/tpuv3/run.sh`; cycles of the window):
 |---|---|---|
 | `vpu_num_lanes` | 128 | the array's width and depth; 1 to 65535, the most the cross-lane unit takes |
 | `tpu_mxu_bound_to_lanes` | 0 | 1 makes the array lanes x lanes; this model's array is that either way |
-| `tpu_mxu_queue_entries` | 256 | rows each queue of an array holds (a placeholder); at least 2 |
+| `tpu_mxu_queue_entries` | 256 | rows each queue of an array holds, and the rows a cycle the vpops of all arrays take together through the pop port (a placeholder); at least 2 |
 | `tpu_mxu_delay_cycles` | 2 x `vpu_num_lanes` - 1 | slots of the delay line |
 | `tpu_mxu_units` | 1 | arrays of the matrix unit |
 | `tpu_sfu_latency_cycles` | 10 | cycles of a special function (a placeholder) |
+| `tpu_sfu_queue_registers` | 16 | registers each of the EUP's queues holds, as in `examples/tpu` |
 | `tpu_misc_issue_width` | 2 | misc instructions a cycle (a placeholder) |
 | `tpu_xlu_latency_cycles`, `tpu_xlu_queue_entries` | 10, 256 | the cross-lane unit's delay and queue (placeholders) |
 | `tpu_trace` | 0 | 1 prints each issue and commit, with the matrix unit's queues |

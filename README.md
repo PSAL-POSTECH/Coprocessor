@@ -114,6 +114,7 @@ into one `.so`. It needs neither simulator's source tree.
 | `tick(now)` | gem5 | nothing; one cycle of the unit's own time (need not be overridden) |
 | `ready(id, now)` | gem5 | whether the result of an instruction issued as `Unknown` is ready; must not change state (need not be overridden) |
 | `reset()` | Spike | return to the state right after `configure` (need not be overridden) |
+| `ports()` | gem5 | the `Port`s that time the unit, one `PRIMARY` per unit; gem5 reports each primary port as `vcix.<unit>.admitted`, `capacity`, `cycles`, `occupancy` and `utilized_cycles`, and each encoding's commits as `vcix.committed.<encoding>` (need not be overridden) |
 
 `insn` is the instruction bits together with the vector configuration it was
 decoded under: `vl`, SEW and LMUL. Both faces receive the same thing, so
@@ -266,9 +267,24 @@ std::deque<Cycle> queue_;  // cycles left of each command, the one worked on fir
 ```
 
 The model has two sets of methods because the two simulators know different
-things: Spike knows values and not time, gem5 knows time and not values. They
-live in one class and share `owns()`, but they are still two descriptions, and
-both are yours to write.
+things: Spike knows values and not time, gem5 knows time and not values. In a
+`Model` written by hand they share `owns()` and are still two descriptions,
+both yours to write.
+
+### A unit built from vcix_uarch
+
+`include/vcix_uarch.hpp` derives both faces from one description. A unit is a
+copyable class with `configure(Config)`, `hardware(h)`, which lists its blocks
+(`h.port`, `h.pipeline`, `h.queue`, `h.reg`), and `INSTRUCTIONS`, each
+`{match, mask, name, &Unit::route}`. A route function declares the steps an
+instruction takes through the blocks (`require`, `use`, `enqueue`, `send`,
+`receive`, `receive_at_most`, `transfer`, `through`, `wait_until_empty`,
+`done_after`, `done_when_idle`, `done_when_enqueued`, `when_stuck`) and the
+values they carry (`at_issue`, `when_received`, `when_done`, and the functions
+given to `send`, `receive` and `transfer`). `vcix_uarch::Machine<Units...>` is
+the `Model`: gem5's `can_accept` and `issue` read the steps, and Spike's
+`execute` issues the same route and ticks the same cycles. The tpu models and
+`examples/copier` are written this way (see `examples/tpu/README.md`).
 
 ### What you do not implement
 
@@ -305,8 +321,8 @@ PyTorchSim measures on, each with the one unit naming its model.
   `commit` and `tick` (for example, how many commands a queue holds). Data-dependent
   latency is out of scope.
 - **The two faces run in different processes.** A Spike run and a gem5 run share
-  nothing at run time. Functional state and timing state live in the same model
-  class but must not depend on each other.
+  nothing at run time. In a `Model` written by hand, functional state and timing
+  state live in the same class but must not depend on each other.
 - **The boundary is a C ABI.** Spike installs the headers of fesvr and of its
   MMIO plug-in interface, not the ones an extension needs, and a model that
   subclasses simulator types would have to be built against both simulator
@@ -328,7 +344,7 @@ PyTorchSim measures on, each with the one unit naming its model.
 
 ```
 include/vcix_accel.h      the C ABI: vcix_model, vcix_insn,
-                          vcix_config, vcix_host, vcix_encoding
+                          vcix_config, vcix_host, vcix_encoding, vcix_stat
 include/vcix_accel.hpp    C++ wrapper: subclass Model, VCIX_ACCEL_REGISTER
 include/vcix_uarch.hpp    units as hardware blocks (Port, Pipeline, CommandQueue,
                           Register) and a route per instruction; Machine derives
@@ -375,12 +391,17 @@ tests/tpu/                the tpu example's timing on gem5; functional/: what it
 tests/tpuv6e/             the tpuv6e example's timing on gem5; functional/: what
                           its matrix unit computes on Spike, against a formula
 tests/tpuv3/              the same, of the tpuv3 example
+tests/stats/              the tpu model's unit statistics in gem5's dumps
 tests/rtl/                the examples/rtl models on both simulators, under the
-                          default and the check schedules; skipped when not built
+                          default and the check schedules, and the array's stall
+                          against the tpu array's with no simulator; skipped
+                          when not built
 setup/                    the pinned environment: versions.env, the scripts
                           that build it, and the image
 scripts/                  build this repository; how each simulator is started
-.github/workflows/        CI: publish the image, then build and test in it
+.github/                  CI: publish the image, build and test in it, propose
+                          the PTB submodule bump (ptb_bump.sh); toolchain.yml
+                          builds the aarch64 host's RISC-V toolchain release
 ```
 
 ## Example
@@ -455,7 +476,8 @@ cmake -G Ninja -S . -B build
 ninja -C build
 ```
 
-It needs no simulator tree: the models, the probe and nothing else are built.
+It needs no simulator tree: the models, `timing_probe` and the test programs
+that run with no simulator are built.
 With Verilator on `PATH` (or `VERILATOR_ROOT` set) it also builds the RTL
 models of `examples/rtl`; without it they are skipped, and so is `tests/rtl`.
 `scripts/build.sh` puts the Verilator of `setup/versions.env` on `PATH` when it

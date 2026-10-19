@@ -26,9 +26,8 @@ says, the matrix unit as below, and only the name they report is this
 model's. `Shape`, in `tpuv6e.cc`, is the matrix unit's: an operand of two
 registers (`REGISTERS`), two MXU slots a cycle (`SLOTS`) and a word a cycle
 into an array (`WORD_A_CYCLE`). The ports, and so the statistics,
-are in this order: gem5 reports `vcix.TPUV6E_MXU.admitted` and so on (before,
-as `libtpu_mxu.so`, `vcix.Mxu.*`, `vcix.Sfu.*`, `vcix.Misc.*`, `vcix.Xlu.*`).
-The encodings' names, and so `vcix.committed.<encoding>`, did not change.
+are in this order: gem5 reports `vcix.TPUV6E_MXU.admitted` and so on; the
+encodings' names give `vcix.committed.<encoding>`.
 
 ## The matrix unit
 
@@ -125,7 +124,7 @@ dump, 103 in the 1024 x 384 x 1152 one), not what the unit takes. A machine
 description may give it as `tpu_mxu_delay_cycles`; the default is the
 array's width + depth - 1.
 
-## The functional face
+## The values
 
 Each unit computes its own instructions' values (`examples/tpu/README.md`);
 `tpu::Mxu<Shape>` (`examples/tpu/mxu.hpp`) those of `vmatprep`, `vmatpush`,
@@ -228,21 +227,19 @@ matrix unit does. The four VALUs do not change it.
 |---|---|---|
 | `vpu_num_lanes` | 128 | the matrix unit is 2 x this wide and deep (this, bound to the lanes); 1 to 65535, the most the cross-lane unit takes |
 | `tpu_mxu_bound_to_lanes` | 0 | 1: the matrix unit is `vpu_num_lanes` x `vpu_num_lanes`, an operand one register, as in `examples/tpuv3`, so the lanes size it (8 lanes, 8 x 8); the slots and a word a cycle stay this model's. 0: the model's own, 2 x the lanes |
-| `tpu_mxu_queue_entries` | 256 | rows in each array's input queue and in each half's output queue; at least 2: a word of two rows enters whole |
+| `tpu_mxu_queue_entries` | 256 | rows in each array's input queue and in each half's output queue, and the rows a cycle the vpops of all arrays take together through the pop port; at least 2: a word of two rows enters whole |
 | `tpu_mxu_delay_cycles` | the array's width + depth - 1: 4 x `vpu_num_lanes` - 1 (2 x, bound) | slots in each array's delay line, one cycle each; at least 1 |
 | `tpu_mxu_units` | 1 | how many arrays the matrix unit has, each with its own queues, delay line and weights; 1 to 32, what an instruction's field of 5 bits names |
-| `tpu_sfu_latency_cycles` | 10 | as in `examples/tpu` |
+| `tpu_sfu_latency_cycles`, `tpu_sfu_queue_registers` | 10, 16 | as in `examples/tpu` |
 | `tpu_misc_issue_width` | 2 | as in `examples/tpu` |
 | `tpu_xlu_latency_cycles`, `tpu_xlu_queue_entries` | 10, 256 | as in `examples/tpu` |
-| `tpu_trace` | 0 | as in `examples/tpu`; an issue of the matrix unit also reports its array, when there is more than one, and that array's input queue and the two halves' output queues |
+| `tpu_trace` | 0 | as in `examples/tpu`; an issue of the matrix unit also reports its array, when there is more than one, and that array's input queue and the two halves' output queues (one, bound to the lanes) |
 | `vpu_spad_size_kb_per_lane`, `vpu_spad_base_vaddr`, `run_base_path` | | the DMA's, as in `examples/tpu` |
 
 A key is `tpu_<unit>_<what>` whichever TPU model reads it: the shared units
 read the same keys in both libraries, and the matrix unit reads its own.
-`tpu_mxu_queue_entries` was `tpu_systolic_queue_entries` as `libtpu_mxu.so`;
-that key is the systolic array's and the multi-precision array's, which this
-model does not hold, and it is no longer read here. A description that still
-gives it gets the default of 256.
+`tpu_systolic_queue_entries` is the systolic and multi-precision arrays' key,
+which this model does not hold, and it is not read here.
 
 With `tpu_trace`:
 
@@ -254,8 +251,9 @@ With `tpu_trace`:
 ## Tests
 
 `tests/tpuv6e/run.sh` checks the matrix unit's timing on gem5 (`mxu.S`,
-`mxu_rate.S`, `mxu_arrays.S` on two arrays, and `mxu_slots.S`, a `vpop` and a
-`vmatmul` in one cycle, also on the gem5 machine), the units' names and order in the statistics (`ports.cc`, with
+`mxu_rate.S`, `mxu_arrays.S` on two arrays, `mxu_pops.S`, two arrays' vpops
+sharing the pop port, and `mxu_slots.S`, a `vpop` and a `vmatmul` in one cycle,
+also on the gem5 machine), the EUP's push and pop (`sfu.S`), the units' names and order in the statistics (`ports.cc`, with
 no simulator, and gem5's dump), the gem5 machine (its configuration; three
 loads, two stores and four accesses a cycle at the scratchpad, `scratchpad.S`;
 `tests/tpu`'s `loads.S` alike from any lines and `addresses.S`; 64

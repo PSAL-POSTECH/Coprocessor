@@ -1,8 +1,6 @@
-// The matrix unit of libtpuv6e.so: an array of 2 x LANES columns, an operand as two registers (a vmatprep, then
-// the vmatpush or the vmatmul, each operand's held apart), a word of one single or two rows of 16 bits, weights
-// staged a half of the depth at a time and made active by a vmatmul that latches, a result popped a half of the
-// columns at a time. Checked against a formula. Usage: mxu [arrays | what the model refuses]
-//   arrays: on a machine of tpu_mxu_units: 2, each array its own tile and its own held halves.
+// The matrix unit of libtpuv6e.so against a formula: an array of 2 x LANES columns, an operand of two registers, words
+// of a single or two 16-bit rows, weights staged half the depth at a time, results popped half the columns at a time.
+// Usage: mxu [arrays | what the model refuses]; arrays: tpu_mxu_units: 2, each array its own tile and held halves.
 #include "common.h"
 
 // sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2: the encodings the matrix unit has. The number is the instruction's field.

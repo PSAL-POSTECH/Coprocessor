@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# The functional face of the tpuv6e example, on Spike: its matrix unit checked against a formula, which the Spike the
-# tpu units came from has no answer for, and what it refuses. The machine is tests/tpu/functional's, also with
-# tpu_mxu_units: 2, and so is common.h, which mxu.c includes.
-# Called by tests/tpuv6e/run.sh. Usage: tests/tpuv6e/functional/run.sh <build-dir> <spike> <pk>
+# The tpuv6e example's matrix unit on Spike, against a formula, and what it refuses; on tests/tpu/functional's machine
+# (also with tpu_mxu_units: 2) and common.h. Called by tests/tpuv6e/run.sh.
+# Usage: tests/tpuv6e/functional/run.sh <build-dir> <spike> <pk>
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../../../setup/versions.env
 source "$HERE/../../../setup/versions.env"
-[ $# -ge 3 ] || { sed -n '2,5p' "${BASH_SOURCE[0]}" >&2; exit 2; }
+[ $# -ge 3 ] || { sed -n '2,4p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 BUILD=$(cd "$1" && pwd) || exit 2
 SPIKE=$2 PK=$3
 MODEL="$BUILD/libtpuv6e.so"

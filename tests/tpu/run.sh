@@ -103,7 +103,7 @@ delay=$(said msa "issue msa push: the first, input queue 0, output queue 0" \
 report "exit ${rc[msa]}, lines $delay of $(lines msa issue)" "exit 0, lines 3 of 3" \
   "a weight push enters nothing, and a pop of four is issued 4 + 7 cycles after the input push of four"
 
-echo "-- cross-lane unit: a delay line of 3 slots, queues of 8"
+echo "-- cross-lane unit: a delay line of 3 slots, an input queue of 8, a buffer of any tile"
 on_gem5 xlu xlu "$HERE/xlu.yml"
 
 delay=$(said xlu "issue xlu_push: the first, input queue 0, output queue 0" \
