@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The examples/rtl models: the array's values against libtpu.so under every schedule and its stall against libtpu.so's
-# timing, the copier's copy with and without a wait and into a page that faults, their gem5 timing lines, a wrong out_tag.
+# The examples/rtl models: the array's values and stall against libtpu.so's, the copier's copy with and without a wait
+# and into a page that faults, libcopier.so against it in lockstep and on Spike, their gem5 timing lines, a wrong out_tag.
 # Skipped (exit 0) when the build has no RTL models. Usage: tests/rtl/run.sh [build-dir [spike [pk [gem5.opt]]]]
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -68,9 +68,9 @@ rc=$?
 report "exit $rc, $(grep -c '^PASS' "$OUT/stall.log") passed" "exit 0, 7 passed" \
   "rtl_stall: the array stops while its output queue is full, slot empty or not; each instruction ready as on the RTL"
 
-# copy <program> <schedule, or ""> <name>: prints the exit status and what the program and the unit said
+# copy <program> <schedule, or ""> <name> [model]: prints the exit status and what the program and the unit said
 copy() {
-  RTL_SCHEDULE=$2 spike_run "$BUILD/librtl_copier.so" "" "$OUT/copy-$1" < /dev/null > "$OUT/$3.out" 2> "$OUT/$3.err"
+  RTL_SCHEDULE=$2 spike_run "$BUILD/lib${4:-rtl_copier}.so" "" "$OUT/copy-$1" < /dev/null > "$OUT/$3.out" 2> "$OUT/$3.err"
   local rc=$? restored
   restored=$(sed -n 's/^\[rtl\] .* copies, \([0-9]*\) restored after a trap$/\1/p' "$OUT/$3.err")
   echo "exit $rc, $(cat "$OUT/$3.out"), ${restored:-0} restored"
@@ -85,6 +85,16 @@ report "$(copy wait-untouched "" copy-fault-default)" "exit 0, 256 of 256 bytes 
   "into a page not yet touched, default schedule: the wait faults and is undone (the bytes come out exact either way)"
 report "$(copy untouched slow copy-fault-slow)" "exit 0, 256 of 256 bytes copied, 1 restored" \
   "the same with no wait, schedule slow: the copy's own execute faults with its command taken, and is undone"
+report "$(copy plain "" libcopier-plain copier)" "exit 0, 256 of 256 bytes copied, 0 restored" \
+  "libcopier.so, a copy and no wait: it copies as the copy issues, so the loads find what the RTL has not copied yet"
+report "$(copy wait "" libcopier-wait copier)" "exit 0, 256 of 256 bytes copied, 0 restored" \
+  "libcopier.so, a copy and a copy wait: as the RTL"
+
+echo "-- copier: libcopier.so against librtl_copier.so, with no simulator"
+"$BUILD/copier_lockstep" "$BUILD/librtl_copier.so" "$BUILD/libcopier.so" 50 20000 2>&1 | grep -v '^\[rtl\]' > "$OUT/lockstep.log"
+rc=${PIPESTATUS[0]}
+report "exit $rc, $(grep -c '^PASS' "$OUT/lockstep.log") passed" "exit 0, 1 passed" \
+  "copier_lockstep: libcopier.so answers each of gem5's calls as the RTL does, 50 random programs of 20000 cycles"
 
 # on_gem5 <model> <machine, or ""> <program> <name>: prints gem5's exit status and how many [rtl] lines it printed
 on_gem5() {

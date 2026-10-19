@@ -91,7 +91,7 @@ has it, and `scripts/build.sh` finds it); `-DVCIX_RTL=OFF` skips them.
 ```
 scripts/build.sh
 examples/rtl/run.sh     # both models on both simulators
-tests/rtl/run.sh        # 24 checks, also run by tests/run.sh; SKIP when not built
+tests/rtl/run.sh        # 27 checks, also run by tests/run.sh; SKIP when not built
 ```
 
 The checks: `rtl_systolic` gives `libtpu.so`'s bytes under the default,
@@ -99,7 +99,10 @@ The checks: `rtl_systolic` gives `libtpu.so`'s bytes under the default,
 `libtpu.so` under `tpu_systolic_weight_waits: 0` matches it; `rtl_stall`, with
 no simulator, gives each array instruction the cycle the RTL gives it where the
 stall modes part; the copier copies 0 of 256 without a wait and 256 with one,
-also across a trap; gem5 prints one line per instruction, and
+also across a trap; `libcopier.so` (`examples/copier`) gives gem5's calls the
+answers `rtl_copier` gives, cycle by cycle, in 50 seeded programs
+(`copier_lockstep`, no simulator), but on Spike copies as the copy issues, so
+it copies 256 without a wait too; gem5 prints one line per instruction, and
 `rtl_systolic_badtag` stops.
 
 ## Limits
