@@ -1,5 +1,5 @@
 // A TPU's cross-lane unit, a black box: pushed elements pass the stages one a cycle into its buffer; its first pop
-// after pushes moves the tile across the lanes at once, and the result leaves one slot a cycle into the output queue.
+// after pushes moves the tile across the lanes at once, and the whole result leaves at once into the output queue.
 // The first element push after a pop forgets what is left of the tile before. Values on Spike, counts on gem5.
 #ifndef TPU_XLU_HPP
 #define TPU_XLU_HPP
@@ -37,7 +37,7 @@ class Xlu {
   // `name` is the unit as its statistics report it; the model that holds the unit says it.
   explicit Xlu(const char *name)
       : entry_{name, "input", "elements", 1, vcix_uarch::PRIMARY}, issue_{name, "issue", "instructions", 1},
-        exit_{name, "output", "elements", 1} {}
+        exit_{name, "output", "elements", vcix_uarch::UNLIMITED} {}
   void configure(const vcix_uarch::Config &config) {
     const uint64_t latency = config.uint(LATENCY_KEY, DEFAULT_LATENCY);
     const uint64_t entries = config.uint(QUEUE_KEY, DEFAULT_ENTRIES);
@@ -46,8 +46,11 @@ class Xlu {
       throw vcix_accel::ConfigError(LATENCY_KEY, config.get(LATENCY_KEY), "is not a latency the unit can have");
     if (entries < 1 || entries > UINT32_MAX)
       throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
-    if (lanes < 1 || lanes > MAX_LANES)
+    if (lanes < 1)
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the unit can have");
+    if (lanes > MAX_SLOTS)
+      throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY),
+                                    "is more than 65535 lanes: an exchange's result of that many slots does not fit one entry");
     stages_.configure(latency, vcix_uarch::UNLIMITED, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
     out_.configure(1, vcix_uarch::UNLIMITED, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
     pops_.configure(1, vcix_uarch::Free::WHEN_DONE, 0);
@@ -62,12 +65,19 @@ class Xlu {
   }
 
   // Field 19:15: [4:3] shuffle before, [2] exchange, [1:0] shuffle after; [4:3] 3 only loads the after's pattern from
-  // rs2. Elements (32 raw bits each) wait for the pop before them and for room in the input queue, and take vl slots.
-  // arg() 1: xlu_push_pattern, whose rd holds the before's pattern.
+  // rs2. Elements (32 raw bits each) wait for the pop before them and for room in the input queue, and take vl slots;
+  // the box holds at most MAX_SLOTS between pops. arg() 1: xlu_push_pattern, whose rd holds the before's pattern.
   void push(Route &r) {
     const uint32_t field = vcix_accel::rs1(r.insn());
     const bool load = !r.arg() && field >> 3 == LOAD;
     if (!load) r.require(pops_.idle() && stages_.input_entries() + r.vl() <= entries_);
+    if (!load) {
+      const uint64_t held = box_.get().elements;
+      r.require(held + r.vl() <= MAX_SLOTS, [held] {
+        fail("xlu push: %llu elements held, and a result holds at most 65535; a pop must take them first",
+             static_cast<unsigned long long>(held));
+      });
+    }
     r.use(issue_).at_issue([&] {
       Box &box = box_.write();
       if (load) {
@@ -88,8 +98,8 @@ class Xlu {
     if (!load) r.send(stages_, r.vl(), [&r](const Host &host, uint64_t i) { return element(host, r.insn(), i); });
   }
   // Up to vl slots of the output queue as they come out, slot i to element i of vd in the lanes it holds. The first
-  // pop after pushes takes the whole tile from the buffer at once when it is all there and makes the result's slots:
-  // one an element, or vpu_num_lanes for an exchange.
+  // pop after pushes takes the whole tile from the buffer at once when it is all there and makes the result's slots,
+  // one an element or vpu_num_lanes for an exchange, which leave the box together as one entry of that many rows.
   void pop(Route &r) {
     const bool first = !popped_.get();
     const uint64_t in = first ? box_.get().elements : 0;
@@ -106,7 +116,7 @@ class Xlu {
     if (first) {
       r.wait_until_empty(stages_).receive(stages_, in, [&](const Host &, uint64_t, Elements &&slot) { box_.write().tile.push_back(std::move(slot)); })
           .when_received([&, out](const Host &host, uint64_t) { transform(host, out); });
-      r.send(out_, out, [&](const Host &, uint64_t) {
+      r.send(out_, out ? 1 : 0, out ? out : 1, [&](const Host &, uint64_t) {
         Box &box = box_.write();
         Column slot = std::move(box.result.front());
         box.result.pop_front();
@@ -220,7 +230,7 @@ class Xlu {
   // TODO: the unit's latency is not known; 10 is a placeholder.
   static constexpr uint32_t DEFAULT_LATENCY = 10;
   static constexpr uint32_t DEFAULT_ENTRIES = 256;
-  static constexpr uint64_t MAX_LANES = 1u << 20;
+  static constexpr uint64_t MAX_SLOTS = UINT16_MAX;
   static constexpr const char *LATENCY_KEY = "tpu_xlu_latency_cycles";
   static constexpr const char *QUEUE_KEY = "tpu_xlu_queue_entries";
   static constexpr const char *LANES_KEY = "vpu_num_lanes";

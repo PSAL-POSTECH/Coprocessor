@@ -108,11 +108,11 @@ on_gem5 xlu xlu "$HERE/xlu.yml"
 
 delay=$(said xlu "issue xlu_push: the first, input queue 0, output queue 0" \
   "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0")
-report "exit ${rc[xlu]}, lines $delay, commits $(times xlu "commit xlu_pop: 10 cycles after its issue")" \
+report "exit ${rc[xlu]}, lines $delay, commits $(times xlu "commit xlu_pop: 9 cycles after its issue")" \
   "exit 0, lines 2, commits 2" \
-  "a pop is issued the cycle after its tile's last push; the last element is in the buffer 1 + 3 cycles later, the tile taken in the next, its slots made in the next, and the first two taken 3 and 4 after: both tiles' first pops commit in 10"
+  "a pop is issued the cycle after its tile's last push; the last element is in the buffer 1 + 3 cycles later, the tile taken in the next, its slots made in the next and out at once, and the first two taken 3 after: both tiles' first pops commit in 9"
 
-pushes=("issue xlu_push: 10 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
+pushes=("issue xlu_push: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
 for queues in "1 0" "2 0" "3 0" "4 1" "5 2" "6 3"; do
   pushes+=("issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue ${queues% *}, output queue ${queues#* }")
 done
@@ -122,10 +122,10 @@ report "lines $(said xlu "${pushes[@]}")" "lines 8" \
 
 full=$(said xlu \
   "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 16" \
-  "issue xlu_pop: 10 cycles after the last issue, 0 in flight, input queue 0, output queue 0" \
-  "commit xlu_pop: 2 cycles after its issue")
+  "issue xlu_pop: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0" \
+  "commit xlu_pop: 1 cycles after its issue")
 report "lines $full of $(lines xlu issue)" "lines 3 of 13" \
-  "the buffer holds the whole tile, 16 elements, and the line never stops; the second pop waits for the first, then takes 2 more slots in 2"
+  "the buffer holds the whole tile, 16 elements, and the line never stops; the second pop waits for the first, then takes 2 more slots in 1"
 
 echo "-- one-cycle instructions"
 on_gem5 one_cycle one_cycle "$HERE/trace.yml"
