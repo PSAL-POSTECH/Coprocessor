@@ -85,8 +85,8 @@ class Sfu {
   void trace_queues(const vcix_accel::Insn &insn) const {
     const uint32_t form = insn.bits & FUNCTION;
     if (form == PUSH || form == POP)
-      std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(eup_.input_entries()),
-                  static_cast<uint32_t>(eup_.output_entries()));
+      std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(eup_.input_rows()),
+                  static_cast<uint32_t>(eup_.output_rows()));
   }
 
   // sf.vc.v.iv on custom-2: opcode, funct3, funct6 and vm; FUNCTION_FIELD adds the field at 19:15. sfu_push is

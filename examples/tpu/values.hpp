@@ -66,7 +66,7 @@ struct Narrow {
   int fraction_bits, exponent_bits;
   bool infinity;
 };
-constexpr Narrow HALF{10, 5, true}, E4M3{3, 4, false}, E5M2{2, 5, true}, BF16{7, 8, true};
+constexpr Narrow HALF{10, 5, true}, E4M3{3, 4, false}, E5M2{2, 5, true};
 // A bfloat16 as a single: its bits are the single's upper half. Every NaN is the default NaN.
 inline float bf16_to_float(uint16_t bits) {
   const uint32_t wide = (bits & 0x7f80) == 0x7f80 && (bits & 0x7f) ? 0x7fc00000u : static_cast<uint32_t>(bits) << 16;

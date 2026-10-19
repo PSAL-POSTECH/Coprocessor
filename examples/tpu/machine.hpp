@@ -53,8 +53,8 @@ class Machine : public vcix_uarch::Machine<Unit...> {
     Base::each_pipeline(unit, [&](const vcix_uarch::AnyPipeline &) { pipelines++; });
     if (pipelines != 1) return;
     Base::each_pipeline(unit, [](const vcix_uarch::AnyPipeline &p) {
-      std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(p.input_entries()),
-                  static_cast<uint32_t>(p.output_entries()));
+      std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(p.input_rows()),
+                  static_cast<uint32_t>(p.output_rows()));
     });
   }
   const char *name_of(const Insn &insn) const {

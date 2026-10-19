@@ -5,7 +5,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <utility>
 #include <vector>
 
 #include "vcix_uarch.hpp"
@@ -43,7 +42,7 @@ class Mxu {
   // An array's stages default to its width + depth - 1.
   void configure(const Config &config) {
     const uint64_t lanes = config.uint(LANES_KEY, 128), entries = config.uint(QUEUE_KEY, 256), arrays = config.uint(ARRAYS_KEY, 1);
-    if (lanes < 1 || lanes > MAX_LANES)
+    if (lanes < 1)
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 2 || entries > UINT32_MAX)
       throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size: a word of two rows needs 2");
@@ -172,11 +171,11 @@ class Mxu {
     if (which >= arrays_.size()) return;
     const vcix_uarch::AnyPipeline &line = arrays_[which].line;
     if (registers_ > 1)
-      std::printf(", input queue %u, output queues %u and %u", static_cast<uint32_t>(line.input_entries()),
-                  static_cast<uint32_t>(line.output_entries(0)), static_cast<uint32_t>(line.output_entries(1)));
+      std::printf(", input queue %u, output queues %u and %u", static_cast<uint32_t>(line.input_rows()),
+                  static_cast<uint32_t>(line.output_rows(0)), static_cast<uint32_t>(line.output_rows(1)));
     else
-      std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(line.input_entries()),
-                  static_cast<uint32_t>(line.output_entries(0)));
+      std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(line.input_rows()),
+                  static_cast<uint32_t>(line.output_rows(0)));
   }
 
   // funct6, vm and funct3 of custom-2: sf.vc.iv 0, 1 and 2, and sf.vc.v.i 2, as the tpu model's two arrays have them.
@@ -273,7 +272,6 @@ class Mxu {
     return out;
   }
 
-  static constexpr uint64_t MAX_LANES = 1u << 19;
   static constexpr const char *LANES_KEY = "vpu_num_lanes";
   static constexpr const char *QUEUE_KEY = "tpu_mxu_queue_entries";
   static constexpr const char *DELAY_KEY = "tpu_mxu_delay_cycles";
