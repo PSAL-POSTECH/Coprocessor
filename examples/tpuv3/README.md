@@ -129,7 +129,7 @@ On this machine (`tests/tpuv3/run.sh`; cycles of the window):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `vpu_num_lanes` | 128 | the array's width and depth; 1 to 2^19 |
+| `vpu_num_lanes` | 128 | the array's width and depth; 1 to 65535, the most the cross-lane unit takes |
 | `tpu_mxu_bound_to_lanes` | 0 | 1 makes the array lanes x lanes; this model's array is that either way |
 | `tpu_mxu_queue_entries` | 256 | rows each queue of an array holds (a placeholder); at least 2 |
 | `tpu_mxu_delay_cycles` | 2 x `vpu_num_lanes` - 1 | slots of the delay line |

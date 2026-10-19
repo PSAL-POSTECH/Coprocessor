@@ -323,19 +323,19 @@ void more_pushed(const Unit &unit) {
 }
 
 // Tiles of 4 popped by 2, never served from the last: each pop, issued the cycle after its push, takes the fourth
-// element 3 + 3 + 1 cycles later, makes 4 slots in the next and takes 2 of them 3 and 4 after that; the next push, which
-// waits for the pop, is issued then.
+// element 3 + 3 + 1 cycles later, makes 4 slots in the next, which leave at once, and takes 2 of them 3 after that; the
+// next push, which waits for the pop, is issued then.
 void xlu_shallower() {
   Run run;
   int as_first = 0;
   const int first = wait_for(run, XLU_PUSH, 4);
   for (int tile = 0; tile < 100; tile++) {
     const int pop = wait_for(run, XLU_POP, 2), push = wait_for(run, XLU_PUSH, 4);
-    as_first += pop == 1 && push == 3 + 3 + 1 + 1 + 4;
+    as_first += pop == 1 && push == 3 + 3 + 1 + 1 + 3;
   }
   check(first == 1 && as_first == 100, "xlu: 100 tiles pushed by 4 and popped by 2: " + n(as_first) +
                                            " pops issued 1 cycle after their own push and the next push 3 + 3 + 1 + 1 "
-                                           "+ 4 cycles after them; expected 100");
+                                           "+ 3 cycles after them; expected 100");
 }
 
 // Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: the pushes and pops of a
