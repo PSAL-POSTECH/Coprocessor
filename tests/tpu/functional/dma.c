@@ -1,7 +1,6 @@
-// The DMA. Usage: dma <first case> <cases>. A case is a descriptor made from its number: element size, the
-// four dimensions, the split axis and its stride, strides in memory, and now and then a mask, skip axes, a
-// bound on memory, an accumulating mvout and indices. Each case fills the scratchpad and memory with bytes
-// from its number, runs an mvin and emits the scratchpad of every lane, then an mvout and emits memory.
+// The DMA. Usage: dma <first case> <cases>. A case is a descriptor made from its number (sizes, dimensions, strides,
+// and now and then a mask, skip axes, a bound on memory, an accumulating mvout, indices); it fills the scratchpad and
+// memory from its number, runs an mvin and emits every lane's scratchpad, then an mvout and emits memory.
 #include <stddef.h>
 #include <stdlib.h>
 

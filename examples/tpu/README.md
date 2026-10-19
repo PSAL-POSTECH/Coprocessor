@@ -12,8 +12,8 @@ timing on gem5 and the values on Spike.
 | Unit | File | Reported as | Instructions | Timing |
 |---|---|---|---|---|
 | `tpu::Sfu` | `sfu.hpp` | `SFU` | `verf`, `vtanh`, `vsin`, `vcos`, `vlog`, `vatan`, `vexp` (`sf.vc.v.iv`, custom-2); `sfu_push` (`sf.vc.vv 3`), `sfu_pop` (`sf.vc.v.x 3`) | a pipeline: one instruction enters per cycle, the result is ready `tpu_sfu_latency_cycles` after it entered, and any number are inside at once. `sfu_push`/`sfu_pop` are the v6e's EUP: a push of 2^x sends its group's registers into a pipeline of the same latency, one a cycle, and is done; a pop takes a group's registers in push order once they are out (`tpu_sfu_queue_registers` deep), so what runs between them hides the latency |
-| `tpu::Misc` | `misc.hpp` | `MISC` | `vlane_idx`, `compute`, `pack`, `unpack_lo`, `unpack_hi` (custom-2); the DMA's `dma_config_desc`, `mvin`, `mvin2`, `mvin3`, `mvout` (custom-1) | one cycle each, any number in a cycle |
-| `tpu::Systolic` | `systolic.hpp` | `SYSTOLIC` | the systolic array's input push (`sf.vc.iv` 0), weight push (`sf.vc.iv` 1) and pop (`sf.vc.v.i` 2) (custom-2) | one instruction per cycle. A push of `vl` elements waits for room in the input queue; one element a cycle enters a delay line of 2 x `vpu_num_lanes` - 1 slots and comes out into the output queue; a pop of `vl` waits until the output queue holds `vl`, or until nothing more is on its way. A weight push moves no row. The array stops while the output queue is full |
+| `tpu::Misc` | `misc.hpp` | `MISC` | `vlane_idx`, `compute`, `pack`, `unpack_lo`, `unpack_hi` (custom-2); the DMA's `dma_config_desc`, `dma_index_key`, `mvin`, `mvin2`, `mvin3`, `mvout` (custom-1) | one cycle each, `tpu_misc_issue_width` (2) a cycle |
+| `tpu::Systolic` | `systolic.hpp` | `SYSTOLIC` | the systolic array's input push (`sf.vc.iv` 0), weight push (`sf.vc.iv` 1) and pop (`sf.vc.v.i` 2) (custom-2) | one instruction per cycle. A push of `vl` elements waits for room in the input queue; one element a cycle enters a delay line of 2 x `vpu_num_lanes` - 1 slots and comes out into the output queue; a pop of `vl` waits until the output queue holds `vl`; one asking more than was computed never issues. A weight push moves no row. The array stops while the output queue is full |
 | `tpu::Xlu` | `xlu.hpp` | `XLU` | the cross-lane unit's `xlu_push` (`sf.vc.iv` 3), `xlu_push_pattern` (`sf.vc.ivv` 3) and `xlu_pop` (`sf.vc.v.i` 1) (custom-2) | one instruction per cycle; a black box. A push of `vl` elements, of either kind, waits for the pop before it and for room in the input queue; one element a cycle enters a delay line of `tpu_xlu_latency_cycles` slots and comes out into the buffer, which holds any tile. A pattern load ([4:3] 3) only sets the pattern. A pop is taken once no pop is left before it. The first pop after pushes waits until the whole tile is in the buffer, takes it at once, moves it across the lanes and makes the result's slots, one per element or `vpu_num_lanes` for an exchange, which leave at once into the output queue; each pop takes up to `vl` of them. The box holds at most 65535 elements between pops: an element push past that is refused. The first element push after a pop forgets what is left |
 | `tpu::Msa` | `msa.hpp` | `MSA` | the multi-precision array's `msa push` (`sf.vc.iv` 2) and `msa pop` (`sf.vc.v.i` 3) (custom-2) | the systolic array's, with queues and a delay line of its own, from the same two keys. One push serves both operands: with [4] of its field at 19:15 set it is a weight push and changes nothing, otherwise an input push of `vl` elements. The delay line is 2 x `vpu_num_lanes` - 1 slots whatever the field's active-width shift ([3:2]) and format ([1:0]) are |
 
@@ -29,13 +29,11 @@ Its latency is not known: the 10 of `tpu_xlu_latency_cycles` is a placeholder. T
 multi-precision array is a third pipeline, as long as the systolic array's. That an array working on a reduced width takes the full
 delay is a decision, not a measurement: no hardware says what it takes.
 
-What a stream is asked to pop need not be what it was pushed, and the rule
-is the stream's, the same for the three units. A pop of `vl` is issued (the
-cross-lane unit's is issued at once and waits in a queue of one) when
-the output queue holds `vl`, or when the input queue and the delay line are
-empty: nothing more is on its way, so it takes what is out, `vl` at most. A
-stream whose pops count the rows its pushes counted never meets the second
-case, and its timing is what it was.
+A pop of the cross-lane unit or of the multi-precision array is a
+`receive_at_most` of its pipeline's output queue: it is issued (the cross-lane
+unit's at once, waiting in a queue of one) when the output queue holds `vl`,
+or when the input queue and the stages are empty, and takes what is out, `vl`
+at most. A systolic pop is a `receive` of exactly `vl`.
 
 What a pop leaves stays in the output queue. The two arrays compute as
 queues, so it is popped next: an array program that pushes more than it pops
@@ -61,9 +59,7 @@ reports the unit's pipeline queues, or what its `trace_queues(insn)` prints
 A unit has no name of its own: it is built with the name its statistics
 report, and the model that holds it says which. `tpu.cc` gives the five the
 names of the table's "Reported as", so gem5 reports `vcix.SYSTOLIC.admitted`
-and so on (before, `vcix.Systolic.*`, `vcix.Sfu.*`, `vcix.Misc.*`,
-`vcix.Xlu.*`, `vcix.Msa.*`). The encodings' names, and so
-`vcix.committed.<encoding>`, are the units' and did not change.
+and so on; the encodings' names give `vcix.committed.<encoding>`.
 `tpu::Machine<Unit...>` holds the units in the order it is given
 them: configure, tick, reset and the ports go to them in that order, a call
 about an instruction to the first that owns it. The order of the ports is the
@@ -85,7 +81,7 @@ element type `spike-fp8` added to the descriptor), in every lane:
 | systolic weight push, input push, pop; `compute` | a weight push adds a column to the matrix, of which a lane keeps its last `lanes` weights; an input push sends rows into the array, element `i` of every lane being one input vector, and each PE multiplies a row by the weight it holds as the row passes (with no command queue a push's weights travel down the array behind the rows already in it, so a row meets the weights pushed before it; with the queue and `tpu_systolic_weight_waits` 0 a weight push lands on rows still in the array, as on the RTL); a pop takes the results; `compute` does nothing. Elements are singles, 16 or 8 bits wide; what an element is rides the instruction in its rs1 field, one table at every width: 0 the width's own (an integer of 8 bits, a half, a single), 1 an E4M3 float, 2 an E5M2 float, 3 a bfloat16. A push or pop whose code its width cannot hold (3 on 8 bits, 1 or 2 on 16, anything but 0 on 32, any code above 3) ends the run. A pop reads the same table and ends the run on the same codes, and under 3 too: a bfloat16 result is not modeled; a pop of 64 bits writes singles. A pop to halves or to 8-bit floats rounds by `frm`, which the model reads through the host |
 | `xlu_push`, `xlu_push_pattern`, `xlu_pop` | a tile of raw 32-bit values is pushed; the first pop after a push moves it across the lanes as the field at 19:15 of the push says ([4:3] the lanes shuffled before, [2] depth and lane exchanged, [1:0] the lanes shuffled after). A shuffle is none (0), every lane reading lane 0 (1), or every lane reading the lane a pattern names (2). The pattern of the shuffle before comes with `xlu_push_pattern`; the one of the shuffle after is loaded by an `xlu_push` whose [4:3] is 3 |
 | `msa push`, `msa pop` | the multi-precision array: the systolic array on words of 32 bits that hold 1 single, 2 halves or 4 floats of 8 bits, so a column keeps `lanes` times that many weights. The field at 19:15 of a push says [4] weights or inputs, [3:2] how many columns compute (all of them, shifted right by it; the others give 0), [1:0] what a word holds (single, half, E4M3, E5M2). A weight push of another format or width empties the matrix. A pop takes what is there, as singles, halves, or 8-bit floats (E5M2 when its field's [1:0] is 3, E4M3 otherwise) |
-| `dma_config_desc`, `mvin`, `mvin2`, `mvin3`, `mvout` | a tensor of up to four dimensions between memory and the scratchpad, as the descriptor says: a mask, skip axes, a fill value, a bound on memory, an accumulating `mvout`, indices |
+| `dma_config_desc`, `dma_index_key`, `mvin`, `mvin2`, `mvin3`, `mvout` | a tensor of up to four dimensions between memory and the scratchpad, as the descriptor says: a mask, skip axes, a fill value, a bound on memory, an accumulating `mvout`, indices; `dma_index_key` names the indirect transfers after it |
 
 Each unit keeps its values in its own blocks, and Spike runs every unit
 through the same cycles as gem5. The systolic array's rows ride its
@@ -127,8 +123,9 @@ argument it also runs it and compares the outputs byte by byte.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `tpu_sfu_latency_cycles` | 10 | cycles from the issue of a special function to its result; at least 1 |
-| `tpu_sfu_queue_registers` | 16 | registers the EUP's result queue holds before its pipeline stops |
+| `tpu_sfu_latency_cycles` | 10 | cycles from the issue of a special function to its result, and the EUP's stages; at least 1 |
+| `tpu_sfu_queue_registers` | 16 | registers the EUP's input queue and its result queue each hold, so a push or a pop of a larger group never issues; at least 1 |
+| `tpu_misc_issue_width` | 2 | `tpu::Misc` instructions a cycle; at least 1 |
 | `tpu_trace` | 0 | not 0: the model prints a line at every issue and every commit |
 | `vpu_num_lanes` | 128 | width and height of the systolic array and of the multi-precision array, and the slots the cross-lane unit's exchange gives out; 1 to 65535, the most the cross-lane unit takes |
 | `tpu_systolic_queue_entries` | 256 | entries in the input queue and in the output queue of each of the two arrays; at least 1 |
@@ -140,7 +137,7 @@ argument it also runs it and compares the outputs byte by byte.
 | `tpu_xlu_queue_entries` | 256 | entries in the cross-lane unit's input queue; its buffer and output queue have no limit, as nothing says what they hold; at least 1 |
 | `vpu_spad_size_kb_per_lane` | none | the scratchpad of one lane, which the DMA lays a tensor out over; a transfer without it ends the run |
 | `vpu_spad_base_vaddr` | 0xD0000000 | where the scratchpad starts, written `0x...` |
-| `run_base_path` | none | not in the file: Spike's `--base-path`. An indirect transfer writes the indices it read to `<path>/indirect_access/indirect_index<n>.raw` |
+| `run_base_path` | none | not in the file: Spike's `--base-path`. An indirect transfer writes the indices it read to `<path>/indirect_access/indirect_index<n>.raw`, or `indirect_index_<k>_<n>.raw` after a `dma_index_key` of `k` |
 
 With `tpu_trace` the model reports, on gem5:
 
@@ -153,9 +150,9 @@ With `tpu_trace` the model reports, on gem5:
 ```
 
 "In flight" counts the instructions issued and not committed. The issue of a
-systolic, cross-lane or multi-precision instruction also reports the entries
-it found in its unit's input queue and output queue (the cross-lane unit's
-buffer). The reports do not change
+systolic, cross-lane or multi-precision instruction, and of an `sfu_push` or
+`sfu_pop`, also reports the rows it found in its unit's input queue and output
+queue (the cross-lane unit's buffer). The reports do not change
 what the model answers. `tests/tpu/run.sh` checks the timing of the five units
 with them, all on `libtpu.so`.
 

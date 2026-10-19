@@ -53,7 +53,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: simulator-logs-${{ matrix.arch }}
-          path: build/*.log
+          path: |
+            build/*.log
+            build/*/*.log
+            build/*/*.err
+            build/*/*.out
           retention-days: 7
 
   # After main's environment image is published and its tests pass, PTB (PSAL-POSTECH/PyTorchSim-Triton-Backend), whose

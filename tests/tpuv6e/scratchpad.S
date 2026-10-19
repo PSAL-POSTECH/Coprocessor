@@ -1,7 +1,6 @@
-# Independent vector loads and stores in a window, three loads and two stores in turn, on the v6e machine's scratchpad:
-# loads from 8 lines, stores to 2 other lines, so no load waits on a store. 60 accesses, more than its 4 a cycle could
-# take in the 5 a group asks. No branch in the window, and 40 dependent scalar adds after the reset and after the
-# accesses, as the CPU issues what follows an m5op before it resolves.
+# Three loads and two stores in turn in a window on the v6e machine's scratchpad, loads from 8 lines and stores to 2
+# others, so no load waits on a store: 60 accesses, more than its 4 a cycle take. No branch in the window; 40 dependent
+# adds after the reset and the accesses, as the CPU issues past an m5op before it resolves.
     .option norvc
 
 # five: three loads and two stores

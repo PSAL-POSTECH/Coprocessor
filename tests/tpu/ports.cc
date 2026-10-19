@@ -151,7 +151,7 @@ void one_row() {
 }
 
 // Pushes and pops of two, one instruction a cycle: the array takes a row every cycle once it is full.
-// A pop is offered only for rows that were pushed: one offered to an empty array is issued and takes nothing.
+// A pop is offered only for rows that were pushed: one asking more than was computed is never accepted.
 void continuous() {
   Run run;
   const int cycles = 4000;
@@ -338,8 +338,8 @@ void xlu_shallower() {
                                            "+ 3 cycles after them; expected 100");
 }
 
-// Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: the pushes and pops of a
-// matched stream, whose timing the rule for an unmatched one must not move. 48 rows at one a cycle, then 7 slots and the pop.
+// Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: pushes and pops of equal size,
+// whose timing is the queues' and the line's alone. 48 rows at one a cycle, then 7 slots and the pop.
 void interleaved(const Unit &unit, int expected) {
   Run run;
   begin(run, unit);

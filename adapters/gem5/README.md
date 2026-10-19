@@ -71,6 +71,11 @@ the end of this page for what the other CPU models do.
    and issue, and ends by keeping the pipeline awake, so no cycle the CPU runs
    passes without it. A drain does not wait for a model. A program that exits
    ends the simulation.
+10. **Statistics** — a table with `num_stats` gives its unit gem5 statistics,
+   read with `read_stats` at each dump: per unit of the model, at its primary
+   port, `vcix.<unit>.admitted`, `capacity`, `cycles`, `occupancy` and
+   `utilized_cycles` (admitted / capacity), and `vcix.committed.<encoding>` for
+   each encoding.
 
 The model receives the instruction bits with `vl`, SEW and LMUL.
 

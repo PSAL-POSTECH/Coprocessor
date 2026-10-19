@@ -1,8 +1,6 @@
-# 64 independent vector loads of 32 bytes in a window: from 8 lines 128 bytes apart, all in one bank of
-# examples/tpu/gem5's scratchpad (its banks interleave by the 64-byte line), in two windows; then from 8 lines 64
-# bytes apart, the two banks in turn, in two more. The first window of each is the second's warm-up: the
-# instruction cache holds the loads in the second. No branch in a window, and 40 dependent scalar adds after the
-# reset and after the loads, as the CPU issues what follows an m5op before it resolves.
+# 64 independent vector loads of 32 bytes in a window: from 8 lines 128 bytes apart, all in one bank of the gem5
+# scratchpad, then 64 bytes apart, the two banks in turn; two windows each, the first the warm-up. No branch in a
+# window; 40 dependent adds after the reset and the loads, as the CPU issues past an m5op before it resolves.
     .option norvc
 
 # lines <apart>: t3, a1-a7 = lines, lines + apart, ..., lines + 7 apart (not a0: an m5op writes it)

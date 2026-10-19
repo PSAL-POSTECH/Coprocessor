@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# The functional face of the tpu example, on Spike. Each program prints what its instructions left in the
-# registers, the scratchpad and memory; from-old-spike.sha256 is what the Spike these units came from printed
-# (riscv-isa-sim branch spike-multi-precision-sa, ea9ec10, the units built in), so a PASS says the model does what
-# that Spike did.
-# Called by tests/tpu/run.sh. Usage: tests/tpu/functional/run.sh <build-dir> <spike> <pk> [old spike]
-#   With an old spike, each program is also run on it and the two outputs are compared byte by byte.
+# The tpu example's values on Spike: each program's output against what the Spike its units came from printed
+# (from-old-spike.sha256), or against a formula. Called by tests/tpu/run.sh.
+# Usage: tests/tpu/functional/run.sh <build-dir> <spike> <pk> [old spike: also run, outputs compared byte by byte]
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../../../setup/versions.env
 source "$HERE/../../../setup/versions.env"
-[ $# -ge 3 ] || { sed -n '2,7p' "${BASH_SOURCE[0]}" >&2; exit 2; }
+[ $# -ge 3 ] || { sed -n '2,4p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 BUILD=$(cd "$1" && pwd) || exit 2
 SPIKE=$2 PK=$3 OLD=${4:-}
 MODEL="$BUILD/libtpu.so"

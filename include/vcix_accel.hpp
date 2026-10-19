@@ -136,7 +136,8 @@ class Port {
     used_ += amount;
     admitted_ += amount;
   }
-  // Called once a cycle with what waits behind the entry; summed into occupancy.
+  // Adds `amount` to occupancy. vcix_uarch adds a pipeline's rows in its stages, for each pipeline this port is the
+  // entry of, in each cycle that pipeline is not drained.
   void hold(uint64_t amount) { occupancy_ += amount; }
   // Forgets what this cycle admitted, as a model's reset must; the counts stay. A room it used is opened again,
   // and the next admission in that same cycle counts in reopened(), so admitted <= capacity * (cycles + reopened).

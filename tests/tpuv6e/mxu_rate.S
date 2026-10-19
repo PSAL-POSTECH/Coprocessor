@@ -1,7 +1,6 @@
-# The matrix unit of libtpuv6e.so takes a word a cycle: a vmatmul of four words of singles and, queued behind it, a
-# vmatmul of four words of bfloat16, then two weights pushed, which enter nothing, a cycle each while the input queue
-# empties, and the six pops of the twelve rows, the lower and the upper half of the columns by turns. Sixteen
-# instructions, the 64 bytes of one cache line.
+# The matrix unit of libtpuv6e.so takes a word a cycle: a vmatmul of four words of singles, one of bfloat16 queued
+# behind it, two weight pushes a cycle each while the input queue empties, and six pops of the twelve rows, the halves
+# of the columns by turns. Sixteen instructions, one cache line.
     .option norvc
     .text
     .globl main

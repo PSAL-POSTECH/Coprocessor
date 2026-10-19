@@ -1,4 +1,4 @@
-# The tpu model reports each issue and commit; a cross-lane unit of 3 cycles with queues of 8.
+# The tpu model reports each issue and commit; a cross-lane unit of 3 cycles with an input queue of 8.
 tpu_trace: 1
 tpu_xlu_latency_cycles: 3
 tpu_xlu_queue_entries: 8

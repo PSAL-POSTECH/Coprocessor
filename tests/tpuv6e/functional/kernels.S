@@ -1,10 +1,6 @@
-# The vector code of mxu.c, linked at KERNEL_BASE of run.sh. Spike runs a vector instruction in every lane only
-# inside --kernel-addr; there a load or store at a scratchpad address is each lane's own copy of it. No instruction
-# here has 2 in its rd field but the vmatmul of k_mxu_matmul_32_a2, which the model refuses before it runs, and the
-# first is not an addi: Spike reads both as the kernel moving its stack.
-#
-# Every function: a0 = source in lane 0's scratchpad, a1 = destination there, a2 = elements asked, a3 = the field
-# of the instruction. Returns the elements done, at most one register group.
+# The vector code of mxu.c, at run.sh's KERNEL_BASE. No instruction has 2 in rd but the vmatmul of k_mxu_matmul_32_a2,
+# refused before it runs, and the first is not an addi. Every function: a0 = source in lane 0's scratchpad, a1 =
+# destination, a2 = elements asked, a3 = the instruction's field; returns those done, one register group at most.
     .option norvc
     .section .kernel, "ax"
 

@@ -1,7 +1,6 @@
-// The cross-lane unit and vlane_idx. Usage: cross_lane lanes | cross_lane <operation>...
-// An operation is the field of the push, 0 to 23. For each, at each element width: tiles of several depths,
-// pushed in one or two pieces, with the patterns the operation reads, popped short, exactly and long.
-// Output: what each pop left in every lane.
+// The cross-lane unit and vlane_idx. Usage: cross_lane lanes | cross_lane <operation 0 to 23>... Each operation at
+// each element width: tiles of several depths, pushed in one or two pieces, with the patterns it reads, popped short,
+// exactly and long. Output: what each pop left in every lane.
 #include <stdlib.h>
 
 #include "common.h"

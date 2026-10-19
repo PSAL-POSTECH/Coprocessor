@@ -91,13 +91,16 @@ has it, and `scripts/build.sh` finds it); `-DVCIX_RTL=OFF` skips them.
 ```
 scripts/build.sh
 examples/rtl/run.sh     # both models on both simulators
-tests/rtl/run.sh        # 22 checks, also run by tests/run.sh; SKIP when not built
+tests/rtl/run.sh        # 24 checks, also run by tests/run.sh; SKIP when not built
 ```
 
 The checks: `rtl_systolic` gives `libtpu.so`'s bytes under the default,
-`slow` and ten random schedules; `rtl_systolic_nowait` differs; the copier
-copies 0 of 256 without a wait and 256 with one, also across a trap; gem5
-prints one line per instruction, and `rtl_systolic_badtag` stops.
+`slow` and ten random schedules; `rtl_systolic_nowait` differs, and
+`libtpu.so` under `tpu_systolic_weight_waits: 0` matches it; `rtl_stall`, with
+no simulator, gives each array instruction the cycle the RTL gives it where the
+stall modes part; the copier copies 0 of 256 without a wait and 256 with one,
+also across a trap; gem5 prints one line per instruction, and
+`rtl_systolic_badtag` stops.
 
 ## Limits
 
