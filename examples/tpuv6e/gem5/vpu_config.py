@@ -1,6 +1,7 @@
 # The TPU v6e machine's CPU: the tpu machine's (examples/tpu/gem5/vpu_config.py) with a pool of 4 VALUs, VECTOR_ALU
 # (16027/53900) in libtpu's static bundle profile of a v6e 8192 x 4096 x 4096 bf16 matmul (13475 bundles), and 2 LSQ
-# requests, a compensation (examples/tpuv6e/README.md, "Two LSQ requests and two more integer units").
+# requests, a compensation (examples/tpuv6e/README.md, "Two LSQ requests and two more integer units"). A vsetvli
+# does not restart the fetch (README, "A vsetvli is not a fetch restart").
 import importlib.util
 import os
 import m5
@@ -14,3 +15,4 @@ _spec.loader.exec_module(tpu)
 class TPUv6eVPU(tpu.RiscvVPU):
     executeLSQRequestsQueueSize = 2
     executeFuncUnits = tpu.vliw_pool(4)
+    fetch2KeepSequentialPredictions = True

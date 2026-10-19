@@ -34,7 +34,7 @@ unit_stat() { awk -v want=".vcix.$2.$3" 'substr($1, length($1) - length(want) + 
 # units <run>: the units in the run's dump, as gem5 sorts them
 units() { sed -n 's/^.*\.vcix\.\([^.]*\)\.admitted .*$/\1/p' "$BUILD/m5out-tpuv6e-$1/stats.txt" | tr '\n' ' ' | sed 's/ $//'; }
 
-for program in mxu mxu_rate mxu_arrays mxu_slots scratchpad valu ../tpu/loads ../tpu/addresses; do
+for program in mxu mxu_rate mxu_arrays mxu_slots scratchpad valu vset ../tpu/loads ../tpu/addresses; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv6e-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 
@@ -123,7 +123,7 @@ on_machine() {
 config() { gem5_config "$BUILD/m5out-tpuv6e-machine-$1" "${@:2}"; }
 window() { gem5_window "$BUILD/m5out-tpuv6e-machine-$1" "${@:2}"; }
 
-for program in scratchpad valu loads addresses; do on_machine $program; done
+for program in scratchpad valu vset loads addresses; do on_machine $program; done
 report "exit ${rc[machine-scratchpad]}, ports $(config scratchpad system.spad load_ports) $(config scratchpad system.spad store_ports) $(config scratchpad system.spad access_ports), latency $(config scratchpad system.spad latency); requests $(config scratchpad system.cpu executeLSQRequestsQueueSize); integer units $(grep -c '^opClass=IntAlu$' "$BUILD/m5out-tpuv6e-machine-scratchpad/config.ini"), VALUs $(grep -c '^unit=Vpu$' "$BUILD/m5out-tpuv6e-machine-scratchpad/config.ini")" \
   "exit 0, ports 3 2 4, latency 1; requests 2; integer units 6, VALUs 4" \
   "the v6e machine: a scratchpad of 3 load, 2 store and 4 access ports a cycle, two LSQ requests, six integer units and four VALUs"
@@ -137,6 +137,10 @@ report "$(window addresses 2 system.cpu.numCycles)" "76" \
   "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 76 cycles"
 report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 16 of 35 cycles" \
   "valu.S's 64 independent vfadds and vfmuls keep the VALUs busy 16 cycles: 4 a cycle, whatever the mix"
+
+report "$(config vset system.cpu fetch2KeepSequentialPredictions); $(window vset 2 system.cpu.fetch2.sequentialPredictions) $(window vset 4 system.cpu.fetch2.sequentialPredictions) $(window vset 6 system.cpu.fetch2.sequentialPredictions) $(window vset 8 system.cpu.fetch2.sequentialPredictions) kept, $(window vset 2 system.cpu.numCycles) $(window vset 4 system.cpu.numCycles) $(window vset 6 system.cpu.numCycles) $(window vset 8 system.cpu.numCycles) cycles" \
+  "true; 29 29 29 29 kept, 122 138 122 120 cycles" \
+  "vset.S's vsetvlis predicted to the next instruction go on in the line they were fetched in, not a new fetch: 203 219 203 187 cycles without (README); the windows still differ by the loop branch's mispredictions"
 
 echo "-- the model"
 printf 'tpu_mxu_queue_entries: 1\n' > "$BUILD/tpuv6e-queue-1.yml"

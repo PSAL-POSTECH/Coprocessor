@@ -164,6 +164,7 @@ gives each kind as used/slots over the kernel:
 | vector ALUs | 4 each of adder, multiplier, divider and reduction, and 4 of misc, each its own op classes | 4 `MinorVALU`s, each every one of those op classes | `VECTOR_ALU (16027/53900)`: 4 a bundle |
 | `executeLSQRequestsQueueSize` | 1 | 2 | a compensation, below |
 | integer units (`IntAlu`) | 4 | 6 | a compensation, below |
+| `fetch2KeepSequentialPredictions` | false | true | not a fetch restart at a vsetvli, below; needs a gem5 with this parameter |
 
 The instruction cache and the system port still reach the scratchpad through
 the bus, on its second port, and their reads take a load port. Every unit
@@ -216,6 +217,37 @@ tpu machine with two LSQ requests and a scratchpad of two banks; cycles per
 vmatmul, the difference of 96 and 192 blocks over 96, against a matrix unit
 that does not hold the loop back).
 
+### A vsetvli is not a fetch restart
+
+gem5 decodes a vector instruction into a micro-op for each register of its
+group, so decode needs the vtype a vsetvli sets before the vsetvli executes.
+gem5's RISC-V carries vtype and vl in the PC state: a vsetvli is an
+unconditional indirect branch to the next instruction, whose target holds the
+new vtype and vl. Minor's Fetch2 treats a taken prediction of it as any taken
+branch: it drops the instructions it holds and Fetch1 fetches the same line
+again, a bubble of 1 or 2 cycles at every vsetvli, its length set by where the
+code sits. The v6e has no vsetvli and no such restart.
+
+With `fetch2KeepSequentialPredictions`, a taken prediction to the next
+instruction keeps the stream: Fetch2 takes the predicted PC state and goes on
+decoding the line; Execute checks the prediction as before, and a vsetvli the
+predictor misses is still a misprediction. `fetch2.sequentialPredictions`
+counts the kept ones. On `tests/tpuv6e/vset.S`, a loop of 16 trips of an e16 and
+an e32 vsetvli, each with a vadd, in four windows 0 to 3 instructions past a
+line (cycles a window):
+
+| | window 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| without | 203 | 219 | 203 | 187 |
+| with | 122 | 138 | 122 | 120 |
+
+The windows still differ: the loop branch is mispredicted 5 times in windows 0
+and 1 and once in 2 and 3, and every window misses 5 vsetvlis in the indirect
+predictor. On a softmax tile of PyTorchSim (1024 x 1024, its exp on the EUP and
+pipelined), moved by 0 to 3 instructions, the tile took 5345, 4413, 4532 and
+4536 cycles without and 4252, 4330, 4333 and 4327 with; the same tile without
+the pipelining, 5087 to 5190 and 5059 to 5083.
+
 ### What the scratchpad changes
 
 On a 4096 x 4096 x 4096 bf16 matmul, PyTorchSim's tile of it (`a_w512c1024`)
@@ -261,7 +293,8 @@ With `tpu_trace`:
 no simulator, and gem5's dump), the gem5 machine (its configuration; three
 loads, two stores and four accesses a cycle at the scratchpad, `scratchpad.S`;
 `tests/tpu`'s `loads.S` alike from any lines and `addresses.S`; 64
-independent vfadds and vfmuls 4 a cycle at the VALUs, `valu.S`), and a refused
+independent vfadds and vfmuls 4 a cycle at the VALUs, `valu.S`; vsetvlis kept
+in the fetch stream, `vset.S`), and a refused
 machine description;
 `functional/run.sh` checks what it computes on Spike against a formula
 (`mxu.c`, on one array and on two), and what it refuses. It runs on the machine of
