@@ -32,7 +32,9 @@ constexpr uint32_t FORM_MASK = 0xF000007F;
 uint32_t bits_of(Form f) { return 0x5B | (uint32_t(f) << 28); }
 Form form_of(const Insn &insn) { return Form(insn.bits >> 28); }
 
-// A pipe that takes two instructions and eight elements a cycle, and an array that is a Stream.
+// A pipe that takes two instructions and eight elements a cycle, and an array: queues of four rows around a line of
+// three slots, which one row a cycle enters through the port `entry`; a pop takes up to vl once vl are out or none is on
+// its way. Pushed more than popped, the output queue fills and the line stops.
 template <Variant V>
 class Toy : public Model {
  public:
@@ -45,27 +47,37 @@ class Toy : public Model {
   void execute(const Host &, const Insn &) override {}
   bool can_accept(const Insn &insn, Cycle now) const override {
     if (form_of(insn) == OP) return issue_.room(now) >= 1 && lanes_.room(now) >= insn.vl;
-    if (form_of(insn) == PUSH) return array_.has_room(insn.vl);
-    return array_.gives(insn.vl);
+    if (form_of(insn) == PUSH) return insn.vl <= QUEUE - input_;
+    return insn.vl <= output_ || (!input_ && !in_line_);
   }
   Cycle issue(const Insn &insn, Id, Cycle now) override {
     if (form_of(insn) == OP) {
       issue_.admit(1, now);
       lanes_.admit(insn.vl, now);
     }
-    if (form_of(insn) == PUSH) array_.push(insn.vl);
-    if (form_of(insn) == POP) array_.pop(insn.vl);
+    if (form_of(insn) == PUSH) input_ += insn.vl;
+    if (form_of(insn) == POP) output_ -= insn.vl < output_ ? insn.vl : output_;
     return 1;
   }
-  void tick(Cycle now) override { array_.tick(now); }
+  void tick(Cycle now) override {
+    if (output_ != QUEUE) {
+      if (line_[head_]) output_++, in_line_--;
+      line_[head_] = input_ && entry_.room(now);
+      if (line_[head_]) entry_.admit(1, now), input_--, in_line_++;
+      head_ = (head_ + 1) % SLOTS;
+    }
+    entry_.hold(in_line_);
+  }
   void reset() override {
     issue_.reset();
     lanes_.reset();
-    array_.reset();
+    entry_.reset();
+    input_ = output_ = in_line_ = head_ = 0;
+    for (bool &slot : line_) slot = false;
   }
   std::vector<const Port *> ports() const override {
-    if (V == LISTED_TWICE) return {&issue_, &lanes_, &array_.entry(), &issue_};
-    return {&issue_, &lanes_, &array_.entry()};
+    if (V == LISTED_TWICE) return {&issue_, &lanes_, &entry_, &issue_};
+    return {&issue_, &lanes_, &entry_};
   }
 
  private:
@@ -75,7 +87,10 @@ class Toy : public Model {
   Port lanes_{V == CLASHING_UNITS ? "pi_pe" : "pipe",
               V == SAME_NAME ? "issue" : V == CLASHING_PORTS ? "la_nes" : "lanes", "elements", 8,
               V == TWO_PRIMARIES || V == CLASHING_UNITS ? Port::PRIMARY : Port::REPORTING};
-  Stream array_{"array", "entry", "rows", Port::PRIMARY, 3, 4};
+  static constexpr uint32_t SLOTS = 3, QUEUE = 4;
+  Port entry_{"array", "entry", "rows", 1, Port::PRIMARY};
+  uint32_t input_ = 0, output_ = 0, in_line_ = 0, head_ = 0;
+  bool line_[SLOTS] = {};
 };
 
 const vcix_config NO_CONFIG = {nullptr, [](void *, const char *) -> const char * { return nullptr; }};
