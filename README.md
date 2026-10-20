@@ -676,7 +676,7 @@ Register<S>       unit state, read and written the same way on both simulators
 - **Port** ([`vcix_accel.hpp:107-170`](include/vcix_accel.hpp)): a capacity
   per cycle. A unit has one `PRIMARY` port; its counts are the unit's
   statistics.
-- **Pipeline<T>** ([`vcix_uarch.hpp:268-350`](include/vcix_uarch.hpp)): rows
+- **`Pipeline<T>`** ([`vcix_uarch.hpp:268-350`](include/vcix_uarch.hpp)): rows
   that arrive in a cycle are seen in the next. An entry of `weight` rows
   leaves the stages as that many rows, into every output queue. Two stall
   modes: `Stall::WHEN_OUTPUT_FULL` (stop as soon as an output queue is full)
@@ -687,7 +687,7 @@ Register<S>       unit state, read and written the same way on both simulators
   command arrives `arrival_cycles` (1) after its issue and works from the cycle
   after. `Free::WHEN_DONE` gives the slot back when its work is done;
   `Free::WHEN_STARTED` gives it back as the head starts, in a cycle of its own.
-- **Register<S>** ([`vcix_uarch.hpp:38-60`](include/vcix_uarch.hpp)): `get()`
+- **`Register<S>`** ([`vcix_uarch.hpp:38-60`](include/vcix_uarch.hpp)): `get()`
   reads, `write()` changes, `reset` puts back what `configure` gave. Copies
   share the value until one writes, so the copy gem5 saves at each issue is
   cheap.
