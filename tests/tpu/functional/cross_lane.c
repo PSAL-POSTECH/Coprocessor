@@ -5,12 +5,11 @@
 
 #include "common.h"
 
-kernel_with k_cross_push_8, k_cross_push_16, k_cross_push_32, k_cross_pattern_8, k_cross_pattern_16, k_cross_pattern_32;
-kernel k_cross_pop_8, k_cross_pop_16, k_cross_pop_32, k_cross_load;
+kernel_with k_cross_push_8, k_cross_push_16, k_cross_push_32;
+kernel k_cross_pop_8, k_cross_pop_16, k_cross_pop_32, k_cross_load, k_cross_set_pattern;
 kernel_with k_lane_index_8, k_lane_index_16, k_lane_index_32, k_lane_index_64;
 
 static kernel_with *const PUSH[3] = {k_cross_push_8, k_cross_push_16, k_cross_push_32};
-static kernel_with *const PATTERN[3] = {k_cross_pattern_8, k_cross_pattern_16, k_cross_pattern_32};
 static kernel *const POP[3] = {k_cross_pop_8, k_cross_pop_16, k_cross_pop_32};
 
 #define IN 0ul
@@ -23,7 +22,7 @@ static void lane_numbers(unsigned long count) {
     for (unsigned long i = 0; i < count; i++) *(uint32_t *)spad(lane, LANE_NUMBERS + 4 * i) = random_below(LANES + 2);
 }
 static unsigned long pushed, left;  // elements per lane since the last pop; slots of the result not yet popped
-// The shuffle before the crossing reads a pattern when the field's [4:3] is 2: the push carries it.
+// The shuffle before the crossing reads a pattern when the field's [4:3] is 2: the one set before the push.
 static void push(unsigned width, unsigned operation, unsigned long count) {
   const unsigned bytes = 1u << width;
   for (unsigned lane = 0; lane < LANES; lane++)
@@ -32,10 +31,9 @@ static void push(unsigned width, unsigned operation, unsigned long count) {
       memcpy(spad(lane, IN + i * bytes), &value, bytes);
     }
   lane_numbers(count);
-  const unsigned long done = operation >> 3 == 2
-                                 ? PATTERN[width](spad(0, IN), 0, count, operation, spad(0, LANE_NUMBERS))
-                                 : PUSH[width](spad(0, IN), 0, count, operation, 0);
-  if (done != count) puts("a push did not take every element");
+  if (operation >> 3 == 2 && k_cross_set_pattern(spad(0, LANE_NUMBERS), 0, count) != count)
+    puts("a set did not take every lane number");
+  if (PUSH[width](spad(0, IN), 0, count, operation, 0) != count) puts("a push did not take every element");
   pushed += count;
 }
 // At most what is left of the result: a slot an element, LANES for an exchange ([2]). The shuffle after reads a

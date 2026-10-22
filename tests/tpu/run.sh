@@ -28,7 +28,7 @@ times() { grep -Fxc "[tpu] $2" "$BUILD/tpu-$1.gem5.log"; }
 
 lines() { grep -c "^\[tpu\] $2 " "$BUILD/tpu-$1.gem5.log"; }
 
-for program in sfu one_cycle systolic_stream systolic_full msa xlu xlu_fold loads addresses; do
+for program in sfu one_cycle systolic_stream systolic_full msa xlu xlu_fold xlu_pattern loads addresses; do
   rv_program "$HERE/$program.S" "$BUILD/tpu-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
@@ -108,6 +108,7 @@ on_gem5 xlu xlu "$HERE/xlu.yml"
 on_gem5 xlu-fold xlu_fold "$HERE/xlu.yml"
 on_gem5 xlu-wide xlu_fold "$HERE/xlu_wide.yml"
 on_gem5 xlu-issue xlu_fold "$HERE/xlu_issue.yml"
+on_gem5 xlu-pattern xlu_pattern "$HERE/xlu.yml"
 folded=$(said xlu-fold "issue xlu_push_reduce: the first, input queue 0, output queue 0" \
   "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0")
 report "exit ${rc[xlu-fold]}, lines $folded, commits $(times xlu-fold "commit xlu_pop: 9 cycles after its issue")" \
@@ -126,6 +127,10 @@ delay=$(said xlu "issue xlu_push: the first, input queue 0, output queue 0" \
 report "exit ${rc[xlu]}, lines $delay, commits $(times xlu "commit xlu_pop: 9 cycles after its issue")" \
   "exit 0, lines 2, commits 2" \
   "a pop is issued the cycle after its tile's last push; the last element is in the buffer 1 + 3 cycles later, the tile taken in the next, its slots made in the next and out at once, and the first two taken 3 after: both tiles' first pops commit in 9"
+
+report "exit ${rc[xlu-pattern]}, sets $(lines xlu-pattern "issue xlu_set_pattern:"), commits $(lines xlu-pattern "commit xlu_pop:")" \
+  "exit 0, sets 3, commits 2" \
+  "a set pattern is taken by the pushes after it on gem5 too: both tiles' first pops are accepted, the second's with a set between its pushes"
 
 pushes=("issue xlu_push: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
 for queues in "1 0" "2 0" "3 0" "4 1" "5 2" "6 3"; do

@@ -23,7 +23,7 @@ flowchart LR
   cpu["CPU<br/>gem5 Minor or Spike"] -->|"custom-1, custom-2"| m["libtpuv6e.so<br/>tpu::Machine"]
   m --> sfu["TPUV6E_SFU<br/>verf ... vexp<br/>sfu_push, sfu_pop"]
   m --> misc["TPUV6E_MISC<br/>vlane_idx, compute, pack, unpack<br/>mvin, mvout, the DMA's"]
-  m --> xlu["TPUV6E_XLU<br/>xlu_push, xlu_push_pattern,<br/>xlu_push_reduce, xlu_pop"]
+  m --> xlu["TPUV6E_XLU<br/>xlu_push, xlu_set_pattern,<br/>xlu_push_reduce, xlu_pop"]
   m --> mxu["TPUV6E_MXU<br/>vmatprep, vmatpush,<br/>vmatmul, vpop"]
 ```
 

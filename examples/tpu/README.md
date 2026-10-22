@@ -13,7 +13,7 @@ flowchart LR
   M -->|"verf ... vexp, sfu_push, sfu_pop"| S["tpu::Sfu<br>SFU"]
   M -->|"vlane_idx, compute, pack, unpack,<br>dma_config_desc, mvin, mvout ..."| C["tpu::Misc<br>MISC"]
   M -->|"input push, weight push, pop"| Y["tpu::Systolic<br>SYSTOLIC"]
-  M -->|"xlu_push, xlu_push_pattern,<br>xlu_push_reduce, xlu_pop"| X["tpu::Xlu<br>XLU"]
+  M -->|"xlu_push, xlu_set_pattern,<br>xlu_push_reduce, xlu_pop"| X["tpu::Xlu<br>XLU"]
   M -->|"msa push, msa pop"| A["tpu::Msa<br>MSA"]
 ```
 
@@ -67,7 +67,7 @@ custom-2 (opcode 0x5B)
   sf.vc.iv   0x2, 0x0, v1, 0      0x2a10305b   msa push (inputs)      Msa
   sf.vc.v.i  0x3, 0x0, v2, 0      0x0c00315b   msa pop                Msa
   sf.vc.iv   0x3, 0, v4, 4        0x2e42305b   xlu_push               Xlu
-  sf.vc.ivv  0x3, v2, v1, 8       0xae14315b   xlu_push_pattern       Xlu
+  sf.vc.ivv  0x3, v1, v1, 0       0xae1030db   xlu_set_pattern        Xlu
   sf.vc.ivv  0x2, v2, v4, 1       0xaa40b15b   xlu_push_reduce        Xlu
   sf.vc.v.i  0x1, 0, v5, 4        0x040232db   xlu_pop                Xlu
 custom-1 (opcode 0x2B): .insn r 0x2b, 3, <funct7>, x0, a0, a1
@@ -82,7 +82,7 @@ custom-1 (opcode 0x2B): .insn r 0x2b, 3, <funct7>, x0, a0, a1
 The match words and masks are each unit's `INSTRUCTIONS` table:
 [sfu.hpp:96](sfu.hpp#L96), [misc.hpp:118](misc.hpp#L118),
 [systolic.hpp:103](systolic.hpp#L103), [msa.hpp:96](msa.hpp#L96),
-[xlu.hpp:201](xlu.hpp#L201). Most masks are `0xFE00707F`: funct6, vm, funct3
+[xlu.hpp:224](xlu.hpp#L224). Most masks are `0xFE00707F`: funct6, vm, funct3
 and the opcode. vsin, vcos, vlog, vatan, unpack_lo and unpack_hi also match the
 field (`0xFE0FF07F`). sfu_push and xlu_push differ only in funct3
 (`0x2E00005B` and `0x2E00305B`).
@@ -606,7 +606,7 @@ xlu_push ─► input queue ─► [ stages ] ─► buffer ══ first pop ═
 - The first pop after pushes waits until the whole tile is in the buffer,
   takes it at once, and computes the result. The result has one slot per
   element, or `vpu_num_lanes` slots for an exchange
-  ([xlu.hpp:155-177](xlu.hpp#L155-L177)).
+  ([xlu.hpp:178-200](xlu.hpp#L178-L200)).
 - The whole result leaves together, as one entry of that many slots. Each pop
   takes exactly `vl` of them.
 - The first element push after a pop forgets what is left of the tile
@@ -617,7 +617,7 @@ xlu_push ─► input queue ─► [ stages ] ─► buffer ══ first pop ═
   second waits 100 of 100). Spike ends with `tpu: xlu pop: 8 elements asked, 3 left`.
 
 How long the stages are on hardware is not known to this model: the 10 of
-`tpu_xlu_latency_cycles` is a placeholder ([xlu.hpp:319](xlu.hpp#L319)).
+`tpu_xlu_latency_cycles` is a placeholder ([xlu.hpp:343](xlu.hpp#L343)).
 [tpuv6e](../tpuv6e/README.md) gives what was measured on a v6e.
 
 ### One tile, cycle by cycle
@@ -675,11 +675,11 @@ the pop before it. Then the input queue fills by one a cycle, and the buffer
 ```
 
 The buffer holds the whole tile, 16 elements, and the line never stops. A
-pattern push adds 2 more. The first pop takes all 18; the second pop waits for
+push more adds 2 more. The first pop takes all 18; the second pop waits for
 it, then takes 2 more slots in 1 cycle:
 
 ```
-[tpu] issue xlu_push_pattern: 351 cycles after the last issue, 0 in flight, input queue 0, output queue 16
+[tpu] issue xlu_push: 351 cycles after the last issue, 0 in flight, input queue 0, output queue 16
 [tpu] issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 16
 [tpu] commit xlu_pop: 9 cycles after its issue
 [tpu] issue xlu_pop: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0
@@ -691,7 +691,7 @@ it, then takes 2 more slots in 1 cycle:
 Asserted by `tests/tpu/run.sh:106-143`. The 1 + 3 + 1 + 1 + 3 is the check's
 own statement (line 128) and `tests/tpu/ports.cc:322-336` (`xlu_shallower`).
 Of the `xlu_issue.yml` lines only the `xlu_pop` issue is asserted; the others,
-and the `xlu_push_pattern` line, are from the same
+and the last `xlu_push` line, are from the same
 run's logs, `build/tpu-xlu-issue.gem5.log` and `build/tpu-xlu.gem5.log`.
 </details>
 
@@ -710,9 +710,13 @@ The push's field (bits 19:15) is the operation:
  [1:0]  shuffle after: 0 none, 1 every lane reads lane 0, 2 by pattern
 ```
 
-The pattern of the shuffle before comes with `xlu_push_pattern`, in its `rd`:
-a lane number per column ([xlu.hpp:92-151](xlu.hpp#L92-L151)). Elements are
-raw 8, 16 or 32 bits.
+The pattern of the shuffle before is set by `xlu_set_pattern` (`sf.vc.ivv 0x3`):
+`vl` words of `vs2` in each lane, a lane number each, kept until the next set.
+Each push takes it as it issues, its element i reading entry i mod the
+pattern's width, so a set between two pushes of one tile changes only the pushes
+after it. This is the v6e's `vset.pattern.permute` before its `vperm`s: one set
+serves every register a pattern moves, and no register holds the pattern while
+they push ([xlu.hpp:92-177](xlu.hpp#L92-L177)). Elements are raw 8, 16 or 32 bits.
 
 A 4-lane tile, pushed and popped with four different fields, on Spike:
 
@@ -744,8 +748,10 @@ XLU ERROR: the pre stage walks 1 columns but lane 0 carries 0 pattern entries (S
 
 `show xlu` ([show.c](#running-the-examples-on-this-page)) on Spike with
 `tests/tpu/functional/machine.yml`. The exit 201 is asserted by
-`tests/tpu/functional/run.sh:158`. All 24 operations are checked against the
-Spike these units came from by `run.sh:123` (`cross_lane.c`).
+`tests/tpu/functional/run.sh:161`. All 24 operations are checked against the
+Spike these units came from by `run.sh:123` (`cross_lane.c`); the set pattern,
+kept across pops, read i mod its width and changed between pushes, by
+`run.sh:143` (`xlu_pattern.c`).
 </details>
 
 ### Folding across the lanes: xlu_push_reduce
@@ -1194,8 +1200,8 @@ main:
 #include "common.h"
 
 kernel k_cross_pop_32, k_cross_fold_max, k_cross_fold_sum, k_cross_fold_min, k_cross_fold_argmax, k_cross_fold_argmin,
-    k_pack, k_eup_pop_32;
-kernel_with k_weight_32, k_input_32, k_pop_32, k_cross_push_32, k_cross_pattern_32, k_msa_push_32;
+    k_pack, k_eup_pop_32, k_cross_set_pattern;
+kernel_with k_weight_32, k_input_32, k_pop_32, k_cross_push_32, k_msa_push_32;
 
 static float *f(unsigned lane, unsigned long off) { return (float *)spad(lane, off); }
 static uint32_t *u(unsigned lane, unsigned long off) { return (uint32_t *)spad(lane, off); }
@@ -1269,7 +1275,8 @@ int main(int argc, char **argv) {
     k_cross_push_32(spad(0, X), 0, 4, 8, 0);
     k_cross_pop_32(0, spad(0, Y), 4);
     print_words("field 8 (shuffle before: every lane reads lane 0)", 4);
-    k_cross_pattern_32(spad(0, X), 0, 4, 16, spad(0, P));
+    k_cross_set_pattern(spad(0, P), 0, 4);
+    k_cross_push_32(spad(0, X), 0, 4, 16, 0);
     k_cross_pop_32(0, spad(0, Y), 4);
     print_words("field 16 (shuffle before by pattern: lane L reads lane 3 - L)", 4);
     for (unsigned lane = 0; lane < LANES; lane++)
