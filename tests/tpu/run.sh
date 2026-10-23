@@ -109,6 +109,8 @@ on_gem5 xlu-fold xlu_fold "$HERE/xlu.yml"
 on_gem5 xlu-wide xlu_fold "$HERE/xlu_wide.yml"
 on_gem5 xlu-issue xlu_fold "$HERE/xlu_issue.yml"
 on_gem5 xlu-pattern xlu_pattern "$HERE/xlu.yml"
+on_gem5 xlu-move xlu_pattern "$HERE/xlu_move.yml"
+on_gem5 xlu-move-exchange xlu "$HERE/xlu_move.yml"
 folded=$(said xlu-fold "issue xlu_push_reduce: the first, input queue 0, output queue 0" \
   "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0")
 report "exit ${rc[xlu-fold]}, lines $folded, commits $(times xlu-fold "commit xlu_pop: 9 cycles after its issue")" \
@@ -131,6 +133,10 @@ report "exit ${rc[xlu]}, lines $delay, commits $(times xlu "commit xlu_pop: 9 cy
 report "exit ${rc[xlu-pattern]}, sets $(lines xlu-pattern "issue xlu_set_pattern:"), commits $(lines xlu-pattern "commit xlu_pop:")" \
   "exit 0, sets 3, commits 2" \
   "a set pattern is taken by the pushes after it on gem5 too: both tiles' first pops are accepted, the second's with a set between its pushes"
+
+report "commits $(times xlu-pattern "commit xlu_pop: 9 cycles after its issue") and $(times xlu-move "commit xlu_pop: 12 cycles after its issue"), $(times xlu-move-exchange "commit xlu_pop: 9 cycles after its issue")" \
+  "commits 2 and 2, 2" \
+  "a move's tile passes tpu_xlu_move_latency_cycles (6 in xlu_move.yml): its first pops commit 3 cycles later than through 3 stages; an exchange's tile keeps tpu_xlu_latency_cycles"
 
 pushes=("issue xlu_push: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
 for queues in "1 0" "2 0" "3 0" "4 1" "5 2" "6 3"; do

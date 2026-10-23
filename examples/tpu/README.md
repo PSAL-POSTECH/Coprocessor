@@ -900,7 +900,10 @@ Systolic and Msa
   array is empty; needs the queue.
 
 Xlu
-- `tpu_xlu_latency_cycles` (10, a placeholder): its stages; at least 1.
+- `tpu_xlu_latency_cycles` (10, a placeholder): its stages for a tile whose first
+  push is a fold or an exchange; at least 1.
+- `tpu_xlu_move_latency_cycles` (`tpu_xlu_latency_cycles`): its stages for a tile
+  whose first push is a move; at least 1.
 - `tpu_xlu_queue_entries` (256): its input queue; at least 1. The buffer and
   the output queue have no limit.
 - `tpu_xlu_elements_per_cycle` (1): elements entering the stages a cycle; an
