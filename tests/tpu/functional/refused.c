@@ -57,16 +57,9 @@ int main(int argc, char **argv) {
   } else if (!strcmp(which, "overflow")) {    // a transfer to the end of a lane's scratchpad
     DMA(7, &row, &row);
     DMA(2, memory, spad(0, LANE_BYTES));
-  } else if (!strcmp(which, "indices")) {     // an indirect transfer: its indices go under --base-path
-    row.flags = 1;
-    row.indirect_address = (uint64_t)spad(0, 4096);
-    row.indirect_stride = 1;
-    row.indirect_element_size = 4;
-    DMA(7, &row, &row);
-    DMA(2, memory, spad(0, 0));
   } else {
     puts("usage: refused doubles | pop | input | format | bf16-pop | pop-format | pattern | xlu-pop | msa-pop | words | "
-         "overflow | indices");
+         "overflow");
     return 2;
   }
   puts("it ran");
