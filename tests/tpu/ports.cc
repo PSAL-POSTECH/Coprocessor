@@ -319,20 +319,20 @@ void more_pushed(const Unit &unit) {
                                            " of the 1000 cycles after; expected fewer than 100, 1000");
 }
 
-// Tiles of 4 popped by 2, never served from the last: each pop, issued the cycle after its push, takes the fourth
-// element 3 + 3 + 1 cycles later, makes 4 slots in the next, which leave at once, and takes 2 of them 3 after that; the
-// next push, which waits for the pop, is issued then.
+// Tiles of 4 popped by 2 twice: each tile's first pop, issued the cycle after its push, takes the fourth element
+// 3 + 3 + 1 cycles later, makes 4 slots in the next, which leave at once, and takes 2 of them 3 after that; the
+// second, issued then, takes the other 2 from what is left at once, and the next push is issued the cycle after.
 void xlu_shallower() {
   Run run;
   int as_first = 0;
   const int first = wait_for(run, XLU_PUSH, 4);
   for (int tile = 0; tile < 100; tile++) {
-    const int pop = wait_for(run, XLU_POP, 2), push = wait_for(run, XLU_PUSH, 4);
-    as_first += pop == 1 && push == 3 + 3 + 1 + 1 + 3;
+    const int pop = wait_for(run, XLU_POP, 2), rest = wait_for(run, XLU_POP, 2), push = wait_for(run, XLU_PUSH, 4);
+    as_first += pop == 1 && rest == 3 + 3 + 1 + 1 + 3 && push == 1;
   }
-  check(first == 1 && as_first == 100, "xlu: 100 tiles pushed by 4 and popped by 2: " + n(as_first) +
-                                           " pops issued 1 cycle after their own push and the next push 3 + 3 + 1 + 1 "
-                                           "+ 3 cycles after them; expected 100");
+  check(first == 1 && as_first == 100, "xlu: 100 tiles pushed by 4 and popped by 2 twice: " + n(as_first) +
+                                           " first pops issued 1 cycle after their own push, the second 3 + 3 + 1 + 1 "
+                                           "+ 3 after it and the next push 1 after that; expected 100");
 }
 
 // Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: pushes and pops of equal size,

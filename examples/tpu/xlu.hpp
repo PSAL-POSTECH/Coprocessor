@@ -86,7 +86,7 @@ class Xlu {
     h.port(entry_), h.port(issue_), h.port(exit_);
     h.pipeline(stages_, entry_), h.pipeline(out_, exit_);
     h.queue(pops_);
-    h.reg(box_), h.reg(popped_), h.reg(pattern_), h.reg(pattern_width_);
+    h.reg(box_), h.reg(left_), h.reg(keep_), h.reg(pattern_), h.reg(pattern_width_);
   }
 
   // Field 19:15: [4:3] shuffle before, [2] exchange, [1:0] shuffle after; [4:3] 3 only loads the after's pattern from
@@ -109,7 +109,7 @@ class Xlu {
       });
     if (!load) {
       const Box &box = box_.get();
-      const bool open = box.elements && !popped_.get();
+      const bool open = box.elements;
       const uint32_t kind = fold ? field + 1 : 0;
       r.require(!open || (box.fold == kind && (!fold || box.fold_bits == bits)), [kind] {
         fail("xlu push: a tile of one kind takes a push of another (fold %u, or another width)", kind);
@@ -129,7 +129,7 @@ class Xlu {
         box.after_entries += r.vl();
         return;
       }
-      if (popped_.get()) stages_.flush(), out_.flush(), popped_.write() = false;
+      if (left_.get() && !keep_.get()) stages_.flush(), out_.flush(), left_.write() = 0;
       if (fold)
         box.fold = field + 1, box.fold_bits = r.insn().sew_bits;
       else
@@ -173,16 +173,19 @@ class Xlu {
     });
   }
   // vl slots of the output queue, slot i to element i of vd in the lanes it holds; one asking more than is left never
-  // ends. The first pop after pushes takes the whole tile at once and makes the result's slots, one an element or
-  // vpu_num_lanes for an exchange, which leave the box together as one entry of that many rows.
+  // ends. A pop with no result slots left takes the pushes since as one tile and makes its result's slots, one an
+  // element or vpu_num_lanes for an exchange, which leave the box together as one entry of that many rows. A push
+  // among the pops of a move's slots starts the next tile behind them; one after a fold's or an exchange's drops them.
   void pop(Route &r) {
-    const bool first = !popped_.get();
+    const bool first = !left_.get();
     const uint64_t in = first ? box_.get().elements : 0;
     const uint64_t out = !in ? 0 : !box_.get().fold && box_.get().operation & EXCHANGE ? lanes_ : in;
     if (in && !box_.get().fold) patterned(r, in, out);
     r.use(issue_).at_issue([&] {
+      const uint64_t left = first ? out : left_.get();
+      left_.write() = left > r.vl() ? left - r.vl() : 0;
       if (!first) return;
-      popped_.write() = true;
+      keep_.write() = !box_.get().fold && !(box_.get().operation & EXCHANGE);
       Box &box = box_.write();
       box.elements = 0;
       if (in) box.before_entries = box.after_entries = 0;
@@ -355,7 +358,8 @@ class Xlu {
   vcix_uarch::Pipeline<Column> out_;
   vcix_uarch::CommandQueue pops_;
   vcix_uarch::Register<Box> box_;
-  vcix_uarch::Register<bool> popped_;
+  vcix_uarch::Register<uint64_t> left_;  // result slots the pops have not taken
+  vcix_uarch::Register<bool> keep_;      // whether a push keeps them: a move's are, a fold's or an exchange's are not
   vcix_uarch::Register<Tile> pattern_;  // the set pattern, kept across pops (values: Spike only)
   vcix_uarch::Register<uint64_t> pattern_width_;  // its width, on both simulators
   uint64_t lanes_ = 128, entries_ = DEFAULT_ENTRIES, width_ = 1;

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The tpu example's values on Spike: each program's output against what the Spike its units came from printed
-# (from-old-spike.sha256), or against a formula. Called by tests/tpu/run.sh.
+# (from-old-spike.sha256), against this model's own where it has gone past that Spike (this-model.sha256), or against a
+# formula. Called by tests/tpu/run.sh.
 # Usage: tests/tpu/functional/run.sh <build-dir> <spike> <pk> [old spike: also run, outputs compared byte by byte]
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -111,7 +112,7 @@ echo "-- as the old Spike did it"
 close special "the seven special functions: every half, 4096 singles a lane, 1024 doubles a lane for vlog and vatan"
 same systolic from-old-spike.sha256 "the systolic array: weights that slide, pops in pieces, every element width, both floats of 8 bits, every value of frm" -- systolic
 same lanes from-old-spike.sha256 "vlane_idx at every element width" -- cross_lane lanes
-same cross from-old-spike.sha256 "the cross-lane unit: each of its 24 operations, with the patterns it reads" -- cross_lane 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
+same cross this-model.sha256 "the cross-lane unit: each of its 24 operations, with the patterns it reads, and a move's tile behind the last one's rest" -- cross_lane 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
 same msa from-old-spike.sha256 "the multi-precision array: singles, halves and both floats of 8 bits to a word, every width, pops at every element width" -- msa
 same dma from-old-spike.sha256 "the DMA: 300 descriptors, an mvin and an mvout each" --base-path -- dma 0 300
 

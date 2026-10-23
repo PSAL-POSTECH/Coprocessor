@@ -21,7 +21,7 @@ static void lane_numbers(unsigned long count) {
   for (unsigned lane = 0; lane < LANES; lane++)
     for (unsigned long i = 0; i < count; i++) *(uint32_t *)spad(lane, LANE_NUMBERS + 4 * i) = random_below(LANES + 2);
 }
-static unsigned long pushed, left;  // elements per lane since the last pop; slots of the result not yet popped
+static unsigned long pushed, left;  // elements per lane of the tile not yet taken; slots of the result not yet popped
 // The shuffle before the crossing reads a pattern when the field's [4:3] is 2: the one set before the push.
 static void push(unsigned width, unsigned operation, unsigned long count) {
   const unsigned bytes = 1u << width;
@@ -36,16 +36,20 @@ static void push(unsigned width, unsigned operation, unsigned long count) {
   if (PUSH[width](spad(0, IN), 0, count, operation, 0) != count) puts("a push did not take every element");
   pushed += count;
 }
-// At most what is left of the result: a slot an element, LANES for an exchange ([2]). The shuffle after reads a
-// pattern when the field's [1:0] is 2: it is loaded, as wide as the tile is by then.
+// At most what is left of the result: a slot an element, LANES for an exchange ([2]), whose rest the pushes after it
+// drop; with nothing left, the pushes since are the next tile. The shuffle after reads a pattern when the field's
+// [1:0] is 2: it is loaded, as wide as that tile is by then.
 static void pop(unsigned width, unsigned operation, unsigned long count) {
-  if (pushed) left = operation & 4 ? LANES : pushed;
-  if (pushed && (operation & 3) == 2) {
-    const unsigned long columns = operation & 4 ? LANES : pushed;
-    lane_numbers(columns);
-    if (k_cross_load(spad(0, LANE_NUMBERS), 0, columns) != columns) puts("a load did not take every element");
+  if (pushed && (operation & 4)) left = 0;
+  if (!left && pushed) {
+    left = operation & 4 ? LANES : pushed;
+    if ((operation & 3) == 2) {
+      const unsigned long columns = operation & 4 ? LANES : pushed;
+      lane_numbers(columns);
+      if (k_cross_load(spad(0, LANE_NUMBERS), 0, columns) != columns) puts("a load did not take every element");
+    }
+    pushed = 0;
   }
-  pushed = 0;
   if (count > left) count = left;
   left -= count;
   for (unsigned lane = 0; lane < LANES; lane++) memset(spad(lane, OUT), 0xA5, 64);
@@ -88,10 +92,11 @@ int main(int argc, char **argv) {
       push(width, operation, 2);
       pop(width, operation, 2);
       pop(width, operation, 8);
-      // A tile replaces what the last pop left.
+      // A move's tile waits behind what the last pop left, the rest first; an exchange's replaces it.
       push(width, operation, 4);
       pop(width, operation, 1);
       push(width, operation, 2);
+      pop(width, operation, 8);
       pop(width, operation, 6);
     }
   }
