@@ -234,8 +234,7 @@ refusal exits with 1:
 
 **`--base-path`** is handed to the model as the key `run_base_path`, with or
 without `--machine-config` (`spike.cc:533-534`). That is why a description may
-not contain that key. The tpu model writes the indices of an indirect transfer
-under it; see [examples/tpu/README.md](../../examples/tpu/README.md).
+not contain that key. The tpu model reads no key of it.
 
 **Without `--machine-config`** the model gets no keys, except `run_base_path`
 when `--base-path` is given.

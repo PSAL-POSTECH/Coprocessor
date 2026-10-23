@@ -238,7 +238,7 @@ vd  = word 0: 0x3f82 3f80          word 1: 0x3f81 7fc0
 
 `show pack` ([show.c](#running-the-examples-on-this-page)) on Spike prints
 `pack of 0x3f808000 0x3f818000 (vs2) and 0x7f800001 0x3f808001 (vs1): words 0x3f823f80 0x3f817fc0`.
-`tests/tpu/functional/run.sh:168-173` checks pack and unpack on every lane
+`tests/tpu/functional/run.sh:134-139` checks pack and unpack on every lane
 against the formula: `pack: 2048 words a lane, 0 wrong`,
 `unpack: 4096 singles a lane, 0 wrong`.
 </details>
@@ -254,16 +254,15 @@ issues.
 - `dma_config_desc` takes the descriptor's address from `x[rs1]`. `mvin`,
   `mvin2`, `mvin3` and `mvout` read the descriptor when they run: `x[rs1]` is
   the memory address, `x[rs2]` the scratchpad address.
-- The descriptor ([dma.hpp:66-88](dma.hpp#L66-L88)): `dim_size[4]` at byte 0,
+- The descriptor ([dma.hpp:59-81](dma.hpp#L59-L81)): `dim_size[4]` at byte 0,
   `dim_low[4]` at 16, `dim_high[4]` at 32 (int32 each); `mm_stride[4]` at 48,
   `spad_stride[4]` at 80 (uint64 each); `element_size` at 112, `vlane_stride`
   at 114, `split_axis` at 116, `flags` at 118 (indirect, masked, accumulate,
   accumulate as float; skip axes in [7:4]); the indirect source at 120 to 134;
   `fill` at 136; `memory_base` at 144 and `memory_bytes` at 152.
-- `dma_index_key` names the indirect transfers after it. An indirect transfer
-  writes the indices it read to `<run_base_path>/indirect_access/indirect_index<n>.raw`,
-  or to `indirect_index_<k>_<n>.raw` after a `dma_index_key` of `k`
-  ([dma.hpp:167-192](dma.hpp#L167-L192)).
+- `dma_index_key` is accepted and does nothing: an indirect transfer writes no
+  file of the indices it read. TOGSim takes those offsets from the runtime
+  attributes the compiler records.
 - A transfer needs `vpu_spad_size_kb_per_lane`. Without it the transfer is
   never accepted, on both simulators ([misc.hpp:53-56](misc.hpp#L53-L56)).
   Spike ends with `tpu: mvin: the machine description has no vpu_spad_size_kb_per_lane`;
@@ -457,7 +456,7 @@ Two mistakes a program can make, and what happens:
 <details><summary>Reproduce</summary>
 
 `tests/tpu/ports.cc:289-320`, run by `tests/tpu/run.sh:38-41`. The Spike message
-is the `pop` case of `tests/tpu/functional/run.sh:187`.
+is the `pop` case of `tests/tpu/functional/run.sh:153`.
 </details>
 
 ### Which weights a row meets
@@ -581,7 +580,7 @@ Refused (Spike's message; gem5 never accepts the instruction):
 <details><summary>Reproduce</summary>
 
 The trace is asserted by `tests/tpu/run.sh:97-104`, the `words` and `msa-pop`
-messages by `tests/tpu/functional/run.sh:195-196`. The shift message is
+messages by `tests/tpu/functional/run.sh:161-162`. The shift message is
 `show msa-shift` ([show.c](#running-the-examples-on-this-page)), exit 1. The
 packing message is the format string at [msa.hpp:55](msa.hpp#L55).
 </details>
@@ -745,7 +744,7 @@ XLU ERROR: the pre stage walks 1 columns but lane 0 carries 0 pattern entries (S
 
 `show xlu` ([show.c](#running-the-examples-on-this-page)) on Spike with
 `tests/tpu/functional/machine.yml`. The exit 201 is asserted by
-`tests/tpu/functional/run.sh:192`. All 24 operations are checked against the
+`tests/tpu/functional/run.sh:158`. All 24 operations are checked against the
 Spike these units came from by `run.sh:123` (`cross_lane.c`).
 </details>
 
@@ -841,7 +840,6 @@ exit 1    tpu: xlu push_reduce: fold 1 of 16-bit elements; every fold takes f32,
 exit 1    tpu: msa pop: 8 elements asked, 3 computed
 exit 1    tpu: msa push: its elements are words of 32 bits, not of 16
 exit 200  MVIN ERROR: Scratchpad address overflow: 0xd0080000
-exit 1    tpu: mvin: an indirect transfer writes its indices under --base-path, and none was given
 ```
 
 Five more come from runs of [show.c](#running-the-examples-on-this-page) and
@@ -855,11 +853,11 @@ bits ([sfu.hpp:44](sfu.hpp#L44), [57](sfu.hpp#L57)); an `xlu_push_reduce`
 fold above 4 ([xlu.hpp:102](xlu.hpp#L102)); a descriptor that splits axis 4 or
 more, has an element size or a lane stride of 0, has a dimension of 0, or
 reaches past its tensor; an index of other than 1, 2, 4 or 8 bytes
-([dma.hpp:90-93](dma.hpp#L90-L93), [162](dma.hpp#L162), [300](dma.hpp#L300)).
+([dma.hpp:83-86](dma.hpp#L83-L86), [156](dma.hpp#L156), [255](dma.hpp#L255)).
 
 <details><summary>Reproduce</summary>
 
-`tests/tpu/functional/run.sh:178-198`. The messages land in
+`tests/tpu/functional/run.sh:144-163`. The messages land in
 `build/tpu-functional/refused-<case>.err`.
 </details>
 
@@ -880,9 +878,6 @@ Misc and the DMA
 - `vpu_spad_size_kb_per_lane` (none): one lane's scratchpad. A transfer
   without it is never accepted.
 - `vpu_spad_base_vaddr` (`0xD0000000`): where the scratchpad starts, written `0x...`.
-- `run_base_path` (none): not a key of the file but Spike's `--base-path`
-  ([Spike adapter](../../adapters/spike/README.md)). An indirect transfer
-  without it ends the run.
 
 Systolic and Msa
 - `vpu_num_lanes` (128): the width and height of both arrays (stages
@@ -912,7 +907,7 @@ All
 Each unit reads its keys in `configure`: [sfu.hpp:27](sfu.hpp#L27),
 [misc.hpp:27](misc.hpp#L27), [systolic.hpp:49](systolic.hpp#L49),
 [msa.hpp:29](msa.hpp#L29), [xlu.hpp:59](xlu.hpp#L59),
-[dma.hpp:26](dma.hpp#L26), [machine.hpp:23](machine.hpp#L23).
+[dma.hpp:23](dma.hpp#L23), [machine.hpp:23](machine.hpp#L23).
 
 ## Reading tpu_trace
 
@@ -954,8 +949,8 @@ Where the model differs from that Spike:
 
 - Byte for byte against what that Spike printed (`from-old-spike.sha256`): the
   systolic array, `vlane_idx`, the 24 cross-lane operations, the
-  multi-precision array, and 300 DMA descriptors with their indices. The
-  `dma_index_key` dumps against those indices.
+  multi-precision array, and 300 DMA descriptors. The same descriptors under
+  `dma_index_key` and a `--base-path` move the same data and write no file.
 - Within 4 ulps of what it printed (`special.from-old-spike.xz`): the seven
   special functions on every half, 4096 singles a lane, and 1024 doubles a lane
   for `vlog` and `vatan`.
