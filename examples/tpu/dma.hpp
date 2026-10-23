@@ -6,10 +6,7 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <map>
 #include <new>
-#include <string>
-#include <utility>
 #include <vector>
 
 #include "vcix_accel.hpp"
@@ -26,7 +23,6 @@ class Dma {
   void configure(const vcix_accel::Config &config) {
     if (config.get(SPAD_LANE_KEY)) spad_lane_bytes_ = config.uint(SPAD_LANE_KEY, 0) * 1024;
     spad_base_ = config.hex(SPAD_BASE_KEY, 0xD0000000);
-    if (const char *path = config.get(BASE_PATH_KEY)) base_path_ = path;
   }
   static constexpr const char *SPAD_LANE_KEY = "vpu_spad_size_kb_per_lane";
   bool scratchpad() const { return spad_lane_bytes_ != 0; }
@@ -35,11 +31,8 @@ class Dma {
   static constexpr uint64_t SKIP = ~uint64_t{0};
 
   void dma_config_desc(const Host &host, const Insn &insn) { dma_descriptor_ = host.xreg(vcix_accel::rs1(insn)); }
-  // x[rs1] names what the indirect transfers after it belong to, for the tools that replay them: see dma_indices.
-  void dma_index_key(const Host &host, const Insn &insn) {
-    dma_keyed_ = true;
-    dma_key_ = host.xreg(vcix_accel::rs1(insn));
-  }
+  // x[rs1] once named the indirect transfers' index dumps; nothing reads it now, and programs that issue it still run.
+  void dma_index_key(const Host &, const Insn &) {}
 
   struct Transfer {
     uint64_t memory, scratchpad;
@@ -141,9 +134,9 @@ class Dma {
     return t;
   }
 
-  // The address the index of an indirect transfer adds to, and the index it read.
+  // The address the index of an indirect transfer adds to.
   uint64_t dma_indirect(const Host &host, const Transfer &t, const char *name, uint64_t outer, uint64_t lane,
-                        const uint64_t at[4], uint64_t spad_index, uint64_t *index) const {
+                        const uint64_t at[4], uint64_t spad_index) const {
     uint64_t address;
     if (t.indirect_dim) {
       const int axis = t.indirect_dim - 1;
@@ -154,41 +147,15 @@ class Dma {
     } else {
       address = t.indirect_address + spad_index * t.indirect_element_size + lane * spad_lane_bytes_;
     }
+    uint64_t index = 0;
     switch (t.indirect_element_size) {
-      case 1: *index = static_cast<uint64_t>(static_cast<int64_t>(load<int8_t>(host, address))); break;
-      case 2: *index = static_cast<uint64_t>(static_cast<int64_t>(load<int16_t>(host, address))); break;
-      case 4: *index = static_cast<uint64_t>(static_cast<int64_t>(load<int32_t>(host, address))); break;
-      case 8: *index = load<uint64_t>(host, address); break;
+      case 1: index = static_cast<uint64_t>(static_cast<int64_t>(load<int8_t>(host, address))); break;
+      case 2: index = static_cast<uint64_t>(static_cast<int64_t>(load<int16_t>(host, address))); break;
+      case 4: index = static_cast<uint64_t>(static_cast<int64_t>(load<int32_t>(host, address))); break;
+      case 8: index = load<uint64_t>(host, address); break;
       default: fail("%s: an index of %llu bytes is not supported", name, static_cast<unsigned long long>(t.indirect_element_size));
     }
-    return *index * t.indirect_stride * t.element_size;
-  }
-
-  // An indirect transfer's indices under <--base-path>/indirect_access: before any dma_index_key indirect_index<n>.raw,
-  // each index as the old Spike wrote it (a position it lacks reads as 0); after one with key k
-  // indirect_index_<k>_<n>.raw, one uint64 per position of the tensor, index x indirect_stride, 0 where none was read.
-  void dma_indices(const char *name, const Transfer &t, std::map<uint64_t, uint64_t> &indices) {
-    if (base_path_.empty()) fail("%s: an indirect transfer writes its indices under --base-path, and none was given", name);
-    const std::string path =
-        base_path_ + "/indirect_access/indirect_index" +
-        (dma_keyed_ ? "_" + std::to_string(dma_key_) + "_" + std::to_string(dma_key_count_[dma_key_]++)
-                    : std::to_string(dma_indirect_count_++)) +
-        ".raw";
-    FILE *file = std::fopen(path.c_str(), "wb");
-    if (!file) {
-      std::fprintf(stderr, "Failed to open file for writing: %s\n", path.c_str());
-      return;
-    }
-    if (dma_keyed_) {
-      const uint64_t elements = t.dim_size[0] * t.dim_size[1] * t.dim_size[2] * t.dim_size[3];
-      std::vector<uint64_t> added(elements, 0);
-      for (const std::pair<const uint64_t, uint64_t> &at : indices)
-        if (at.first < elements) added[at.first] = at.second * t.indirect_stride;
-      std::fwrite(added.data(), sizeof(uint64_t), added.size(), file);
-    } else {
-      for (size_t i = 0; i < indices.size(); ++i) std::fwrite(&indices[i], sizeof(uint64_t), 1, file);
-    }
-    std::fclose(file);
+    return index * t.indirect_stride * t.element_size;
   }
 
   template <class T>
@@ -197,7 +164,6 @@ class Dma {
   }
   void mvin(const Host &host, const Insn &insn) {
     const Transfer t = dma_transfer(host, insn, "mvin", true);
-    std::map<uint64_t, uint64_t> indices;
     for (uint64_t outer = 0; outer < t.outer_loops; outer++)
       for (uint64_t lane = 0; lane < t.lanes; lane++)
         for (uint64_t n = 0; n < t.block_dim[0]; n++)
@@ -218,11 +184,7 @@ class Dma {
                   std::fprintf(stderr, "MVIN ERROR: Scratchpad address overflow: 0x%llx\n", static_cast<unsigned long long>(to));
                   std::exit(INVALID_SPAD_ACCESS);
                 }
-                if (t.indirect && used) {
-                  uint64_t index;
-                  from += dma_indirect(host, t, "mvin", outer, lane, at, spad_index, &index);
-                  indices[position] = index;
-                }
+                if (t.indirect && used) from += dma_indirect(host, t, "mvin", outer, lane, at, spad_index);
                 if (t.memory_bytes && (from < t.memory_base || from + t.element_size > t.memory_base + t.memory_bytes))
                   used = false;
                 switch (t.element_size) {
@@ -233,12 +195,10 @@ class Dma {
                   default: break;
                 }
               }
-    if (t.indirect) dma_indices("mvin", t, indices);
   }
 
   void mvout(const Host &host, const Insn &insn) {
     const Transfer t = dma_transfer(host, insn, "mvout", false);
-    std::map<uint64_t, uint64_t> indices;
     for (uint64_t outer = 0; outer < t.outer_loops; outer++)
       for (uint64_t lane = 0; lane < t.used_lanes; lane++)
         for (uint64_t n = 0; n < t.block_dim[0]; n++)
@@ -257,11 +217,7 @@ class Dma {
                   std::fprintf(stderr, "MVOUT ERROR: Scratchpad address overflow: 0x%llx\n", static_cast<unsigned long long>(from));
                   std::exit(INVALID_SPAD_ACCESS);
                 }
-                if (t.indirect) {
-                  uint64_t index;
-                  to += dma_indirect(host, t, "mvout", outer, lane, at, spad_index, &index);
-                  indices[position] = index;
-                }
+                if (t.indirect) to += dma_indirect(host, t, "mvout", outer, lane, at, spad_index);
                 if (t.memory_bytes && (to < t.memory_base || to + t.element_size > t.memory_base + t.memory_bytes))
                   continue;
                 if (t.element_size == 1) {
@@ -287,7 +243,6 @@ class Dma {
                     store<uint64_t>(host, to, (t.accumulate ? load<uint64_t>(host, to) : 0) + load<uint64_t>(host, from));
                 }
               }
-    if (t.indirect) dma_indices("mvout", t, indices);
   }
   // What memory holds at `to` plus what the scratchpad holds at `from`, read in that order; a NaN is from's first.
   template <class F>
@@ -304,17 +259,11 @@ class Dma {
 
  private:
   static constexpr const char *SPAD_BASE_KEY = "vpu_spad_base_vaddr";
-  static constexpr const char *BASE_PATH_KEY = "run_base_path";
 
   uint64_t spad_lane_bytes_ = 0;
   uint64_t spad_base_ = 0xD0000000;
-  std::string base_path_;
 
   uint64_t dma_descriptor_ = 0;
-  uint64_t dma_indirect_count_ = 0;
-  bool dma_keyed_ = false;
-  uint64_t dma_key_ = 0;
-  std::map<uint64_t, uint64_t> dma_key_count_;
 };
 
 }  // namespace tpu

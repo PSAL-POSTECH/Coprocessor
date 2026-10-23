@@ -135,7 +135,7 @@ static void one(unsigned number) {
   emit(memory, sizeof memory);
 }
 
-// With `keyed`, each case first names itself with dma_index_key, so its indices go under its own number.
+// With `keyed`, each case first names itself with dma_index_key, which changes nothing it moves.
 int main(int argc, char **argv) {
   if (argc != 3 && !(argc == 4 && strcmp(argv[3], "keyed") == 0)) {
     puts("usage: dma <first case> <cases> [keyed]");

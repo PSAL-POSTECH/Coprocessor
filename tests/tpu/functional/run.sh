@@ -43,29 +43,20 @@ on_old() {
     --scratchpad-base-vaddr=$((0xD0000000)) --kernel-addr=$KERNEL_RANGE "${options[@]}" "$PK" "$OUT/$1" "${@:2}" \
     < /dev/null > "$OUT/$name.old.out" 2> "$OUT/$name.old.err"
 }
-# The files an indirect transfer wrote under <dir>, in the order they were written, as one.
-indices() {
-  local n=0
-  : > "$2"
-  while [ -e "$1/indirect_access/indirect_index$n.raw" ]; do cat "$1/indirect_access/indirect_index$n.raw" >> "$2"; n=$((n + 1)); done
-}
-
-# same <name> <expected.sha256> <what> [--base-path] -- <program> [arguments]
+# same <name> <expected.sha256> <what> [--base-path] -- <program> [arguments]; --base-path: the old Spike's, which
+# writes the indices of an indirect transfer under it
 same() {
   local name=$1 expected=$2 what=$3 base=() rc; shift 3
-  if [ "$1" = --base-path ]; then mkdir -p "$OUT/$name.base/indirect_access"; base=("--base-path=$OUT/$name.base"); shift; fi
+  if [ "$1" = --base-path ]; then base=(--base-path); shift; fi
   shift
-  on_model "$name" "${base[@]}" -- "$@"; rc=$?
-  [ ${#base[@]} = 0 ] || indices "$OUT/$name.base" "$OUT/$name.indices"
+  on_model "$name" -- "$@"; rc=$?
   local sums; sums=$(cd "$OUT" && grep -F "  $name." "$HERE/$expected" | sha256sum --check --quiet 2>&1)
   if [ "$rc" = 0 ] && [ -z "$sums" ] && grep -Fq "  $name.out" "$HERE/$expected"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
   echo "  $what (exit $rc, $(wc -c < "$OUT/$name.out") bytes${sums:+, $sums})"
   [ -n "$OLD" ] && [ "$expected" = from-old-spike.sha256 ] || return 0
   if [ ${#base[@]} != 0 ]; then mkdir -p "$OUT/$name.old.base/indirect_access"; base=("--base-path=$OUT/$name.old.base"); fi
   on_old "$name" "${base[@]}" -- "$@"; rc=$?
-  [ ${#base[@]} = 0 ] || indices "$OUT/$name.old.base" "$OUT/$name.old.indices"
-  if [ "$rc" = 0 ] && cmp -s "$OUT/$name.out" "$OUT/$name.old.out" &&
-     { [ ${#base[@]} = 0 ] || cmp -s "$OUT/$name.indices" "$OUT/$name.old.indices"; }; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+  if [ "$rc" = 0 ] && cmp -s "$OUT/$name.out" "$OUT/$name.old.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
   echo "  the old Spike prints the same (exit $rc)"
 }
 
@@ -122,41 +113,16 @@ same systolic from-old-spike.sha256 "the systolic array: weights that slide, pop
 same lanes from-old-spike.sha256 "vlane_idx at every element width" -- cross_lane lanes
 same cross from-old-spike.sha256 "the cross-lane unit: each of its 24 operations, with the patterns it reads" -- cross_lane 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
 same msa from-old-spike.sha256 "the multi-precision array: singles, halves and both floats of 8 bits to a word, every width, pops at every element width" -- msa
-same dma from-old-spike.sha256 "the DMA: 300 descriptors, an mvin and an mvout each, and the indices of the indirect ones" --base-path -- dma 0 300
+same dma from-old-spike.sha256 "the DMA: 300 descriptors, an mvin and an mvout each" --base-path -- dma 0 300
 
-# The same cases, each named by dma_index_key: the data moves as before, and every indirect transfer writes
-# indirect_index_<case>_<n>.raw, n from 0 within the case, none of them the unkeyed name, each a uint64 per
-# position of the tensor, and per position the old index times the descriptor's indirect_stride.
+# The same cases, each named by dma_index_key first, under a --base-path: the key moves nothing, and the model
+# writes nothing there (the indices of an indirect transfer reach TOGSim as the compiler's runtime attributes).
 keyed() {
   local base="$OUT/dma-keyed.base" rc; rm -rf "$base" && mkdir -p "$base/indirect_access"
   on_model dma-keyed "--base-path=$base" -- dma 0 300 keyed; rc=$?
-  local why
-  why=$(python3 - "$base/indirect_access" "$OUT/dma.base/indirect_access" "$OUT/dma.out" "$OUT/dma-keyed.out" <<'EOF'
-import os, struct, sys
-keyed, plain, out, keyed_out = sys.argv[1:]
-if open(out, "rb").read() != open(keyed_out, "rb").read():
-    sys.exit("the key changed what the transfers did")
-names = sorted(os.listdir(keyed))
-if not names or any(not n.startswith("indirect_index_") for n in names):
-    sys.exit(f"{len(names)} file(s), some not keyed: {names[:3]}")
-plain_n = len(os.listdir(plain))
-if len(names) != plain_n:
-    sys.exit(f"{len(names)} keyed dumps for {plain_n} indirect transfers")
-order = sorted(names, key=lambda n: tuple(int(f) for f in n[len("indirect_index_"):-4].split("_")))
-for i, name in enumerate(order):
-    def words(path):
-        b = open(path, "rb").read()
-        return struct.unpack(f"<{len(b) // 8}q", b)
-    got, was = words(os.path.join(keyed, name)), words(os.path.join(plain, f"indirect_index{i}.raw"))
-    if len(got) < len(was):
-        sys.exit(f"{name}: {len(got)} positions, the plain dump {len(was)}")
-    ratios = {g // w for g, w in zip(got, was) if w}
-    if len(ratios) > 1 or not ratios <= {1, 2, 3} or any(g and not w for g, w in zip(got, was)):
-        sys.exit(f"{name}: not index x one stride of 1..3 per position: {sorted(ratios)[:4]}")
-EOF
-)
-  if [ "$rc" = 0 ] && [ -z "$why" ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-  echo "  the DMA under dma_index_key: one keyed dump per indirect transfer, the data unchanged (exit $rc)${why:+: $why}"
+  local written; written=$(find "$base" -type f | wc -l)
+  if [ "$rc" = 0 ] && [ "$written" = 0 ] && cmp -s "$OUT/dma.out" "$OUT/dma-keyed.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+  echo "  the DMA under dma_index_key and a --base-path: the data unchanged, $written file(s) written (exit $rc)"
 }
 keyed
 
@@ -195,6 +161,5 @@ refused bf16-sum 1 "tpu: xlu push_reduce: fold 1 of 16-bit elements; every fold 
 refused msa-pop 1 "tpu: msa pop: 8 elements asked, 3 computed"
 refused words 1 "tpu: msa push: its elements are words of 32 bits, not of 16"
 refused overflow 200 "MVIN ERROR: Scratchpad address overflow: 0xd0080000"
-refused indices 1 "tpu: mvin: an indirect transfer writes its indices under --base-path, and none was given"
 
 exit $failed
