@@ -278,7 +278,7 @@ no physical address. With 4 lanes of 128 KB (`examples/print_args/machine.yml`):
 
 `--kernel-addr=<start>:<end>` (two hex numbers) marks a range of code. While
 `pc` is in it, every vector arithmetic, load and store instruction runs once
-per lane (`riscv/execute.cc:177-207`; the `n_vu` loops of `riscv/decode.h`). A vector load or store there
+per lane (`riscv/execute.cc:175`; the `n_vu` loops of `riscv/decode.h`). A vector load or store there
 goes to `address + lane x size per lane`, so each lane works on its own slice
 of the scratchpad. Outside the range, only lane 0 runs.
 
@@ -326,16 +326,12 @@ int main(void) {
 }
 ```
 
-`kernel.S`. It starts by moving `sp`: when the first instruction of the range
-is an `addi` (or a compressed `c.addi16sp`), Spike takes the kernel's stack
-from it, and asserts that its immediate is negative
-(`riscv/execute.cc:180-187`).
+`kernel.S`:
 
 ```
     .section .kernel, "ax"
     .globl kernel
 kernel:
-    addi    sp, sp, -16
     li      t0, 8
     vsetvli t0, t0, e32, m1, ta, ma
     li      t1, 0xD0000000
@@ -343,7 +339,6 @@ kernel:
     vadd.vv v1, v1, v1
     addi    t1, t1, 64
     vse32.v v1, (t1)
-    addi    sp, sp, 16
     ret
 ```
 

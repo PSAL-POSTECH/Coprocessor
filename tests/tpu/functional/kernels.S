@@ -1,6 +1,5 @@
 # The vector code of this directory's programs, at run.sh's KERNEL_BASE, where Spike runs a vector instruction in every
-# lane. No instruction has 2 in rd and the first is not an addi (Spike reads both as the kernel moving its stack). Every
-# function: a0 = source in lane 0's scratchpad, a1 = destination, a2 = elements asked; returns those done.
+# lane. Every function: a0 = source in lane 0's scratchpad, a1 = destination, a2 = elements asked; returns those done.
     .option norvc
     .section .kernel, "ax"
 
