@@ -101,7 +101,7 @@ k_compute:
     ret
 
 # The cross-lane unit. A group holds 64 elements at every width, so a pattern of 64 words fits its own group.
-# a3 = the operation, 0 to 23: the field of the push. a4 = the pattern of a push that carries one, a word per element.
+# a3 = the operation, 0 to 23: the field of the push.
 .macro cross_operations form, operand
 1:
   .irp operation, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
@@ -127,21 +127,6 @@ k_compute:
     mv      a0, t0
     ret
 .endm
-.macro cross_push_pattern name, sew, lmul
-    .globl \name
-\name:
-    vsetvli t0, a2, e32, m8, ta, ma
-    vle32.v v24, (a4)
-    vsetvli t0, a2, e\sew, \lmul, ta, ma
-    vle\sew\().v v8, (a0)
-    la      t1, 1f
-    slli    t3, a3, 3
-    add     t1, t1, t3
-    jr      t1
-    cross_operations sf.vc.ivv, v24
-    mv      a0, t0
-    ret
-.endm
 .macro cross_pop name, sew, lmul
     .globl \name
 \name:
@@ -158,9 +143,15 @@ k_compute:
     cross_push k_cross_push_8, 8, m2
     cross_push k_cross_push_16, 16, m4
     cross_push k_cross_push_32, 32, m8
-    cross_push_pattern k_cross_pattern_8, 8, m2
-    cross_push_pattern k_cross_pattern_16, 16, m4
-    cross_push_pattern k_cross_pattern_32, 32, m8
+# The pattern of the shuffle before the crossing (xlu_set_pattern, sf.vc.ivv 3): a lane number a word, from rs2, which
+# every tile after takes until the next.
+    .globl k_cross_set_pattern
+k_cross_set_pattern:
+    vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a0)
+    sf.vc.ivv 0x3, v8, v8, 0
+    mv      a0, t0
+    ret
 # The pattern of the shuffle after the crossing: a push whose field says 24, of words whatever the tile's width.
     .globl k_cross_load
 k_cross_load:

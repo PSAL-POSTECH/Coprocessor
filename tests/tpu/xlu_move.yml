@@ -1,0 +1,5 @@
+# xlu.yml with a move's stages 6 cycles deep, a fold's and an exchange's still 3.
+tpu_trace: 1
+tpu_xlu_latency_cycles: 3
+tpu_xlu_queue_entries: 8
+tpu_xlu_move_latency_cycles: 6

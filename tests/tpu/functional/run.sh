@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The tpu example's values on Spike: each program's output against what the Spike its units came from printed
-# (from-old-spike.sha256), or against a formula. Called by tests/tpu/run.sh.
+# (from-old-spike.sha256), against this model's own where it has gone past that Spike (this-model.sha256), or against a
+# formula. Called by tests/tpu/run.sh.
 # Usage: tests/tpu/functional/run.sh <build-dir> <spike> <pk> [old spike: also run, outputs compared byte by byte]
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -23,7 +24,7 @@ KERNEL_BASE=0x2000000
 KERNEL_RANGE=2000000:2100000
 
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c "$HERE/kernels.S" -o "$OUT/kernels.o" || { echo "FAIL  kernels.S does not build"; exit 2; }
-for program in special systolic cross_lane msa dma refused pack unpack eup xlu_fold; do
+for program in special systolic cross_lane msa dma refused pack unpack eup xlu_fold xlu_pattern; do
   riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -Wl,--section-start=.kernel=$KERNEL_BASE \
     "$HERE/$program.c" "$OUT/kernels.o" -o "$OUT/$program" || { echo "FAIL  $program.c does not build"; exit 2; }
 done
@@ -111,7 +112,7 @@ echo "-- as the old Spike did it"
 close special "the seven special functions: every half, 4096 singles a lane, 1024 doubles a lane for vlog and vatan"
 same systolic from-old-spike.sha256 "the systolic array: weights that slide, pops in pieces, every element width, both floats of 8 bits, every value of frm" -- systolic
 same lanes from-old-spike.sha256 "vlane_idx at every element width" -- cross_lane lanes
-same cross from-old-spike.sha256 "the cross-lane unit: each of its 24 operations, with the patterns it reads" -- cross_lane 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
+same cross this-model.sha256 "the cross-lane unit: each of its 24 operations, with the patterns it reads, and a move's tile behind the last one's rest" -- cross_lane 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
 same msa from-old-spike.sha256 "the multi-precision array: singles, halves and both floats of 8 bits to a word, every width, pops at every element width" -- msa
 same dma from-old-spike.sha256 "the DMA: 300 descriptors, an mvin and an mvout each" --base-path -- dma 0 300
 
@@ -140,6 +141,9 @@ echo "  the bf16 unpack (sf.vc.v.iv 8, 9): $(tail -n1 "$OUT/unpack.out") (exit $
 on_model xlu_fold -- xlu_fold; rc=$?
 if [ "$rc" = 0 ] && grep -Fxq "xlu_fold: all pass" "$OUT/xlu_fold.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
 echo "  the cross-lane fold (sf.vc.ivv 2, max, sum, min, argmax, argmin; bf16 max, min): $(tail -n1 "$OUT/xlu_fold.out") (exit $rc)"
+on_model xlu_pattern -- xlu_pattern; rc=$?
+if [ "$rc" = 0 ] && grep -Fxq "xlu_pattern: all pass" "$OUT/xlu_pattern.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  the cross-lane set pattern (sf.vc.ivv 3): kept across pops, taken by each push as it issues: $(tail -n1 "$OUT/xlu_pattern.out") (exit $rc)"
 
 # refused <which> <exit> <text>: the run ends there, with this on standard error.
 refused() {

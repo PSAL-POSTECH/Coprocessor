@@ -1,4 +1,4 @@
-# A push of two and its pop; eight pushes of two back to back and no pop; then a pattern push and two pops.
+# A push of two and its pop; eight pushes of two back to back and no pop; then one more push and two pops.
     .option norvc
     .text
     .globl main
@@ -18,7 +18,7 @@ main:
     nop
     .endr
     .balign 64
-    sf.vc.ivv   0x3, v2, v1, 8
+    sf.vc.iv    0x3, 0, v1, 8
     sf.vc.v.i   0x1, 0, v5, 4
     sf.vc.v.i   0x1, 0, v5, 4
     li      a0, 0
