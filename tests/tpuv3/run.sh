@@ -104,6 +104,22 @@ why=$(grep -Fc "tpuv6e: machine description: tpu_mxu_bound_to_lanes: '2' is not 
   "$BUILD/tpuv3-bound-2.gem5.log")
 report "exit ${rc[bound-2]}, reason given $why" "exit 1, reason given 1" "gem5 stops on tpu_mxu_bound_to_lanes: 2"
 
+echo "-- tpu_mxu_registers, tpu_mxu_issue_slots, tpu_mxu_word_a_cycle: a machine's shape over the model's own"
+{ cat "$HERE/mxu.yml"; printf 'tpu_mxu_registers: 1\ntpu_mxu_issue_slots: 1\ntpu_mxu_word_a_cycle: 0\n'; } > "$BUILD/tpuv3-shape.yml"
+on_gem5 tpuv6e-shape-mxu mxu "$BUILD/tpuv3-shape.yml" "$BUILD/libtpuv6e.so"
+on_gem5 tpuv6e-shape-rate mxu_rate "$BUILD/tpuv3-shape.yml" "$BUILD/libtpuv6e.so"
+same=$(cmp -s <(grep '^\[tpu\]' "$BUILD/tpuv3-mxu.gem5.log") <(grep '^\[tpu\]' "$BUILD/tpuv3-tpuv6e-shape-mxu.gem5.log") &&
+  cmp -s <(grep '^\[tpu\]' "$BUILD/tpuv3-mxu_rate.gem5.log") <(grep '^\[tpu\]' "$BUILD/tpuv3-tpuv6e-shape-rate.gem5.log") && echo same || echo different)
+report "exit ${rc[tpuv6e-shape-mxu]} and ${rc[tpuv6e-shape-rate]}, traces $same" "exit 0 and 0, traces same" \
+  "libtpuv6e.so with the v3's shape as keys (registers 1, issue slots 1, a row a cycle): mxu.S and mxu_rate.S as libtpuv3.so runs them"
+for bad in 'tpu_mxu_registers: 3' 'tpu_mxu_word_a_cycle: 2' 'tpu_mxu_issue_slots: 0' $'tpu_mxu_bound_to_lanes: 1\ntpu_mxu_registers: 2'; do
+  printf '%s\n' "$bad" > "$BUILD/tpuv3-shape-bad.yml"
+  on_gem5 shape-bad mxu "$BUILD/tpuv3-shape-bad.yml" "$BUILD/libtpuv6e.so"
+  key=$(printf '%s' "$bad" | tail -1 | cut -d: -f1)
+  why=$(grep -Fc "tpuv6e: machine description: $key:" "$BUILD/tpuv3-shape-bad.gem5.log")
+  report "exit ${rc[shape-bad]}, reason given $why" "exit 1, reason given 1" "gem5 stops on $(printf '%s' "$bad" | tr '\n' ' ')"
+done
+
 echo "-- the machine PyTorchSim measures on (examples/tpuv3/gem5)"
 
 # on_machine <program> [machine.yml]: runs it on the v3 machine

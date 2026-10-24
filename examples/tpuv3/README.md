@@ -80,6 +80,12 @@ class Tpuv3 final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<
 - `WORD_A_CYCLE`: whether a 32-bit word that holds two 16-bit rows enters the
   array in one cycle (v6e), or one row enters a cycle (v3).
 
+Each is a default: a machine description that states `tpu_mxu_registers`,
+`tpu_mxu_issue_slots` or `tpu_mxu_word_a_cycle` sets it instead, so one machine
+file holds the shape the compiler and the model both read. `libtpuv6e.so` with
+`1`, `1` and `0` runs `mxu.S` and `mxu_rate.S` as `libtpuv3.so` does
+(`tests/tpuv3/run.sh`, asserted, with the values each key refuses).
+
 The units, as `tests/tpuv3/ports.cc` reads them through the C table with no
 simulator:
 
@@ -120,8 +126,8 @@ draw.
 ```
 
 The delay line's default length is `2 x REGISTERS x lanes - 1`
-(`examples/tpu/mxu.hpp:56`). A trace line shows the line's queues: one output
-queue on the v3, two on the v6e (`mxu.hpp:171-176`):
+(`examples/tpu/mxu.hpp:68`). A trace line shows the line's queues: one output
+queue on the v3, two on the v6e (`mxu.hpp:183-188`):
 
 ```
 [tpu] issue vpop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4          <- tpuv3
@@ -135,7 +141,7 @@ asserts.
 ## One register an operand
 
 An operand is one register, so there is no upper half anywhere. The field at
-19:15 of an MXU instruction (`mxu.hpp:35-38`) has three forms the v3 never
+19:15 of an MXU instruction (`mxu.hpp:36-39`) has three forms the v3 never
 carries out:
 
 ```
@@ -237,10 +243,10 @@ stays the v6e's: two slots, a word a cycle (below).
 A `vmatmul` operand is `vl` words of 32 bits. A word holds one single, or two
 16-bit rows ([tpuv6e: words and rows](../tpuv6e/README.md#words-and-rows)).
 
-`vmatmul` sends the rows into the array's line (`mxu.hpp:125-133`):
+`vmatmul` sends the rows into the array's line (`mxu.hpp:137-145`):
 
 ```cpp
-const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = Shape::WORD_A_CYCLE ? in_word : 1;
+const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
 ...
 r.send(array->line, uint64_t{r.vl()} * in_word / weight, weight, ...);
 ```
@@ -252,12 +258,12 @@ So for `vl` = 4 words of bfloat16 (8 rows):
   v6e (WORD_A_CYCLE true):   4 entries of 2 rows     input port: 2 rows a cycle
 ```
 
-The input port's width is `PER_CYCLE` rows: 1 on the v3, 2 on the v6e
-(`mxu.hpp:59`, `:278`). gem5 reports it as the unit's `capacity`.
+The input port's width is `per_cycle_` rows: 1 on the v3, 2 on the v6e, or as a
+machine's `tpu_mxu_word_a_cycle` says (`mxu.hpp:66`, `:71`). gem5 reports it as the unit's `capacity`.
 
 The v3 still needs a queue of at least 2 rows. A `vmatmul` with `vl` = 1 of
 bfloat16 sends two rows, and both must fit the input queue when it issues. A queue of 1 is refused when the model is made
-(`mxu.hpp:47-48`; `tests/tpuv3/run.sh`, asserted):
+(`mxu.hpp:48-49`; `tests/tpuv3/run.sh`, asserted):
 
 ```
 src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libtpuv3.so: tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
@@ -414,7 +420,7 @@ grep -E 'TPUV3_MXU\.(admitted|occupancy)' m5out-delay-3/stats.txt
 
 ### Not modelled
 
-- An array larger than the lanes: `REGISTERS` is 1 or 2 (`mxu.hpp:18`), and
+- An array larger than the lanes: `REGISTERS` is 1 or 2 (`mxu.hpp:19`), and
   the field at 19:15 cannot name more of an operand's registers.
 - The v3 TensorCore's second MXU. The model has one array (`tpu_mxu_units`
   1); TOGSim's array split models the second (`tpuv3.cc:1-2`). Whether the

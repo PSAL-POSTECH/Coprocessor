@@ -1,5 +1,6 @@
-// A TPU model's matrix unit: `tpu_mxu_units` arrays of Shape::REGISTERS x lanes each way (lanes x lanes under
-// tpu_mxu_bound_to_lanes: 1), an operand that many registers. Shape also sets the issue slots and the rows a cycle.
+// A TPU model's matrix unit: `tpu_mxu_units` arrays of tpu_mxu_registers x lanes each way (lanes x lanes under
+// tpu_mxu_bound_to_lanes: 1), an operand that many registers; tpu_mxu_issue_slots and tpu_mxu_word_a_cycle set its
+// issue slots and its rows a cycle. A key the machine leaves out is the model's Shape.
 #ifndef TPU_MXU_HPP
 #define TPU_MXU_HPP
 
@@ -27,7 +28,7 @@ class Mxu {
  public:
   // `name` is the unit as its statistics report it; the model that holds the unit says it.
   explicit Mxu(const char *name)
-      : entry_{name, "input", "rows", PER_CYCLE, vcix_uarch::PRIMARY},
+      : entry_{name, "input", "rows", Shape::WORD_A_CYCLE ? 2 : 1, vcix_uarch::PRIMARY},
         issue_{name, "issue", "instructions", Shape::SLOTS},
         pop_{name, "pop", "rows", 256},
         arrays_(1, Array(name)) {}
@@ -52,11 +53,22 @@ class Mxu {
     const uint64_t bound = config.uint(BOUND_KEY, 0);
     if (bound > 1)
       throw vcix_accel::ConfigError(BOUND_KEY, config.get(BOUND_KEY), "is not 0 (the model's array) or 1 (an array of lanes x lanes)");
-    registers_ = bound ? 1 : Shape::REGISTERS;
+    const uint64_t registers = config.uint(REGISTERS_KEY, bound ? 1 : Shape::REGISTERS);
+    if (registers < 1 || registers > 2)
+      throw vcix_accel::ConfigError(REGISTERS_KEY, config.get(REGISTERS_KEY), "is not 1 or 2: an operand is one register, or an upper and a lower half");
+    if (bound && registers != 1)
+      throw vcix_accel::ConfigError(REGISTERS_KEY, config.get(REGISTERS_KEY), "is not 1, and tpu_mxu_bound_to_lanes: 1 makes the array lanes x lanes");
+    const uint64_t slots = config.uint(SLOTS_KEY, Shape::SLOTS), word = config.uint(WORD_KEY, Shape::WORD_A_CYCLE);
+    if (slots < 1 || slots > UINT32_MAX)
+      throw vcix_accel::ConfigError(SLOTS_KEY, config.get(SLOTS_KEY), "is not a number of instructions a cycle");
+    if (word > 1)
+      throw vcix_accel::ConfigError(WORD_KEY, config.get(WORD_KEY), "is not 0 (a row a cycle) or 1 (a word of two rows a cycle)");
+    registers_ = static_cast<uint32_t>(registers), per_cycle_ = word ? 2 : 1, word_a_cycle_ = word;
+    issue_.set_capacity(slots);
     const uint64_t stages = config.uint(DELAY_KEY, 2 * registers_ * lanes - 1);
     if (stages < 1 || stages > UINT32_MAX)
       throw vcix_accel::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
-    entry_.set_capacity(PER_CYCLE * arrays);
+    entry_.set_capacity(per_cycle_ * arrays);
     pop_.set_capacity(entries);
     arrays_.assign(arrays, Array(entry_.unit()));
     for (Array &array : arrays_) array.line.configure(stages, entries, vcix_uarch::Stall::WHEN_HEAD_BLOCKED, registers_);
@@ -69,7 +81,7 @@ class Mxu {
     for (Array &array : arrays_) h.pipeline(array.line, entry_), h.reg(array.state), h.reg(array.values);
   }
 
-  // vmatprep: one of the Shape::SLOTS a cycle, and of its array's weight or input slot; it holds the upper half of its
+  // vmatprep: one of the tpu_mxu_issue_slots a cycle, and of its array's weight or input slot; it holds the upper half of its
   // operand until the next vmatpush or vmatmul of that operand takes it, and waits while the half held before is not.
   void prep(Route &r) {
     const uint32_t operand = vcix_accel::rs1(r.insn()) & SECOND ? INPUTS : WEIGHTS;
@@ -117,12 +129,12 @@ class Mxu {
       s.held[WEIGHTS] = false, s.pushed = true;
     });
   }
-  // vmatmul: vl words of 1 or 2 rows into the array, a word (Shape::WORD_A_CYCLE) or a row a cycle, each row's outputs
+  // vmatmul: vl words of 1 or 2 rows into the array, a word (tpu_mxu_word_a_cycle) or a row a cycle, each row's outputs
   // made as it enters (output()). One that latches first makes the staged weights the active, as it issues.
   void matmul(Route &r) {
     Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatmul");
     if (!array) return;
-    const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = Shape::WORD_A_CYCLE ? in_word : 1;
+    const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
     const bool latch = vcix_accel::rs1(r.insn()) & LATCH;
     words(r, "vmatmul");
     if (registers_ > 1) taken(r, *array, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);
@@ -275,10 +287,13 @@ class Mxu {
   static constexpr const char *DELAY_KEY = "tpu_mxu_delay_cycles";
   static constexpr const char *ARRAYS_KEY = "tpu_mxu_units";
   static constexpr const char *BOUND_KEY = "tpu_mxu_bound_to_lanes";
-  static constexpr uint32_t PER_CYCLE = Shape::WORD_A_CYCLE ? 2 : 1;
+  static constexpr const char *REGISTERS_KEY = "tpu_mxu_registers";
+  static constexpr const char *SLOTS_KEY = "tpu_mxu_issue_slots";
+  static constexpr const char *WORD_KEY = "tpu_mxu_word_a_cycle";
 
   Port entry_, issue_, pop_;
-  uint32_t registers_ = Shape::REGISTERS;
+  uint32_t registers_ = Shape::REGISTERS, per_cycle_ = Shape::WORD_A_CYCLE ? 2 : 1;
+  bool word_a_cycle_ = Shape::WORD_A_CYCLE;
   std::vector<Array> arrays_;
 };
 
