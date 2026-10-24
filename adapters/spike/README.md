@@ -110,7 +110,7 @@ vcixaccel: .../libnull_table.so: vcix_accel_model() returned no table
 $ spike --extlib=build/libother_abi.so ...
 vcixaccel: .../libother_abi.so has ABI 12, Spike has 11
 $ spike --extlib=build/libcannot_be_made.so ...
-vcix_accel: the model cannot be made: no such unit can be built
+vcix_cp: the model cannot be made: no such unit can be built
 vcixaccel: .../libcannot_be_made.so: vcix_accel_model() returned no table
 ```
 
@@ -360,11 +360,11 @@ spike_run build/libprint_args.so examples/print_args/machine.yml build/lanes --k
 
 ## 7. Timing on Spike
 
-The Spike adapter never calls the timing face. A model built from
-`vcix_uarch` still has a clock: its `execute` runs the instruction through its
-own units and ticks until the instruction is done. That is the model's code,
-not the adapter's; the [root README](../../README.md) shows it, and what
-happens when an instruction can never finish.
+The Spike adapter never calls the timing face. A model built on the cp engine
+(`include/vcix_cp.hpp`) still has a clock: its `execute` ticks its components
+until the instruction completes. That is the model's code, not the adapter's;
+the [root README](../../README.md#spike-runs-one-instruction-at-a-time) shows
+it, and what happens when an instruction can never finish.
 
 ## The header and the branch's own tests
 

@@ -10,7 +10,7 @@ The branch carries no accelerator. It hands every custom-1 and custom-2
 instruction to a loaded model. **Only MinorCPU is supported** (see
 [Other CPU models](#other-cpu-models)).
 
-What the model must do (call order, `Unknown` + `ready`, squash and replay,
+What the model must do (call order, `Unknown` + `ready`, squash,
 overlap) is in the [root README](../../README.md). This page shows where gem5
 does each step. The Spike side is in [../spike/README.md](../spike/README.md).
 
@@ -38,7 +38,7 @@ sequenceDiagram
     participant C as Execute (commit)
     participant M as model .so
     D->>E: class Vcix, OpClass VcixAccel, registers from the encoding
-    E->>M: can_accept(insn, now)
+    E->>M: can_accept(insn)
     M-->>E: yes
     E->>M: issue(insn, id, now)
     M-->>E: latency (or Unknown)
@@ -51,32 +51,32 @@ sequenceDiagram
 ## A worked run: print_args
 
 `examples/print_args/vcix.S` runs nine instructions. The `print_args` model
-prints each call it gets (`examples/print_args/print_args.cc:86-102`). Its
+prints each call it gets (`examples/print_args/print_args.cc:88-105`). Its
 latency and its one-at-a-time rule are read in
 [A first run](../../README.md#a-first-run-print_args) of the root README. Here
 is its gem5 output:
 
 ```
 [config ] print_args_latency_cycles=7 vpu_num_lanes=4
-[issue  ] insn=062541db funct6=01 vm=1 f24_20=2  f19_15=10 funct3=4 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=10012 ready=10019
-[commit ] insn=062541db funct6=01 vm=1 f24_20=2  f19_15=10 funct3=4 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=10094
-[issue  ] insn=0e22b1db funct6=03 vm=1 f24_20=2  f19_15=5  funct3=3 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=10097 ready=10104
-[commit ] insn=0e22b1db funct6=03 vm=1 f24_20=2  f19_15=5  funct3=3 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=10104
+[issue  ] insn=062541db funct6=01 vm=1 f24_20=2  f19_15=10 funct3=4 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=6379 ready=6386
+[commit ] insn=062541db funct6=01 vm=1 f24_20=2  f19_15=10 funct3=4 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=6461
+[issue  ] insn=0e22b1db funct6=03 vm=1 f24_20=2  f19_15=5  funct3=3 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=6464 ready=6471
+[commit ] insn=0e22b1db funct6=03 vm=1 f24_20=2  f19_15=5  funct3=3 f11_7=3  | vl=8 sew=32 lmul=2^0 | cycle=6471
 ...
-[issue  ] insn=2c23025b funct6=0b vm=0 f24_20=2  f19_15=6  funct3=0 f11_7=4  | vl=8 sew=32 lmul=2^1 | cycle=10199 ready=10213
-[commit ] insn=2c23025b funct6=0b vm=0 f24_20=2  f19_15=6  funct3=0 f11_7=4  | vl=8 sew=32 lmul=2^1 | cycle=10213
-[issue  ] insn=00b5002b funct7=00 rs2=11 rs1=10 funct3=0 rd=0  | vl=8 sew=32 lmul=2^1 | cycle=10216 ready=10223
-[commit ] insn=00b5002b funct7=00 rs2=11 rs1=10 funct3=0 rd=0  | vl=8 sew=32 lmul=2^1 | cycle=10223
-exit: exiting with last active thread context at cycle 12135
+[issue  ] insn=2c23025b funct6=0b vm=0 f24_20=2  f19_15=6  funct3=0 f11_7=4  | vl=8 sew=32 lmul=2^1 | cycle=6578 ready=6592
+[commit ] insn=2c23025b funct6=0b vm=0 f24_20=2  f19_15=6  funct3=0 f11_7=4  | vl=8 sew=32 lmul=2^1 | cycle=6592
+[issue  ] insn=00b5002b funct7=00 rs2=11 rs1=10 funct3=0 rd=0  | vl=8 sew=32 lmul=2^1 | cycle=6619 ready=6626
+[commit ] insn=00b5002b funct7=00 rs2=11 rs1=10 funct3=0 rd=0  | vl=8 sew=32 lmul=2^1 | cycle=6626
+exit: exiting with last active thread context at cycle 8392
 ```
 
-`062541db` (`sf.vc.x`) is issued at 10012 and is ready at 10019, but commits
-at 10094. Commit is in order, and the `flw` before it commits at 10094 too.
+`062541db` (`sf.vc.x`) is issued at 6379 and is ready at 6386, but commits
+at 6461. Commit is in order, and the `flw` before it commits at 6461 too.
 gem5's `Exec` trace of the same run shows both:
 
 ```
-10094000: system.cpu: T0 : 0x101c4 @main+40    : flw fa0, 0(t1)             : FloatMemRead :  D=0xffffffff40200000 A=0x12060
-10094000: system.cpu: T0 : 0x101c8 @main+44    : vcix 0x062541db <- a0      : VcixAccel :
+6461000: system.cpu: T0 : 0x10214 @main+40    : flw fa0, 0(t1)             : FloatMemRead :  D=0xffffffff40200000 A=0x12058
+6461000: system.cpu: T0 : 0x10218 @main+44    : vcix 0x062541db <- a0      : VcixAccel :
 ```
 
 `tests/print_args/run.sh` asserts the latencies 7, 14 and 7, nine commits and
@@ -382,8 +382,9 @@ An instruction leaves the in-order queue at its head. So a squash always takes
 the whole list. That holds for one thread only: a CPU of more than one thread
 with an accelerator unit is refused (`execute.cc:150`).
 
-What the model must do on a squash, and how `cp::Instance` replays the
-ticks and commits since, is in the [root README](../../README.md).
+What the model must do on a squash, and how `cp::Instance` runs the ticks
+and commits since again, is in the
+[root README](../../README.md#squash-a-copy-and-the-cycles-since-run-again).
 
 ## 6. Result not known at issue
 
@@ -423,16 +424,21 @@ A table with `num_stats` gives its unit gem5 statistics. gem5 reads them with
 the stats are `admitted`, `capacity`, `cycles`, `occupancy` and
 `utilized_cycles` (`admitted / capacity`). Each encoding gets
 `vcix.committed.<encoding>`. The group hangs under the functional unit, so the
-full name starts with the FU's path.
+full name starts with the FU's path. In a model built on the cp engine every
+block of a component is a unit of its own too (`SYSTOLIC_insns`,
+`SYSTOLIC_input_queue`, `SYSTOLIC_array`, ...; the root README's
+[Statistics](../../README.md#statistics)); the component's own unit is its
+primary port.
 
 `tests/stats/markers.S` on the `tpu` model (4x4 array, `tests/tpu/systolic.yml`)
-cuts the run into five windows with m5ops. Dump 1, the systolic array's lines:
+cuts the run into five windows with m5ops. Dump 1, the systolic array's own
+lines:
 
 ```
-system.cpu.numCycles                                                           123
+system.cpu.numCycles                                                           137
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.admitted                   12   # rows admitted at port input
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.capacity                    1   # rows the unit can admit per cycle
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.cycles                    123   # cycles the model was ticked, replays after a squash included
+system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.cycles                    137   # cycles the model was ticked, replays after a squash included
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.occupancy                  84   # rows held behind the port, summed over cycles
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.utilized_cycles            12   # admitted / capacity, the cycles admitting at full capacity takes
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_input_push        3
@@ -441,7 +447,8 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_pop              
 ```
 
 (Columns aligned here. The comments are gem5's descriptions, without their
-unit suffix; the last three lines' descriptions are left out.)
+unit suffix; the last three lines' descriptions and the block units'
+lines are left out.)
 
 **Reset.** The model's counters only grow. At a reset gem5 stores them as a
 base, and a dump shows `value - base`, except `capacity`, which is a constant
@@ -488,8 +495,8 @@ owns), on gem5's own CPU models with no accelerator unit:
   cycle:
 
   ```
-  --max-ticks 20000000    simInsts 464   numCycles 20001    iew.iqFullEvents 17833
-  --max-ticks 200000000   simInsts 464   numCycles 200001   iew.iqFullEvents 197833
+  --max-ticks 20000000    simInsts 309   numCycles 20001    iew.iqFullEvents 17750
+  --max-ticks 200000000   simInsts 309   numCycles 200001   iew.iqFullEvents 197750
   ```
 
 - **The simple CPUs** (atomic, timing) run the instruction as one that does
@@ -499,8 +506,8 @@ owns), on gem5's own CPU models with no accelerator unit:
   to its end:
 
   ```
-  atomic: exit: exiting with last active thread context at cycle 611     simInsts 572
-  timing: exit: exiting with last active thread context at cycle 34490   simInsts 572
+  atomic: exit: exiting with last active thread context at cycle 452     simInsts 417
+  timing: exit: exiting with last active thread context at cycle 28335   simInsts 417
   ```
 
 `src/cpu/minor/execute.cc` includes RISC-V headers for the fault, so the branch

@@ -9,16 +9,17 @@ is timed on.
 
 Read first:
 
-- [README.md](../../README.md): the C ABI, the timing rules, `vcix_uarch`.
+- [README.md](../../README.md): the C ABI, the timing rules, the cp engine
+  (`cp::Component`, its `insns()` and its blocks).
 - [examples/tpu/README.md](../tpu/README.md): the units `Sfu`, `Misc`, `Xlu`,
-  the `[tpu]` trace, and the generic gem5 machine.
+  the `[tpu]` trace, the statistics, and the generic gem5 machine.
 - [examples/tpuv6e/README.md](../tpuv6e/README.md): what `vmatprep`,
   `vmatpush`, `vmatmul` and `vpop` do.
 
 ```
                   libtpuv3.so  (tpuv3.cc)
   ┌────────────────────────────────────────────────────────────┐
-  │ tpu::Machine                                               │
+  │ tpu::Coprocessor                                           │
   │  ┌───────────┐ ┌────────────┐ ┌───────────┐ ┌────────────┐ │
   │  │ tpu::Sfu  │ │ tpu::Misc  │ │ tpu::Xlu  │ │ tpu::Mxu   │ │
   │  │ TPUV3_SFU │ │ TPUV3_MISC │ │ TPUV3_XLU │ │ <Shape>    │ │
@@ -33,11 +34,11 @@ Read first:
 
 <details><summary>How the runs on this page were made</summary>
 
-Every trace line, cycle count and message below comes from a run on commit
-4e16227 in the pinned environment image
-(`ghcr.io/psal-postech/vcix-accelerator:env-81a3b640eca5`, see
-[setup/](../../setup)): gem5 `vcix-v0.3.5`, Spike `751354f`, and the
-toolchain of `setup/versions.env`. Build, then run the tests once:
+Every trace line, cycle count and message below comes from a run of the
+`cp-engine` tree as built on 2026-10-24, in the pinned environment image
+(see [setup/](../../setup); `setup/versions.env`: gem5 `vcix-v0.3.5`, Spike
+`751354f`, pk `9435c61`, the toolchain of 2026.08.27). Build, then run the
+tests once:
 
 ```
 cmake -G Ninja -S . -B build && ninja -C build
@@ -46,14 +47,14 @@ tests/tpuv3/run.sh build
 
 `tests/tpuv3/run.sh` writes each gem5 run's log to `build/tpuv3-<run>.gem5.log`
 and its statistics to `build/m5out-tpuv3-<run>/stats.txt`. The trace lines
-quoted below are `grep '^\[tpu\]'` of those logs. `source scripts/sim.sh
+quoted below are `grep '^\[tpu\]'` of such logs. `source scripts/sim.sh
 build` gives the helpers (`rv_program`, `spike_run`, `gem5_run`) that the
 other Reproduce blocks use.
 </details>
 
 ## The model's source
 
-`tpuv3.cc:16-24`:
+`tpuv3.cc:16-32`:
 
 ```cpp
 struct Shape {
@@ -62,10 +63,15 @@ struct Shape {
   static constexpr bool WORD_A_CYCLE = false;
 };
 
-class Tpuv3 final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
+class Tpuv3 final : public tpu::Coprocessor {
  public:
-  Tpuv3() : Machine("TPUV3_SFU", "TPUV3_MISC", "TPUV3_XLU", "TPUV3_MXU") {}
   const char *name() const override { return "tpuv3"; }
+
+ private:
+  tpu::Sfu sfu_{*this, "TPUV3_SFU"};
+  tpu::Misc misc_{*this, "TPUV3_MISC"};
+  tpu::Xlu xlu_{*this, "TPUV3_XLU"};
+  tpu::Mxu<Shape> mxu_{*this, "TPUV3_MXU"};
 };
 ```
 
@@ -75,8 +81,9 @@ class Tpuv3 final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<
 - `REGISTERS`: how many vector registers one operand spans. The array is
   `REGISTERS x vpu_num_lanes` wide and deep. The v3 has 1: at 128 lanes the
   array is 128 x 128. The v6e has 2: 256 x 256.
-- `SLOTS`: how many of `vmatprep`, `vmatpush` and `vmatmul` the unit takes in
-  one cycle, over all arrays. The v3 has 1, the v6e 2.
+- `SLOTS`: how many of `vmatprep`, `vmatpush` and `vmatmul` the unit carries
+  out in one cycle, over all arrays; the unit accepts `SLOTS + tpu_mxu_units`
+  a cycle into its `insns()`. The v3 has 1, the v6e 2.
 - `WORD_A_CYCLE`: whether a 32-bit word that holds two 16-bit rows enters the
   array in one cycle (v6e), or one row enters a cycle (v3).
 
@@ -86,20 +93,23 @@ file holds the shape the compiler and the model both read. `libtpuv6e.so` with
 `1`, `1` and `0` runs `mxu.S` and `mxu_rate.S` as `libtpuv3.so` does
 (`tests/tpuv3/run.sh`, asserted, with the values each key refuses).
 
-The units, as `tests/tpuv3/ports.cc` reads them through the C table with no
-simulator:
+gem5 reports one unit per block ([tpu: statistics](../tpu/README.md#statistics-one-unit-per-block)):
+a component's name is its primary port, `<name>_insns` its instruction queue,
+`<name>_<block>` each queue and pipeline. The model lists them in the order of
+`tpuv3.cc`: SFU, MISC, XLU, MXU, each component's blocks in their order
+(`tests/tpuv3/ports.cc` reads the C table with no simulator); gem5's
+`stats.txt` sorts them by name:
 
 ```
-$ build/tpuv3_ports build/libtpuv3.so
-PASS  model tpuv3: 4 units at their primary ports (TPUV3_SFU.entry, TPUV3_MISC.issue, TPUV3_XLU/TPUV3_MXU.input), no other port, then one commit count per encoding
+TPUV3_MISC TPUV3_MISC_insns TPUV3_MXU TPUV3_MXU_array0_input TPUV3_MXU_array0_line TPUV3_MXU_array0_output TPUV3_MXU_insns
+TPUV3_SFU TPUV3_SFU_eup TPUV3_SFU_eup_input TPUV3_SFU_eup_output TPUV3_SFU_insns
+TPUV3_XLU TPUV3_XLU_buffer TPUV3_XLU_insns TPUV3_XLU_line TPUV3_XLU_moves TPUV3_XLU_out TPUV3_XLU_queue TPUV3_XLU_stages
 ```
 
-The model lists its units in the order of `tpuv3.cc`: SFU, MISC, XLU, MXU.
-gem5's `stats.txt` sorts them by name: `TPUV3_MISC TPUV3_MXU TPUV3_SFU
-TPUV3_XLU` (`tests/tpuv3/run.sh`, asserted). The unit classes and their
-instructions are described once, in [examples/tpu/README.md](../tpu/README.md).
-The DMA's instructions are `Misc`'s, as in the tpu model. This model has no
-systolic or multi-precision array.
+The unit classes and their instructions are described once, in
+[examples/tpu/README.md](../tpu/README.md). The DMA's instructions are
+`Misc`'s, as in the tpu model. This model has no systolic or multi-precision
+array.
 
 ## The matrix unit at 4 lanes: v3 and v6e side by side
 
@@ -120,28 +130,30 @@ draw.
         ├──┼──┼──┼──┤                                │  [4:3] = 2)         │
         │  │  │  │  │                                └─────────────────────┘
         └──┴──┴──┴──┘
-  delay line: 2 x 4 - 1 = 7 slots             delay line: 2 x 8 - 1 = 15 slots
-  one output queue                            two output queues (lower, upper)
+  delay line: 2 x 4 - 1 = 7 stages            delay line: 2 x 8 - 1 = 15 stages
+  one output queue (array0_output)            two output queues (array0_lower, array0_upper)
   no vmatprep                                 vmatprep holds an upper half
 ```
 
 The delay line's default length is `2 x REGISTERS x lanes - 1`
-(`examples/tpu/mxu.hpp:68`). A trace line shows the line's queues: one output
-queue on the v3, two on the v6e (`mxu.hpp:183-188`):
+(`examples/tpu/mxu.hpp:69`). A trace line shows the array's queues: one
+output queue on the v3, two on the v6e (`mxu.hpp:95-105`):
 
 ```
-[tpu] issue vpop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4          <- tpuv3
-[tpu] issue vpop: 17 cycles after the last issue, 0 in flight, input queue 0, output queues 4 and 4   <- tpuv6e
+[tpu] issue vpop: 1 cycles after the last issue, 1 in flight, input queue 0, output queue 0          <- tpuv3
+[tpu] commit vpop: 13 cycles after its issue
+[tpu] issue vpop: 1 cycles after the last issue, 1 in flight, input queue 0, output queues 0 and 0   <- tpuv6e
+[tpu] commit vpop: 19 cycles after its issue
 ```
 
-The first line is from `tests/tpuv3/mxu.S` (walked below). The second is
-from `tests/tpuv6e/mxu.S` on the v6e at 4 lanes, which `tests/tpuv6e/run.sh`
-asserts.
+The first pair is from `tests/tpuv3/mxu.S` (walked below). The second is
+from `tests/tpuv6e/mxu.S` on the v6e at 4 lanes
+([tpuv6e: a cycle walk](../tpuv6e/README.md#a-cycle-walk-teststpuv6emxus)).
 
 ## One register an operand
 
 An operand is one register, so there is no upper half anywhere. The field at
-19:15 of an MXU instruction (`mxu.hpp:36-39`) has three forms the v3 never
+19:15 of an MXU instruction (`mxu.hpp:37-40`) has three forms the v3 never
 carries out:
 
 ```
@@ -168,10 +180,10 @@ the object that `run.sh` builds (`build/tpuv3-mxu.o`):
   080031db  sf.vc.v.i 0x2, 0x0, v3, 0x0   vpop      field  0
 ```
 
-What happens to the three refused forms depends on the simulator. On Spike
-the model ends the run with a reason (`tpu::fail`,
-`examples/tpu/values.hpp:17-26`). `tests/tpuv3/functional/run.sh` asserts
-these three, each with exit 1:
+The three forms are a `fault` as the instruction reaches the head of the
+unit's `insns()` (`mxu.hpp:212-213`, `218-219`, `226-227`). On Spike the model
+ends the run with the reason, exit 1. `tests/tpuv3/functional/run.sh` asserts
+these three:
 
 ```
 tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half
@@ -179,8 +191,8 @@ tpu: vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes
 tpu: vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not
 ```
 
-On gem5 the unit never takes the instruction. It is never issued, and the run
-stops at its tick limit. Here is one `vmatprep` on both:
+On gem5 the instruction is accepted and issued; the run ends with the same
+line, exit 1, when it commits. Here is one `vmatprep` on both:
 
 ```
 $ spike --extlib=build/libtpuv3.so --isa=rv64gcv_zfh_xvcixaccel \
@@ -192,18 +204,20 @@ $ echo $?
 $ gem5.opt -d m5out examples/gem5_se.py --model build/libtpuv3.so --config lanes4.yml \
     --max-ticks 100000000 prep
 ...
-gem5_se.py: the simulation did not end with the program exiting: simulate() limit reached
-exit: simulate() limit reached at cycle 100000
+[tpu] issue vmatprep: the first, input queue 0, output queue 0
+[tpu] commit vmatprep: 1 cycles after its issue
+tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half
 $ echo $?
 1
 ```
 
-The gem5 log has no `[tpu] issue vmatprep` line.
+(The gem5 log prints the issue line twice: the first issue is squashed and
+the instruction issued again.)
 
 <details><summary>Reproduce: prep.S</summary>
 
 ```
-# A vmatprep (sf.vc.iv 0x2, field 3) on libtpuv3.so, whose operand is one register: the unit never takes it.
+# A vmatprep (sf.vc.iv 0x2, field 3) on libtpuv3.so, whose operand is one register: a fault at the head.
     .option norvc
     .text
     .globl main
@@ -243,27 +257,36 @@ stays the v6e's: two slots, a word a cycle (below).
 A `vmatmul` operand is `vl` words of 32 bits. A word holds one single, or two
 16-bit rows ([tpuv6e: words and rows](../tpuv6e/README.md#words-and-rows)).
 
-`vmatmul` sends the rows into the array's line (`mxu.hpp:137-145`):
+`vmatmul` puts its rows in the array's input queue, the first row of each
+word tagged with the rows that enter the line with it (`mxu.hpp:303-313`):
 
 ```cpp
-const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
+const uint32_t field = cp::rs1(insn), word = word_a_cycle_ ? rows_in_word(field) : 1;
 ...
-r.send(array->line, uint64_t{r.vl()} * in_word / weight, weight, ...);
+for (uint64_t row = 0; row < rows; row++) {
+  Input in{row % word ? 0 : word, {}};
+  ...
+  a.input.push(std::move(in));
+}
 ```
 
-So for `vl` = 4 words of bfloat16 (8 rows):
+One word a cycle leaves the queue into the line, when the unit's input port
+has room for its rows (`Array::flow`, `mxu.hpp:173-178`). So for `vl` = 4
+words of bfloat16 (8 rows):
 
 ```
-  v3  (WORD_A_CYCLE false):  8 entries of 1 row      input port: 1 row a cycle
-  v6e (WORD_A_CYCLE true):   4 entries of 2 rows     input port: 2 rows a cycle
+  v3  (WORD_A_CYCLE false):  8 words of 1 row       input port: 1 row a cycle
+  v6e (WORD_A_CYCLE true):   4 words of 2 rows      input port: 2 rows a cycle
 ```
 
-The input port's width is `per_cycle_` rows: 1 on the v3, 2 on the v6e, or as a
-machine's `tpu_mxu_word_a_cycle` says (`mxu.hpp:66`, `:71`). gem5 reports it as the unit's `capacity`.
+The input port's width is `(word_a_cycle ? 2 : 1) x tpu_mxu_units` rows: 1 on
+the v3, 2 on the v6e, or as a machine's `tpu_mxu_word_a_cycle` says
+(`mxu.hpp:63-68`, `73`). gem5 reports it as the unit's `capacity`.
 
 The v3 still needs a queue of at least 2 rows. A `vmatmul` with `vl` = 1 of
-bfloat16 sends two rows, and both must fit the input queue when it issues. A queue of 1 is refused when the model is made
-(`mxu.hpp:48-49`; `tests/tpuv3/run.sh`, asserted):
+bfloat16 sends two rows, and both must fit the input queue. A queue of 1 is
+refused when the model is made (`mxu.hpp:50-51`; `tests/tpuv3/run.sh`,
+asserted):
 
 ```
 src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libtpuv3.so: tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
@@ -281,34 +304,34 @@ vpu_num_lanes: 4
 tpu_mxu_queue_entries: 8
 ```
 
-The array is 4 x 4 and the line has 2 x 4 - 1 = 7 slots. The trace
-(`build/tpuv3-mxu.gem5.log`):
+The array is 4 x 4 and the line has 2 x 4 - 1 = 7 stages. The trace:
 
 ```
 [tpu] issue vmatpush: the first, input queue 0, output queue 0
+[tpu] issue vmatmul: 0 cycles after the last issue, 1 in flight, input queue 0, output queue 0
 [tpu] commit vmatpush: 1 cycles after its issue
-[tpu] issue vmatmul: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] commit vmatmul: 1 cycles after its issue
-[tpu] issue vpop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4
-[tpu] commit vpop: 1 cycles after its issue
-[tpu] issue vpop: 4 cycles after the last issue, 0 in flight, input queue 0, output queue 4
-[tpu] commit vpop: 1 cycles after its issue
+[tpu] issue vpop: 1 cycles after the last issue, 1 in flight, input queue 0, output queue 0
+[tpu] issue vpop: 0 cycles after the last issue, 2 in flight, input queue 0, output queue 0
+[tpu] commit vmatmul: 2 cycles after its issue
+[tpu] commit vpop: 13 cycles after its issue
+[tpu] commit vpop: 17 cycles after its issue
 ```
 
 Cycle by cycle, counting from the `vmatpush`:
 
 ```
-  cycle 0    vmatpush  issues. It stages the weights; nothing enters the array.
-  cycle 1    vmatmul   issues one cycle later: SLOTS is 1, and the vmatpush took
-                       cycle 0's one MXU slot. Its 8 rows go to the input queue
-                       and enter the 7-slot line one a cycle.
-  cycle 12   vpop      issues 11 cycles after the vmatmul = 4 rows to enter + 7 slots.
-                       The output queue holds the 4 rows it takes.
-  cycle 16   vpop      issues 4 cycles later: the next 4 rows come out one a cycle.
+  cycle 0    vmatpush and vmatmul are accepted: the unit takes SLOTS + 1 = 2 a cycle.
+  cycle 1    vmatpush is carried out at the head: it stages the weights; nothing enters
+             the array. vmatmul waits: SLOTS is 1, and the vmatpush took the MXU slot.
+             Both vpops are accepted and wait behind it.
+  cycle 2    vmatmul is carried out: its 8 rows go into the input queue.
+  cycle 3-10 the rows enter the 7-stage line one a cycle; the fourth at 6, out at 13,
+             visible to the vpop at 14.
+  cycle 14   the first vpop takes its 4 rows: 13 cycles after its issue at 1.
+  cycle 18   the second vpop takes the next 4, which came out one a cycle: 17 after its issue.
 ```
 
-The unit's statistics (`build/m5out-tpuv3-mxu/stats.txt`, under
-`...vcix.TPUV3_MXU.`):
+The unit's statistics (`stats.txt`, under `...vcix.TPUV3_MXU`):
 
 ```
 admitted          8    rows in at the input port
@@ -317,95 +340,123 @@ occupancy        56    = 8 rows x 7 cycles each in the line
 utilized_cycles   8    = admitted / capacity
 ```
 
-`run.sh` asserts the issue gaps (`vmatmul:1 vpop:11 vpop:4`) and `admitted 8,
-capacity 1, occupancy 56`.
+`TPUV3_MXU_array0_line` reads the same (8 words of a row each);
+`TPUV3_MXU_insns` admitted 4, capacity 2.
 
 ### The same program with the v6e's SLOTS and WORD_A_CYCLE
 
 `libtpuv6e.so` with `tpu_mxu_bound_to_lanes: 1` on 4 lanes has the same 4 x 4
-array and 7 slots, so `mxu.S` runs on it unchanged. Only `SLOTS` and
+array and 7 stages, so `mxu.S` runs on it unchanged. Only `SLOTS` and
 `WORD_A_CYCLE` differ:
 
 ```
-  tpuv3                                       tpuv6e, bound to the lanes
-  issue vmatpush: the first                   issue vmatpush: the first
-  issue vmatmul: 1 cycles after, 0 in flight  issue vmatmul: 0 cycles after, 1 in flight
-  issue vpop: 11 cycles after  (4 + 7)        issue vpop: 9 cycles after   (2 + 7)
-  issue vpop: 4 cycles after                  issue vpop: 2 cycles after
-  capacity 1, occupancy 56                    capacity 2, occupancy 56
-  utilized_cycles 8                           utilized_cycles 4
+  tpuv3                                        tpuv6e, bound to the lanes
+  commit vmatpush: 1 cycles after its issue    commit vmatpush: 1 cycles after its issue
+  commit vmatmul: 2 cycles after its issue     commit vmatmul: 1 cycles after its issue
+  commit vpop: 13 cycles after its issue       commit vpop: 10 cycles after its issue
+  commit vpop: 17 cycles after its issue       commit vpop: 12 cycles after its issue
+  capacity 1, occupancy 56                     capacity 2, occupancy 56
+  utilized_cycles 8                            utilized_cycles 4
 ```
 
-- With 2 slots, the `vmatmul` issues in the cycle of the `vmatpush`.
+- With 2 slots, the `vmatmul` is carried out in the cycle of the `vmatpush`:
+  its rows are in the queue a cycle earlier.
 - With a word a cycle, the 4 rows of the first pop are 2 words: 2 cycles to
-  enter, not 4.
+  enter, not 4; the second pop's 4 rows follow 2 cycles later, not 4.
 - Occupancy is 56 in both: 8 rows, 7 cycles each.
 
-`run.sh` asserts both columns except the in-flight counts and
-`utilized_cycles`, which are read from the logs and from
-`build/m5out-tpuv3-tpuv6e-bound-4/stats.txt` and
-`build/m5out-tpuv3-mxu/stats.txt`.
+<details><summary>Reproduce</summary>
+
+`mxu.S` on `tests/tpuv3/mxu.yml` with `libtpuv3.so`, and on that file plus
+`tpu_mxu_bound_to_lanes: 1` with `libtpuv6e.so` (`tests/tpuv3/run.sh`, its
+runs `mxu` and `tpuv6e-bound-4`).
+</details>
 
 ### Room in the input queue: `tests/tpuv3/mxu_rate.S`
 
-A `vmatmul` issues only when all its rows fit the input queue. This program
-pushes weights (field 8: singles, lower half), runs a `vmatmul` of 4 singles
-that latches (field 4), then a `vmatmul` of 4 bfloat16 words, 8 rows (field
-3), then pops 4 rows three times.
+A `vmatmul` is carried out only when all its rows fit the input queue. This
+program pushes weights (field 8: singles, lower half), runs a `vmatmul` of 4
+singles that latches (field 4), then a `vmatmul` of 4 bfloat16 words, 8 rows
+(field 3), then pops 4 rows three times.
 
-With queues of 8 (`tests/tpuv3/mxu.yml`), commit lines left out (each commits
-1 cycle after its issue):
+With queues of 8 (`tests/tpuv3/mxu.yml`):
 
 ```
 [tpu] issue vmatpush: the first, input queue 0, output queue 0
-[tpu] issue vmatmul: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] issue vmatmul: 4 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] issue vpop: 7 cycles after the last issue, 0 in flight, input queue 1, output queue 4
-[tpu] issue vpop: 4 cycles after the last issue, 0 in flight, input queue 0, output queue 4
-[tpu] issue vpop: 4 cycles after the last issue, 0 in flight, input queue 0, output queue 4
+[tpu] issue vmatmul: 0 cycles after the last issue, 1 in flight, input queue 0, output queue 0
+[tpu] commit vmatpush: 1 cycles after its issue
+[tpu] issue vmatmul: 1 cycles after the last issue, 1 in flight, input queue 0, output queue 0
+[tpu] issue vpop: 0 cycles after the last issue, 2 in flight, input queue 0, output queue 0
+[tpu] commit vmatmul: 2 cycles after its issue
+[tpu] issue vpop: 1 cycles after the last issue, 2 in flight, input queue 4, output queue 0
+[tpu] issue vpop: 1 cycles after the last issue, 3 in flight, input queue 3, output queue 0
+[tpu] commit vmatmul: 6 cycles after its issue
+[tpu] commit vpop: 13 cycles after its issue
+[tpu] commit vpop: 17 cycles after its issue
+[tpu] commit vpop: 20 cycles after its issue
 ```
 
-- The second `vmatmul` needs room for 8 rows in a queue of 8. It waits 4
-  cycles, until the 4 singles have entered the line.
-- The first `vpop` comes 4 + 7 = 11 cycles after the first `vmatmul`: the
-  singles' 4 cycles to enter and 7 slots. One bfloat16 row is still in the
-  input queue then.
+- The first `vmatmul` is carried out at 2, its 4 singles in the queue (the
+  `vpop` accepted at 2 shows them: `input queue 4`).
+- The second `vmatmul`, at the head from 2, needs room for 8 rows in a queue
+  of 8. It waits until the 4 singles have entered the line, and is carried
+  out at 7 (6 cycles after its issue at 1).
+- The first `vpop` commits 13 cycles after its issue: the singles' 4 cycles to
+  enter and 7 stages, as in `mxu.S`. The second takes the first 4 bfloat16
+  rows, which entered from 8: 17. The third, the last 4: 20.
 - 12 rows are admitted; occupancy is 84 = 12 x 7.
 
 With queues of 16 the second `vmatmul` does not wait for room. It waits one
-cycle for the MXU slot, in which one single entered:
+cycle for the MXU slot:
 
 ```
-[tpu] issue vmatmul: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] issue vmatmul: 1 cycles after the last issue, 0 in flight, input queue 3, output queue 0
-[tpu] issue vpop: 10 cycles after the last issue, 0 in flight, input queue 1, output queue 4
+[tpu] issue vmatmul: 0 cycles after the last issue, 1 in flight, input queue 0, output queue 0
+[tpu] commit vmatpush: 1 cycles after its issue
+[tpu] issue vmatmul: 1 cycles after the last issue, 1 in flight, input queue 0, output queue 0
+[tpu] issue vpop: 0 cycles after the last issue, 2 in flight, input queue 0, output queue 0
+[tpu] commit vmatmul: 2 cycles after its issue
+[tpu] issue vpop: 1 cycles after the last issue, 2 in flight, input queue 4, output queue 0
+[tpu] commit vmatmul: 2 cycles after its issue
+[tpu] issue vpop: 1 cycles after the last issue, 2 in flight, input queue 11, output queue 0
+[tpu] commit vpop: 13 cycles after its issue
+[tpu] commit vpop: 16 cycles after its issue
+[tpu] commit vpop: 19 cycles after its issue
 ```
 
-`run.sh` asserts the five gaps at queues of 8 and the first two at 16. The
-rest is read from the same runs (`build/tpuv3-mxu_rate.gem5.log`,
-`build/tpuv3-mxu_rate-16.gem5.log`, `build/m5out-tpuv3-mxu_rate/stats.txt`).
+The third `vpop`, accepted at 3, sees 3 singles and the 8 bfloat16 rows
+(`input queue 11`); the bfloat16 rows enter right behind the singles, so the
+second and third `vpop` commit 16 and 19.
+
+<details><summary>Reproduce</summary>
+
+`mxu_rate.S` on `tests/tpuv3/mxu.yml`, and on that file with
+`tpu_mxu_queue_entries: 16` (`tests/tpuv3/run.sh`, its runs `mxu_rate` and
+`mxu_rate-16`); the occupancy from the first run's `stats.txt`.
+</details>
 
 ### Lanes set the delay
 
-The first pop of 4 rows issues `4 + (2 x lanes - 1)` cycles after the
-`vmatmul`. `mxu.S` at three lane counts, each asserted by `run.sh`:
+The first pop of 4 rows commits `6 + (2 x lanes - 1)` cycles after its issue:
+1 for the `vmatmul` to be carried out behind the `vmatpush`, 1 for its rows
+to reach the queue, 3 for the fourth row to enter behind the first, the
+stages, and 1 to be visible to the pop. `mxu.S` at three lane counts, each
+asserted by `run.sh`:
 
 ```
-  vpu_num_lanes   array      delay line   first vpop after the vmatmul
-  4               4 x 4      7            11
-  8               8 x 8      15           19
-  128 (default)   128 x 128  255          259
+  vpu_num_lanes   array      delay line   first vpop, cycles after its issue
+  4               4 x 4      7            13
+  8               8 x 8      15           21
+  128 (default)   128 x 128  255          261
 ```
 
-At 128 lanes the occupancy is 2040 = 8 x 255
-(`build/m5out-tpuv3-lanes-128/stats.txt`).
+At 128 lanes the occupancy is 2040 = 8 x 255.
 
 `tpu_mxu_delay_cycles` sets the line's length directly. The walk's run, with
 one key more:
 
 ```
-  tpu_mxu_delay_cycles absent (7):  issue vpop: 11 cycles after ..., input queue 0, output queue 4   occupancy 56
-  tpu_mxu_delay_cycles: 3        :  issue vpop:  7 cycles after ..., input queue 1, output queue 4   occupancy 24
+  tpu_mxu_delay_cycles absent (7):  commit vpop: 13 cycles after its issue   occupancy 56
+  tpu_mxu_delay_cycles: 3        :  commit vpop:  9 cycles after its issue   occupancy 24
 ```
 
 <details><summary>Reproduce: the delay of 3</summary>
@@ -420,7 +471,7 @@ grep -E 'TPUV3_MXU\.(admitted|occupancy)' m5out-delay-3/stats.txt
 
 ### Not modelled
 
-- An array larger than the lanes: `REGISTERS` is 1 or 2 (`mxu.hpp:19`), and
+- An array larger than the lanes: `REGISTERS` is 1 or 2 (`mxu.hpp:22`), and
   the field at 19:15 cannot name more of an operand's registers.
 - The v3 TensorCore's second MXU. The model has one array (`tpu_mxu_units`
   1); TOGSim's array split models the second (`tpuv3.cc:1-2`). Whether the
@@ -543,7 +594,7 @@ v3.
 
 ### The functional unit pool
 
-`vliw_pool(2)` (`examples/tpu/gem5/vpu_config.py:269-283`), as the run's
+`vliw_pool(2)` (`examples/tpu/gem5/vpu_config.py:279-283`), as the run's
 `config.ini` lists it:
 
 ```
@@ -583,8 +634,8 @@ five programs on a copy of `script_systolic.py` with `clock="1GHz"`:
                  1GHz     100 86 85 83 193                      100000 86000 85000 83000 193000
   addresses.S    940MHz   115 104 220                           122360 110656 234080
                  1GHz     115 104 220                           115000 104000 220000
-  mxu.S          940MHz   513                                   545832
-                 1GHz     513                                   513000
+  mxu.S          940MHz   514                                   546896
+                 1GHz     514                                   514000
 ```
 
 Every 940 MHz tick count is the cycle count x 1064. The `[tpu]` trace of
@@ -604,7 +655,7 @@ diff <(grep '^\[tpu\]' build/tpuv3-machine-mxu.gem5.log) <(grep '^\[tpu\]' 1g-mx
 ```
 
 The copy must sit in `examples/tpuv3/gem5/`: it imports `vpu_config` from
-beside itself.
+beside itself, and the tpu machine from `../../tpu/gem5`.
 </details>
 
 ### What the machine does to programs
@@ -631,10 +682,10 @@ statistics dump. `tests/tpuv3/run.sh` asserts the v3's numbers,
   turn.
   - v3: at most 1 load, 1 store and 2 accesses a cycle.
 
-`mxu.S` on this machine gives the same issue gaps as on `examples/gem5_se.py`
-(`vmatmul:1 vpop:11 vpop:4`, asserted): the matrix unit's timing is the
-model's, not the machine's. This machine does not print the tpu machine's
-warning that it is the generic one (asserted).
+`mxu.S` on this machine gives the same trace as on `examples/gem5_se.py`
+(the `vpop`s commit 13 and 17 cycles after their issue): the matrix unit's
+timing is the model's, not the machine's. This machine does not print the tpu
+machine's warning that it is the generic one (asserted).
 
 ### Not modelled in the machine
 
@@ -686,8 +737,8 @@ Each check prints `PASS` or `FAIL`, its text and the values it read. Which
 check proves what:
 
 - `ports.cc`: the unit names and their order, with no simulator.
-- `mxu.S`, 4 lanes: one MXU slot, a row a cycle, `4 + 7`; the four unit names
-  in gem5's dump; `admitted 8, capacity 1, occupancy 56`.
+- `mxu.S`, 4 lanes: one MXU slot, a row a cycle, `6 + 7`; the unit names in
+  gem5's dump; `admitted 8, capacity 1, occupancy 56`.
 - `mxu_rate.S`, queues of 8 and 16: a `vmatmul` waits for room for all its
   rows.
 - `mxu.S`, 8 and 128 lanes: the delay is `2 x lanes - 1`.
@@ -695,6 +746,9 @@ check proves what:
   slots, a word a cycle); `libtpuv3.so` at 8 lanes with and without the key,
   the same trace; `libtpuv6e.so` with the key at 0, the same trace as without
   it on `tests/tpuv6e/mxu.S` (8 issues); the key at 2 refused.
+- `tpu_mxu_registers`, `tpu_mxu_issue_slots`, `tpu_mxu_word_a_cycle`:
+  `libtpuv6e.so` with the v3's values runs `mxu.S` and `mxu_rate.S` as
+  `libtpuv3.so`; a value outside each key's range is refused.
 - The v3 machine: its `config.ini`, the four programs of the list above,
   `mxu.S` timed as on `gem5_se.py`, and no generic-machine warning.
 - `tpu_mxu_queue_entries: 1` refused.
