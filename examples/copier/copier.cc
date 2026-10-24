@@ -24,13 +24,13 @@ class Copier {
   // x[rs1] is the source of the copies after it.
   void set_source(Route &r) {
     r.use(issue_).enqueue(commands_).done_when_enqueued();
-    r.at_issue([&](const Host &host) { source_.write() = host.xreg(vcix_accel::rs1(r.insn())); });
+    r.at_issue([&](const Host &host) { source_.write() = host.xreg(cp::rs1(r.insn())); });
   }
   // BYTES from the source to x[rs1], a read and a write a word; the source moves past them.
   void copy(Route &r) {
     r.use(issue_).enqueue(commands_).done_when_enqueued().transfer(2 * BYTES / 8).through(memory_);
     r.at_issue([&](const Host &host) {
-      const uint64_t to = host.xreg(vcix_accel::rs1(r.insn()));
+      const uint64_t to = host.xreg(cp::rs1(r.insn()));
       uint64_t &from = source_.write();
       for (uint64_t i = 0; i < BYTES; i += 8) {
         uint64_t word = 0;
@@ -64,4 +64,4 @@ class Model final : public vcix_uarch::Machine<Copier> {
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Model)
+VCIX_CP_REGISTER(Model)

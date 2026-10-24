@@ -16,17 +16,17 @@
 #include <utility>
 #include <vector>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 namespace vcix_uarch {
 
-using vcix_accel::Config;
-using vcix_accel::Cycle;
-using vcix_accel::Encoding;
-using vcix_accel::Host;
-using vcix_accel::Id;
-using vcix_accel::Insn;
-using Port = vcix_accel::Port;
+using cp::Config;
+using cp::Cycle;
+using cp::Encoding;
+using cp::Host;
+using cp::Id;
+using Insn = vcix_insn;
+using Port = cp::Stats;
 constexpr Port::Role PRIMARY = Port::PRIMARY;
 constexpr uint64_t UNLIMITED = UINT64_MAX;
 
@@ -310,7 +310,7 @@ class AnyPipeline {
       line_.pop(1);
     }
     const uint32_t weight = input_.empty() || input_.front().tag != SEEN ? 0 : input_.front().weight;
-    if (weight && weight <= entry.room(now)) {
+    if (weight && weight <= entry.available(now)) {
       entry.admit(weight, now);
       input_.pass(line_, moves_, true);
     }
@@ -655,10 +655,10 @@ class Route {
     for (uint32_t i = 0; i < count_; i++) {
       const Step &s = steps_[i];
       if (!open(s)) return false;
-      if (s.through && s.kind != USE && s.through->room(now) < moved_at_issue(s)) return false;
+      if (s.through && s.kind != USE && s.through->available(now) < moved_at_issue(s)) return false;
       switch (s.kind) {
         case REQUIRE: if (!s.holds && !settled) return false; break;
-        case USE: if (s.port->room(now) < s.n) return false; break;
+        case USE: if (s.port->available(now) < s.n) return false; break;
         case ENQUEUE: if (s.queue->depth_) return s.queue->held() < s.queue->depth_; break;
         case SEND: if (s.n * s.weight > s.pipe->input_room()) return false; break;
         case RECEIVE: if (s.n > s.pipe->out(s.output) && !(settled && s.pipe->drained())) return false; break;
@@ -694,14 +694,14 @@ class Route {
             for (uint32_t j = i + 1; j < count_; j++)
               if (steps_[j].kind == RECEIVE) received(values(), j);
             ready.push_back(id);
-            return vcix_accel::Unknown;
+            return cp::Unknown;
           }
           CommandQueue::Command c{id, now + q.arrival_};
           c.when_enqueued = when_enqueued_, c.when_idle = when_idle_;
           if (keeps_values()) c.values = this;
           for (uint32_t j = i + 1; j < count_; j++) c.moves[c.count++] = record(steps_[j], q.blocks_);
           q.list_.push_back(c);
-          return vcix_accel::Unknown;
+          return cp::Unknown;
         }
         default: break;
       }
@@ -771,9 +771,9 @@ struct Instruction {
 
 // A model of units in order. A unit is constructed with its name, reads its keys in configure(Config), lists its blocks
 // in hardware(h) and its encodings in INSTRUCTIONS; Machine derives tick, reset, the ports (the statistics), readiness,
-// and Spike's execute, which clocks the machine. Squash and the commit counts are vcix_accel::Instance's.
+// and Spike's execute, which clocks the machine. Squash and the commit counts are cp::Instance's.
 template <class... U>
-class Machine : public vcix_accel::Model {
+class Machine : public cp::Model {
  public:
   std::vector<Encoding> owns() const override {
     std::vector<Encoding> all;
@@ -958,7 +958,7 @@ class Machine : public vcix_accel::Model {
       Port *through = s.through < 0 ? nullptr : q.blocks_.ports[s.through];
       AnyPipeline *pipe = s.pipe < 0 ? nullptr : q.blocks_.pipelines[s.pipe];
       const bool open = s.guard < 0 || q.blocks_.pipelines[s.guard]->drained();
-      const uint64_t left = s.n - c.done, width = through ? through->room(now) : UNLIMITED;
+      const uint64_t left = s.n - c.done, width = through ? through->available(now) : UNLIMITED;
       uint64_t moved = 0;
       if (s.kind == Route::SEND) {
         if (open) moved = std::min({left, pipe->input_room() / s.weight, width});
@@ -1005,10 +1005,10 @@ class Machine : public vcix_accel::Model {
     if (CommandQueue *q = r.queue()) list_blocks(u, *q);
     const Id id = ++spike_id_;
     const Cycle issued = clock_, latency = r.issue(clock_, id, ready_);
-    if (latency != vcix_accel::Unknown)
+    if (latency != cp::Unknown)
       while (clock_ < issued + latency) tick(++clock_);
     const auto done = [&] {
-      return (latency != vcix_accel::Unknown || Machine::ready(id, clock_)) && !queued(u, id);
+      return (latency != cp::Unknown || Machine::ready(id, clock_)) && !queued(u, id);
     };
     while (!done()) spike_cycle(u, instruction.name, done, [&] {
       uint64_t got = 0;

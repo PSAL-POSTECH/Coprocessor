@@ -64,20 +64,20 @@ class Xlu {
     const uint64_t lanes = config.uint(LANES_KEY, 128);
     const uint64_t width = config.uint(WIDTH_KEY, 1), issue = config.uint(ISSUE_KEY, 1);
     if (latency < 1 || latency > UINT32_MAX)
-      throw vcix_accel::ConfigError(LATENCY_KEY, config.get(LATENCY_KEY), "is not a latency the unit can have");
+      throw cp::ConfigError(LATENCY_KEY, config.get(LATENCY_KEY), "is not a latency the unit can have");
     if (move_latency < 1 || move_latency > UINT32_MAX)
-      throw vcix_accel::ConfigError(MOVE_LATENCY_KEY, config.get(MOVE_LATENCY_KEY), "is not a latency the unit can have");
+      throw cp::ConfigError(MOVE_LATENCY_KEY, config.get(MOVE_LATENCY_KEY), "is not a latency the unit can have");
     if (entries < 1 || entries > UINT32_MAX)
-      throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
+      throw cp::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
     if (lanes < 1)
-      throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the unit can have");
+      throw cp::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the unit can have");
     if (lanes > MAX_SLOTS)
-      throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY),
+      throw cp::ConfigError(LANES_KEY, config.get(LANES_KEY),
                                     "is more than 65535 lanes: an exchange's result of that many slots does not fit one entry");
     if (width < 1 || width > entries)
-      throw vcix_accel::ConfigError(WIDTH_KEY, config.get(WIDTH_KEY), "is not between 1 and the queue size");
+      throw cp::ConfigError(WIDTH_KEY, config.get(WIDTH_KEY), "is not between 1 and the queue size");
     if (issue < 1 || issue > UINT32_MAX)
-      throw vcix_accel::ConfigError(ISSUE_KEY, config.get(ISSUE_KEY), "is not an issue rate");
+      throw cp::ConfigError(ISSUE_KEY, config.get(ISSUE_KEY), "is not an issue rate");
     entry_.set_capacity(width), issue_.set_capacity(issue);
     width_ = width;
     stages_.configure(latency, vcix_uarch::UNLIMITED, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
@@ -103,7 +103,7 @@ class Xlu {
   // move, or a move into a fold, stops the run. A tile's elements pass the stages in tpu_xlu_move_latency_cycles
   // when its first push is a move, else (a fold, an exchange) in tpu_xlu_latency_cycles.
   void push(Route &r) {
-    const uint32_t field = vcix_accel::rs1(r.insn()), bits = r.insn().sew_bits;
+    const uint32_t field = cp::rs1(r.insn()), bits = r.insn().sew_bits;
     const bool load = !r.arg() && field >> 3 == LOAD, fold = r.arg() == 2;
     if (fold && field > FOLD_ARGMIN)
       r.require(false, [field] {
@@ -156,7 +156,7 @@ class Xlu {
         return;
       }
       Tile &pattern = sized(box_.write().after, host);
-      const uint32_t from = vcix_accel::rs2(r.insn());
+      const uint32_t from = cp::rs2(r.insn());
       for (uint32_t lane = 0; lane < host.lanes(); lane++)
         for (uint32_t i = 0; i < r.vl(); i++) pattern[lane].push_back(get<uint32_t>(host, lane, from, i));
     });
@@ -176,7 +176,7 @@ class Xlu {
     r.at_issue([&](const Host &host) {
       Tile &set = pattern_.write();
       set.assign(host.lanes(), {});
-      const uint32_t from = vcix_accel::rs2(r.insn());
+      const uint32_t from = cp::rs2(r.insn());
       for (uint32_t lane = 0; lane < host.lanes(); lane++)
         for (uint32_t i = 0; i < r.vl(); i++) set[lane].push_back(get<uint32_t>(host, lane, from, i));
     });
@@ -213,7 +213,7 @@ class Xlu {
     }
     const uint32_t vl = r.vl();
     r.receive(out_, vl, [&r](const Host &host, uint64_t i, Column &&slot) {
-      const uint32_t vd = vcix_accel::rd(r.insn()), at = static_cast<uint32_t>(i);
+      const uint32_t vd = cp::rd(r.insn()), at = static_cast<uint32_t>(i);
       for (uint32_t lane = 0; lane < slot.size() && lane < host.lanes(); lane++) {
         if (!slot[lane]) continue;
         switch (r.insn().sew_bits) {
@@ -251,7 +251,7 @@ class Xlu {
   // Element i of rs2 in every lane, at the push's width.
   static Elements element(const Host &host, const Insn &insn, uint64_t i) {
     Elements slot(host.lanes());
-    const uint32_t reg = vcix_accel::rs2(insn), at = static_cast<uint32_t>(i);
+    const uint32_t reg = cp::rs2(insn), at = static_cast<uint32_t>(i);
     for (uint32_t lane = 0; lane < host.lanes(); lane++) switch (insn.sew_bits) {
         case 8: slot[lane] = get<uint8_t>(host, lane, reg, at); break;
         case 16: slot[lane] = get<uint16_t>(host, lane, reg, at); break;

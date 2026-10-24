@@ -15,10 +15,10 @@ struct Copier {
       {0x0A00405B, FORM, "copy", 1, false, false},
       {0x0E00405B, FORM, "copy wait", 2, false, false, true},
   };
-  static void check(const vcix_accel::Config &) {}
+  static void check(const cp::Config &) {}
 };
 
 }  // namespace
 
 using CopierModel = rtl::Model<Vcopier, Copier>;
-VCIX_ACCEL_REGISTER(CopierModel)
+VCIX_CP_REGISTER(CopierModel)

@@ -49,9 +49,9 @@ class Systolic {
   void configure(const vcix_uarch::Config &config) {
     const uint64_t lanes = config.uint(LANES_KEY, 128), entries = config.uint(QUEUE_KEY, 256);
     if (lanes < 1)
-      throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
+      throw cp::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 1 || entries > UINT32_MAX)
-      throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
+      throw cp::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
     stages_ = static_cast<uint32_t>(2 * lanes - 1);
     array_.configure(stages_, entries, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
     commands_.configure(static_cast<uint32_t>(config.uint(COMMANDS_KEY, 0)));
@@ -59,7 +59,7 @@ class Systolic {
     pop_.set_capacity(config.uint(POP_KEY, entries));
     weight_waits_ = config.uint(WAITS_KEY, 0) != 0;
     if (!commands_.depth() && (config.get(IN_KEY) || config.get(POP_KEY) || weight_waits_))
-      throw vcix_accel::ConfigError(COMMANDS_KEY, "0", "is no queue: what moves at issue moves whole, and waits for nothing");
+      throw cp::ConfigError(COMMANDS_KEY, "0", "is no queue: what moves at issue moves whole, and waits for nothing");
   }
   template <class H>
   void hardware(H &&h) {
@@ -111,7 +111,7 @@ class Systolic {
   // integer of 8 bits, a half, a single; 64 bits are zeros), 1 an E4M3, 2 an E5M2, 3 a bfloat16; else NONE.
   enum class Element { INTEGER, E4M3, E5M2, HALF, BF16, SINGLE, ZERO, NONE };
   static Element element_format(const Insn &insn) {
-    const uint32_t code = vcix_accel::rs1(insn), sew = insn.sew_bits;
+    const uint32_t code = cp::rs1(insn), sew = insn.sew_bits;
     if (code == 0) return sew == 8 ? Element::INTEGER : sew == 16 ? Element::HALF : sew == 32 ? Element::SINGLE : Element::ZERO;
     if (sew == 8 && (code == 1 || code == 2)) return code == 1 ? Element::E4M3 : Element::E5M2;
     if (sew == 16 && code == 3) return Element::BF16;
@@ -119,7 +119,7 @@ class Systolic {
   }
   // An instruction whose code names no element of its width is never accepted.
   static void named(Route &r) {
-    const uint32_t code = vcix_accel::rs1(r.insn()), sew = r.insn().sew_bits;
+    const uint32_t code = cp::rs1(r.insn()), sew = r.insn().sew_bits;
     r.require(element_format(r.insn()) != Element::NONE,
               [code, sew] { fail("systolic: format %u names no element of %u bits", code, sew); });
   }
@@ -157,7 +157,7 @@ class Systolic {
   static void popped(const Host &host, const Insn &insn, uint64_t i, const Row &row) {
     const uint64_t mode = host.csr(CSR_FRM);
     const Element format = element_format(insn);
-    const uint32_t vd = vcix_accel::rd(insn), at = static_cast<uint32_t>(i);
+    const uint32_t vd = cp::rd(insn), at = static_cast<uint32_t>(i);
     for (uint32_t lane = 0; lane < host.lanes(); lane++) {
       const float sum = row.sums[lane];
       switch (format) {
@@ -170,7 +170,7 @@ class Systolic {
     }
   }
   static float element(const Host &host, const Insn &insn, uint32_t lane, uint32_t i) {
-    const uint32_t reg = vcix_accel::rs2(insn);
+    const uint32_t reg = cp::rs2(insn);
     switch (element_format(insn)) {
       case Element::INTEGER: return static_cast<float>(get<int8_t>(host, lane, reg, i));
       case Element::E4M3: return fp8_to_float(get<uint8_t>(host, lane, reg, i), E4M3);

@@ -1,5 +1,5 @@
 // Example: a TPU's units as one model, libtpu.so; each call goes to the unit that owns the instruction.
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 #include "machine.hpp"
 #include "misc.hpp"
@@ -18,4 +18,4 @@ class Tpu final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Systolic, tpu::X
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Tpu)
+VCIX_CP_REGISTER(Tpu)

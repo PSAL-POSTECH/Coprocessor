@@ -18,15 +18,15 @@
 #include <utility>
 #include <vector>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 #include "verilated.h"
 #include "verilated_save.h"
 
 namespace rtl {
 
-using vcix_accel::Cycle;
-using vcix_accel::Id;
-using vcix_accel::Insn;
+using cp::Cycle;
+using cp::Id;
+using Insn = vcix_insn;
 
 // Verilator's save and restore, to and from memory.
 class MemSave final : public VerilatedSerialize {
@@ -179,7 +179,7 @@ struct Op {
 // optional ports its RTL has: BEATS (in/out, cmd_vl, cmd_tag, out_tag, out_last), SCALAR (cmd_x = x[rs1]) and MEM (one
 // request a cycle: Spike serves it from memory, gem5 at once with zeros).
 template <class V, class T>
-class Model : public vcix_accel::Model {
+class Model : public cp::Model {
   static constexpr bool waits_without_beats() {
     for (const Op &op : T::OPS)
       if (op.waits && (op.beats_in || op.beats_out)) return false;
@@ -189,12 +189,12 @@ class Model : public vcix_accel::Model {
 
  public:
   const char *name() const override { return T::NAME; }
-  std::vector<vcix_accel::Encoding> owns() const override {
-    std::vector<vcix_accel::Encoding> e;
+  std::vector<cp::Encoding> owns() const override {
+    std::vector<cp::Encoding> e;
     for (const Op &op : T::OPS) e.push_back({op.match, op.mask, op.name});
     return e;
   }
-  void configure(const vcix_accel::Config &config) override {
+  void configure(const cp::Config &config) override {
     T::check(config);
     const char *s = std::getenv("RTL_SCHEDULE");
     if (!s || !*s) return;
@@ -223,7 +223,7 @@ class Model : public vcix_accel::Model {
   }
 
   // ---- Spike. A trap from memory leaves the unit as it was before the instruction, and Spike runs it again.
-  void execute(const vcix_accel::Host &host, const Insn &insn) override {
+  void execute(const cp::Host &host, const Insn &insn) override {
     if constexpr (!T::MEM) {
       run(host, insn);
     } else {
@@ -253,7 +253,7 @@ class Model : public vcix_accel::Model {
     Cmd c{id, &op, insn.vl, now};
     if (nothing(op, insn.vl)) {
       done(c, now);
-      return vcix_accel::Unknown;
+      return cp::Unknown;
     }
     if (T::TAGS) {
       c.tag = static_cast<uint32_t>(free_tag());
@@ -261,7 +261,7 @@ class Model : public vcix_accel::Model {
       tag_used_[c.tag] = true;
     }
     pending_.push_back(c);
-    return vcix_accel::Unknown;
+    return cp::Unknown;
   }
   void tick(Cycle now) override {
     unit_->cmd_valid = !pending_.empty();
@@ -341,16 +341,16 @@ class Model : public vcix_accel::Model {
   };
 
   // The command, its beats and results, then the schedule's gap; vd is written last, when nothing can trap any more.
-  void run(const vcix_accel::Host &host, const Insn &insn) {
+  void run(const cp::Host &host, const Insn &insn) {
     const Op &op = find(insn);
     const uint32_t lanes = T::LANES, per_reg = host.vlen_bits() / 8, vl = insn.vl;
     if (op.beats_in || op.beats_out)
-      if (insn.sew_bits != 8 || vcix_accel::rs1(insn) != 0) fail("only SEW 8, format 0 is in this RTL");
+      if (insn.sew_bits != 8 || cp::rs1(insn) != 0) fail("only SEW 8, format 0 is in this RTL");
     if (nothing(op, vl)) return;
     std::vector<std::vector<uint8_t>> in(op.beats_in ? vl : 0, std::vector<uint8_t>(lanes));
     for (uint32_t i = 0; i < in.size(); i++)
       for (uint32_t lane = 0; lane < lanes; lane++)
-        in[i][lane] = host.vreg<uint8_t>(lane, vcix_accel::rs2(insn) + i / per_reg)[i % per_reg];
+        in[i][lane] = host.vreg<uint8_t>(lane, cp::rs2(insn) + i / per_reg)[i % per_reg];
     std::vector<std::vector<uint8_t>> out;
     bool cmd_fired = false;
     uint32_t sent = 0;
@@ -358,7 +358,7 @@ class Model : public vcix_accel::Model {
       if (n > LIMIT) fail("no end");
       unit_->cmd_valid = !cmd_fired;
       unit_->cmd_op = op.cmd_op;
-      if constexpr (T::SCALAR) unit_->cmd_x = host.xreg(vcix_accel::rs1(insn));
+      if constexpr (T::SCALAR) unit_->cmd_x = host.xreg(cp::rs1(insn));
       if constexpr (T::BEATS) {
         unit_->cmd_vl = vl;
         unit_->cmd_tag = 0;
@@ -386,12 +386,12 @@ class Model : public vcix_accel::Model {
       if (!cycle(&host).busy && (op.waits || schedule_ == SLOW)) break;
     for (uint32_t i = 0; i < out.size(); i++)
       for (uint32_t lane = 0; lane < lanes; lane++)
-        host.vreg_mut<uint8_t>(lane, vcix_accel::rd(insn) + i / per_reg)[i % per_reg] = out[i][lane];
+        host.vreg_mut<uint8_t>(lane, cp::rd(insn) + i / per_reg)[i % per_reg] = out[i][lane];
   }
 
   // One clock: settle, serve a memory request (from host memory, or at once with zeros without a host), sample what
   // fires, take the edge.
-  Fired cycle(const vcix_accel::Host *host) {
+  Fired cycle(const cp::Host *host) {
     Fired f;
     if constexpr (T::MEM) unit_->mem_ready = 0;
     unit_.settle();

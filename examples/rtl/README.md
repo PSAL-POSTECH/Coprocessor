@@ -232,7 +232,7 @@ things fire.
   prints nothing.
 - A squash is undone by the copy the generic `Instance` makes before each
   issue. It puts the copy back and replays the ticks and commits since
-  (`include/vcix_accel.hpp:208-260`); the replayed commits print nothing
+  (`include/vcix_cp_base.hpp:208-260`); the replayed commits print nothing
   (`rtl_model.hpp:316`).
 - An out beat whose `out_tag` is not the oldest draining command's tag ends
   the run. So do more than 2^22 cycles in a row in which commands are left,
@@ -642,11 +642,11 @@ struct Copier {
       {0x0A00405B, FORM, "copy", 1, false, false},
       {0x0E00405B, FORM, "copy wait", 2, false, false, true},
   };
-  static void check(const vcix_accel::Config &) {}
+  static void check(const cp::Config &) {}
 };
 
 using CopierModel = rtl::Model<Vcopier, Copier>;
-VCIX_ACCEL_REGISTER(CopierModel)
+VCIX_CP_REGISTER(CopierModel)
 ```
 
 - `TAGS`: the command tags the unit tells apart; 0 without tag ports.
@@ -662,12 +662,12 @@ copy wait `beats_in = true` and the build stops (`rtl_model.hpp:183-188`):
 rtl_model.hpp:188:36: error: static assertion failed: an Op that waits has no beats: it would be ready twice
 ```
 
-**3. CMake.** `vcix_accel_add_rtl_model` exists only inside the
+**3. CMake.** `vcix_cp_add_rtl_model` exists only inside the
 `if(VCIX_RTL AND verilator_FOUND)` block of `CMakeLists.txt` (`:35-52`), so
 the call goes there:
 
 ```cmake
-vcix_accel_add_rtl_model(rtl_copier examples/rtl/copier/copier.cc examples/rtl/copier/copier.sv copier)
+vcix_cp_add_rtl_model(rtl_copier examples/rtl/copier/copier.cc examples/rtl/copier/copier.sv copier)
 ```
 
 It verilates with `--savable -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL` and

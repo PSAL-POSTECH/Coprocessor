@@ -9,18 +9,18 @@
 #include <new>
 #include <vector>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 #include "values.hpp"
 
 namespace tpu {
 
 class Dma {
-  using Host = vcix_accel::Host;
-  using Insn = vcix_accel::Insn;
+  using Host = cp::Host;
+  using Insn = vcix_insn;
 
  public:
-  void configure(const vcix_accel::Config &config) {
+  void configure(const cp::Config &config) {
     if (config.get(SPAD_LANE_KEY)) spad_lane_bytes_ = config.uint(SPAD_LANE_KEY, 0) * 1024;
     spad_base_ = config.hex(SPAD_BASE_KEY, 0xD0000000);
   }
@@ -30,7 +30,7 @@ class Dma {
   static constexpr int INVALID_SPAD_ACCESS = 200;
   static constexpr uint64_t SKIP = ~uint64_t{0};
 
-  void dma_config_desc(const Host &host, const Insn &insn) { dma_descriptor_ = host.xreg(vcix_accel::rs1(insn)); }
+  void dma_config_desc(const Host &host, const Insn &insn) { dma_descriptor_ = host.xreg(cp::rs1(insn)); }
   // x[rs1] once named the indirect transfers' index dumps; nothing reads it now, and programs that issue it still run.
   void dma_index_key(const Host &, const Insn &) {}
 
@@ -52,8 +52,8 @@ class Dma {
 
   Transfer dma_transfer(const Host &host, const Insn &insn, const char *name, bool skips) const {
     Transfer t;
-    t.memory = host.xreg(vcix_accel::rs1(insn));
-    t.scratchpad = host.xreg(vcix_accel::rs2(insn));
+    t.memory = host.xreg(cp::rs1(insn));
+    t.scratchpad = host.xreg(cp::rs2(insn));
     const uint64_t d = dma_descriptor_;
     for (int i = 0; i < 4; i++) {
       t.dim_size[i] = static_cast<uint64_t>(static_cast<int64_t>(load<int32_t>(host, d + 0 + 4 * i)));

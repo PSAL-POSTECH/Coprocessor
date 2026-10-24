@@ -1,6 +1,5 @@
-// C++ face of vcix_accel.h: subclass Model, then VCIX_ACCEL_REGISTER(YourModel).
-#ifndef VCIX_ACCEL_HPP
-#define VCIX_ACCEL_HPP
+// C++ face of vcix_accel.h: subclass Model, then VCIX_CP_REGISTER(YourModel). The cp engine (vcix_cp.hpp) is built on it.
+#pragma once
 
 #include <charconv>
 #include <cinttypes>
@@ -19,21 +18,20 @@
 
 #include "vcix_accel.h"
 
-namespace vcix_accel {
+namespace cp {
 
 using Cycle = vcix_cycle_t;
 using Encoding = vcix_encoding;
-using Insn = vcix_insn;
 using Id = vcix_id_t;
 // Returned by issue when the latency is not known yet: ready() says when the result is ready.
 constexpr Cycle Unknown = VCIX_LATENCY_UNKNOWN;
 
-inline uint32_t rd(const Insn &insn) { return (insn.bits >> 7) & 0x1f; }
-inline uint32_t rs1(const Insn &insn) { return (insn.bits >> 15) & 0x1f; }
-inline uint32_t rs2(const Insn &insn) { return (insn.bits >> 20) & 0x1f; }
-inline uint32_t funct3(const Insn &insn) { return (insn.bits >> 12) & 0x7; }
+inline uint32_t rd(const vcix_insn &insn) { return (insn.bits >> 7) & 0x1f; }
+inline uint32_t rs1(const vcix_insn &insn) { return (insn.bits >> 15) & 0x1f; }
+inline uint32_t rs2(const vcix_insn &insn) { return (insn.bits >> 20) & 0x1f; }
+inline uint32_t funct3(const vcix_insn &insn) { return (insn.bits >> 12) & 0x7; }
 // Registers in one vector operand's group.
-inline uint32_t group_size(const Insn &insn) { return insn.lmul_log2 > 0 ? 1u << insn.lmul_log2 : 1u; }
+inline uint32_t group_size(const vcix_insn &insn) { return insn.lmul_log2 > 0 ? 1u << insn.lmul_log2 : 1u; }
 
 // Thrown from configure, it stops the run with this message.
 class ConfigError : public std::runtime_error {
@@ -104,10 +102,10 @@ class Host {
 };
 
 // Where a unit decides how much more enters this cycle; it counts what it let in. Names must outlive the model.
-class Port {
+class Stats {
  public:
   enum Role : uint32_t { REPORTING = 0, PRIMARY = 1 };
-  Port(const char *unit, const char *name, const char *unit_of_work, uint64_t capacity_per_cycle, Role role = REPORTING)
+  Stats(const char *unit, const char *name, const char *unit_of_work, uint64_t capacity_per_cycle, Role role = REPORTING)
       : unit_(unit), name_(name), unit_of_work_(unit_of_work), capacity_(capacity_per_cycle), role_(role) {
     if (!unit || !name || !unit_of_work) throw std::invalid_argument("a port's unit, name and unit of work are named");
     set_capacity(capacity_per_cycle);
@@ -118,12 +116,12 @@ class Port {
     capacity_ = capacity_per_cycle;
   }
 
-  uint64_t room(Cycle now) const { return now == cycle_ ? capacity_ - used_ : capacity_; }
-  // More than room(now) is a broken model: the run stops.
+  uint64_t available(Cycle now) const { return now == cycle_ ? capacity_ - used_ : capacity_; }
+  // More than available(now) is a broken model: the run stops.
   void admit(uint64_t amount, Cycle now) {
-    const uint64_t left = room(now);
+    const uint64_t left = available(now);
     if (amount > left) {
-      std::fprintf(stderr, "vcix_accel: port %s.%s admitted %" PRIu64 " %s in cycle %" PRIu64 " with room for %" PRIu64 "\n",
+      std::fprintf(stderr, "vcix_cp: port %s.%s admitted %" PRIu64 " %s in cycle %" PRIu64 " with room for %" PRIu64 "\n",
                    unit_, name_, amount, unit_of_work_, now, left);
       std::abort();
     }
@@ -136,7 +134,7 @@ class Port {
     used_ += amount;
     admitted_ += amount;
   }
-  // Adds `amount` to occupancy. vcix_uarch adds a pipeline's rows in its stages, for each pipeline this port is the
+  // Adds `amount` to occupancy. vcix_cp adds a pipeline's rows in its stages, for each pipeline this port is the
   // entry of, in each cycle that pipeline is not drained.
   void hold(uint64_t amount) { occupancy_ += amount; }
   // Forgets what this cycle admitted, as a model's reset must; the counts stay. A room it used is opened again,
@@ -177,12 +175,12 @@ class Model {
   virtual std::vector<Encoding> owns() const = 0;
   virtual void configure(const Config &) {}
 
-  virtual void execute(const Host &host, const Insn &insn) = 0;
+  virtual void execute(const Host &host, const vcix_insn &insn) = 0;
 
   // In a cycle: tick, then ready, then commit, then can_accept and issue. A squashed instruction was never issued.
-  virtual bool can_accept(const Insn &insn, Cycle now) const = 0;
-  virtual Cycle issue(const Insn &insn, Id id, Cycle now) = 0;
-  virtual void commit(const Insn &, Id, Cycle) {}
+  virtual bool can_accept(const vcix_insn &insn, Cycle now) const = 0;
+  virtual Cycle issue(const vcix_insn &insn, Id id, Cycle now) = 0;
+  virtual void commit(const vcix_insn &, Id, Cycle) {}
   virtual void tick(Cycle) {}
   virtual bool ready(Id, Cycle) const { return true; }
 
@@ -190,13 +188,15 @@ class Model {
 
   // The ports that decide its timing, one PRIMARY per unit, the same list each time. Asked anew: keep no pointer.
   // Only each unit's PRIMARY port is a statistic; the others only time.
-  virtual std::vector<const Port *> ports() const { return {}; }
-  // Cycles ticked since create, the ticks replayed after a squash included.
+  virtual std::vector<const Stats *> ports() const { return {}; }
+  // Cycles ticked since create, the ticks run again after a squash included.
   uint64_t cycles() const { return cycles_; }
 
  protected:
-  // True while commit and tick are replayed after a squash: skip what must happen once.
+  // True while commit and tick are run again after a squash: skip what must happen once.
   bool replaying() const { return replaying_; }
+  // Throws if the model's state is not all inside its bytes (sizeof the exported class), before configure.
+  virtual void check_layout(size_t) const {}
 
  private:
   template <class M>
@@ -205,7 +205,7 @@ class Model {
   uint64_t cycles_ = 0;
 };
 
-// Copies the model before each issue; a squash puts the copy back and replays the ticks and commits since.
+// Copies the model before each issue; a squash puts the copy back and runs again the ticks and commits since.
 template <class M>
 class Instance {
   static_assert(std::is_copy_constructible<M>::value && std::is_copy_assignable<M>::value,
@@ -216,20 +216,23 @@ class Instance {
 
   Instance() : encodings_(model.owns()), committed_(encodings_.size(), 0) {}
 
-  // Configures the model, then fixes its list of statistics; a port list that breaks the rules throws.
+  // Configures the model, then fixes its list of statistics; a port list or a layout that breaks the rules throws.
+  // The layout is checked before configure (blocks the constructors made) and after it (blocks configure made).
   void configure(const Config &config) {
+    static_cast<const Model &>(model).check_layout(sizeof(M));
     model.configure(config);
+    static_cast<const Model &>(model).check_layout(sizeof(M));
     describe();
   }
   void tick(Cycle now) {
     model.cycles_++;
     model.tick(now);
   }
-  Cycle issue(const Insn &insn, Id id, Cycle now) {
+  Cycle issue(const vcix_insn &insn, Id id, Cycle now) {
     issued_.push_back({id, now, model});
     return model.issue(insn, id, now);
   }
-  void commit(const Insn &insn, Id id, Cycle now) {
+  void commit(const vcix_insn &insn, Id id, Cycle now) {
     for (size_t i = 0; i < encodings_.size(); i++)
       if ((insn.bits & encodings_[i].mask) == encodings_[i].match) {
         committed_[i]++;
@@ -268,13 +271,13 @@ class Instance {
   // Each unit's ADMITTED, CAPACITY, CYCLES and OCCUPANCY at its primary port, units in the order of their primary
   // ports in ports(), then each encoding's commits. CYCLES is the ticks plus the port's reopened() rooms.
   void read_stats(uint64_t *values) const {
-    const std::vector<const Port *> ports = model.ports();
+    const std::vector<const Stats *> ports = model.ports();
     if (ports.size() != listed_.size()) broken("ports() changed its length since create");
     for (size_t p = 0; p < ports.size(); p++)
       if (std::strcmp(ports[p]->unit(), listed_[p].first) || std::strcmp(ports[p]->name(), listed_[p].second))
         broken("ports() changed its order since create");
     for (size_t u = 0; u < primary_.size(); u++) {
-      const Port *port = ports[primary_[u]];
+      const Stats *port = ports[primary_[u]];
       values[PER_UNIT * u] = port->admitted();
       values[PER_UNIT * u + 1] = port->capacity();
       values[PER_UNIT * u + 2] = model.cycles() + port->reopened();
@@ -315,7 +318,7 @@ class Instance {
   static constexpr size_t PER_UNIT = 4;
 
   [[noreturn]] static void broken(const char *why) {
-    std::fprintf(stderr, "vcix_accel: %s\n", why);
+    std::fprintf(stderr, "vcix_cp: %s\n", why);
     std::abort();
   }
   const char *keep(const char *text) { return strings_.emplace_back(text).c_str(); }
@@ -325,14 +328,14 @@ class Instance {
     strings_.clear();
     listed_.clear();
     primary_.clear();
-    const std::vector<const Port *> ports = model.ports();
+    const std::vector<const Stats *> ports = model.ports();
     for (size_t i = 0; i < ports.size(); i++) {
-      const Port *port = ports[i];
+      const Stats *port = ports[i];
       const std::string unit = stat_name(port->unit());
       if (unit == "committed")
         throw std::invalid_argument("a port's unit is named 'committed', the name of the commit counts");
       size_t primaries = 0;
-      for (const Port *other : ports) {
+      for (const Stats *other : ports) {
         if (stat_name(other->unit()) != unit) continue;
         if (std::strcmp(other->unit(), port->unit()))
           throw std::invalid_argument(std::string("units ") + port->unit() + " and " + other->unit() + " are both " +
@@ -372,7 +375,7 @@ class Instance {
     M before;
   };
   struct Committed {
-    Insn insn;
+    vcix_insn insn;
     Id id;
     Cycle cycle;
   };
@@ -380,7 +383,8 @@ class Instance {
   std::deque<Committed> commits_;
 };
 
-// The table of model M. No exception from M crosses the C boundary.
+// The table of model M. No exception from M crosses the C boundary but Spike's traps out of execute, which leave the
+// model as it was before that execute, so Spike's retry of the instruction runs it once.
 template <class M>
 __attribute__((visibility("hidden"))) const vcix_model *export_model() {
   struct Description {
@@ -410,7 +414,14 @@ __attribute__((visibility("hidden"))) const vcix_model *export_model() {
       },
       [](void *s) { delete static_cast<Instance<M> *>(s); },
       [](void *s, const vcix_host *h, const vcix_insn *i) {
-        static_cast<Instance<M> *>(s)->model.execute(Host(h), *i);
+        M &model = static_cast<Instance<M> *>(s)->model;
+        M saved = model;
+        try {
+          model.execute(Host(h), *i);
+        } catch (...) {
+          model = std::move(saved);
+          throw;
+        }
       },
       [](void *s, const vcix_insn *i, Cycle n) -> int {
         return static_cast<const Instance<M> *>(s)->model.can_accept(*i, n);
@@ -438,18 +449,17 @@ __attribute__((visibility("hidden"))) const vcix_model *export_model_or_null() {
   try {
     return export_model<M>();
   } catch (const std::exception &e) {
-    std::fprintf(stderr, "vcix_accel: the model cannot be made: %s\n", e.what());
+    std::fprintf(stderr, "vcix_cp: the model cannot be made: %s\n", e.what());
   } catch (...) {
-    std::fprintf(stderr, "vcix_accel: the model cannot be made: an exception that is not a std::exception\n");
+    std::fprintf(stderr, "vcix_cp: the model cannot be made: an exception that is not a std::exception\n");
   }
   return nullptr;
 }
 
-}  // namespace vcix_accel
+}  // namespace cp
 
-#define VCIX_ACCEL_REGISTER(ModelClass)                                                    \
+#define VCIX_CP_REGISTER(ModelClass)                                                    \
   extern "C" __attribute__((visibility("default"))) const vcix_model *vcix_accel_model(void) { \
-    return vcix_accel::export_model_or_null<ModelClass>();                                 \
+    return cp::export_model_or_null<ModelClass>();                                 \
   }
 
-#endif

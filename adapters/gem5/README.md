@@ -382,7 +382,7 @@ An instruction leaves the in-order queue at its head. So a squash always takes
 the whole list. That holds for one thread only: a CPU of more than one thread
 with an accelerator unit is refused (`execute.cc:150`).
 
-What the model must do on a squash, and how `vcix_accel::Instance` replays the
+What the model must do on a squash, and how `cp::Instance` replays the
 ticks and commits since, is in the [root README](../../README.md).
 
 ## 6. Result not known at issue

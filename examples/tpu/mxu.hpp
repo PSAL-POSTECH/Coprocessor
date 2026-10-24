@@ -44,30 +44,30 @@ class Mxu {
   void configure(const Config &config) {
     const uint64_t lanes = config.uint(LANES_KEY, 128), entries = config.uint(QUEUE_KEY, 256), arrays = config.uint(ARRAYS_KEY, 1);
     if (lanes < 1)
-      throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
+      throw cp::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 2 || entries > UINT32_MAX)
-      throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size: a word of two rows needs 2");
+      throw cp::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size: a word of two rows needs 2");
     if (arrays < 1 || arrays > MAX_ARRAYS)
-      throw vcix_accel::ConfigError(ARRAYS_KEY, config.get(ARRAYS_KEY),
+      throw cp::ConfigError(ARRAYS_KEY, config.get(ARRAYS_KEY),
                                     "is not a number of arrays an instruction's field of 5 bits can name: 1 to 32");
     const uint64_t bound = config.uint(BOUND_KEY, 0);
     if (bound > 1)
-      throw vcix_accel::ConfigError(BOUND_KEY, config.get(BOUND_KEY), "is not 0 (the model's array) or 1 (an array of lanes x lanes)");
+      throw cp::ConfigError(BOUND_KEY, config.get(BOUND_KEY), "is not 0 (the model's array) or 1 (an array of lanes x lanes)");
     const uint64_t registers = config.uint(REGISTERS_KEY, bound ? 1 : Shape::REGISTERS);
     if (registers < 1 || registers > 2)
-      throw vcix_accel::ConfigError(REGISTERS_KEY, config.get(REGISTERS_KEY), "is not 1 or 2: an operand is one register, or an upper and a lower half");
+      throw cp::ConfigError(REGISTERS_KEY, config.get(REGISTERS_KEY), "is not 1 or 2: an operand is one register, or an upper and a lower half");
     if (bound && registers != 1)
-      throw vcix_accel::ConfigError(REGISTERS_KEY, config.get(REGISTERS_KEY), "is not 1, and tpu_mxu_bound_to_lanes: 1 makes the array lanes x lanes");
+      throw cp::ConfigError(REGISTERS_KEY, config.get(REGISTERS_KEY), "is not 1, and tpu_mxu_bound_to_lanes: 1 makes the array lanes x lanes");
     const uint64_t slots = config.uint(SLOTS_KEY, Shape::SLOTS), word = config.uint(WORD_KEY, Shape::WORD_A_CYCLE);
     if (slots < 1 || slots > UINT32_MAX)
-      throw vcix_accel::ConfigError(SLOTS_KEY, config.get(SLOTS_KEY), "is not a number of instructions a cycle");
+      throw cp::ConfigError(SLOTS_KEY, config.get(SLOTS_KEY), "is not a number of instructions a cycle");
     if (word > 1)
-      throw vcix_accel::ConfigError(WORD_KEY, config.get(WORD_KEY), "is not 0 (a row a cycle) or 1 (a word of two rows a cycle)");
+      throw cp::ConfigError(WORD_KEY, config.get(WORD_KEY), "is not 0 (a row a cycle) or 1 (a word of two rows a cycle)");
     registers_ = static_cast<uint32_t>(registers), per_cycle_ = word ? 2 : 1, word_a_cycle_ = word;
     issue_.set_capacity(slots);
     const uint64_t stages = config.uint(DELAY_KEY, 2 * registers_ * lanes - 1);
     if (stages < 1 || stages > UINT32_MAX)
-      throw vcix_accel::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
+      throw cp::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
     entry_.set_capacity(per_cycle_ * arrays);
     pop_.set_capacity(entries);
     arrays_.assign(arrays, Array(entry_.unit()));
@@ -84,14 +84,14 @@ class Mxu {
   // vmatprep: one of the tpu_mxu_issue_slots a cycle, and of its array's weight or input slot; it holds the upper half of its
   // operand until the next vmatpush or vmatmul of that operand takes it, and waits while the half held before is not.
   void prep(Route &r) {
-    const uint32_t operand = vcix_accel::rs1(r.insn()) & SECOND ? INPUTS : WEIGHTS;
-    Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatprep");
+    const uint32_t operand = cp::rs1(r.insn()) & SECOND ? INPUTS : WEIGHTS;
+    Array *array = array_for(r, cp::rd(r.insn()), "vmatprep");
     if (!array) return;
     r.require(!array->state.get().held[operand]);
     r.require(registers_ > 1, [] { fail("vmatprep: an operand of an array of lanes x lanes is one register, with no upper half"); });
     words(r, "vmatprep");
     r.use(operand == INPUTS ? array->input_issue : array->weight_issue).use(issue_);
-    const uint64_t rows = uint64_t{r.vl()} * rows_in_word(vcix_accel::rs1(r.insn()));
+    const uint64_t rows = uint64_t{r.vl()} * rows_in_word(cp::rs1(r.insn()));
     r.at_issue([&] {
       State &s = array->state.write();
       s.held[operand] = true, s.rows[operand] = rows;
@@ -101,9 +101,9 @@ class Mxu {
   // vmatpush stages a weight per row in every column in one half of the depth, as it issues: what it held moves down as
   // many depths, past its last is gone, and the rows take its top in their order. Nothing enters the array.
   void push(Route &r) {
-    Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatpush");
+    Array *array = array_for(r, cp::rd(r.insn()), "vmatpush");
     if (!array) return;
-    const uint32_t field = vcix_accel::rs1(r.insn()), half = (field & DEPTH) >> 3;
+    const uint32_t field = cp::rs1(r.insn()), half = (field & DEPTH) >> 3;
     words(r, "vmatpush");
     r.require(half != 0, [field] { fail("vmatpush: field %u names no half of the depth: [4:3] is 1 or 2", field); });
     r.require(half != 3, [] { fail("vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled"); });
@@ -132,10 +132,10 @@ class Mxu {
   // vmatmul: vl words of 1 or 2 rows into the array, a word (tpu_mxu_word_a_cycle) or a row a cycle, each row's outputs
   // made as it enters (output()). One that latches first makes the staged weights the active, as it issues.
   void matmul(Route &r) {
-    Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatmul");
+    Array *array = array_for(r, cp::rd(r.insn()), "vmatmul");
     if (!array) return;
-    const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
-    const bool latch = vcix_accel::rs1(r.insn()) & LATCH;
+    const uint32_t in_word = rows_in_word(cp::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
+    const bool latch = cp::rs1(r.insn()) & LATCH;
     words(r, "vmatmul");
     if (registers_ > 1) taken(r, *array, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);
     if (latch) r.require(array->state.get().pushed, [] { fail("vmatmul: no weight was pushed before it"); });
@@ -155,9 +155,9 @@ class Mxu {
   // vpop: vl rows of the lower or the upper half of the columns, row i to element i of vd; the pops of all arrays share
   // the pop port's rows. As singles; one that asks more than is computed never ends.
   void pop(Route &r) {
-    Array *array = array_for(r, vcix_accel::rs2(r.insn()), "vpop");
+    Array *array = array_for(r, cp::rs2(r.insn()), "vpop");
     if (!array) return;
-    const uint32_t half = vcix_accel::rs1(r.insn()) & SECOND ? 1 : 0, format = vcix_accel::rs1(r.insn()) & FORMAT;
+    const uint32_t half = cp::rs1(r.insn()) & SECOND ? 1 : 0, format = cp::rs1(r.insn()) & FORMAT;
     const uint32_t sew = r.insn().sew_bits, vl = r.vl();
     r.require(sew == 32 && !format,
               [format, sew] { fail("vpop: a result is a single, and format %u of %u bits was asked", format, sew); });
@@ -165,7 +165,7 @@ class Mxu {
               [] { fail("vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not"); });
     r.use(array->pop_issue);
     r.receive(array->line, vl, [&r, half](const Host &host, uint64_t i, Row &&row) {
-      const uint32_t lanes = host.lanes(), first = half ? lanes : 0, vd = vcix_accel::rd(r.insn());
+      const uint32_t lanes = host.lanes(), first = half ? lanes : 0, vd = cp::rd(r.insn());
       for (uint32_t lane = 0; lane < lanes; lane++) put<float>(host, lane, vd, static_cast<uint32_t>(i), row[first + lane]);
     });
     r.from_output(half).through_received(pop_);
@@ -176,7 +176,7 @@ class Mxu {
 
   // What the [tpu] trace adds to an issue: the array when there are several, and its queues.
   void trace_queues(const Insn &insn) const {
-    const uint32_t which = is_pop(insn) ? vcix_accel::rs2(insn) : vcix_accel::rd(insn);
+    const uint32_t which = is_pop(insn) ? cp::rs2(insn) : cp::rd(insn);
     if (arrays_.size() > 1) std::printf(", array %u", which);
     if (which >= arrays_.size()) return;
     const vcix_uarch::AnyPipeline &line = arrays_[which].line;
@@ -233,7 +233,7 @@ class Mxu {
   }
   // An operand is words of 32 bits of format 0, 1 or 3; one of others is never accepted.
   static void words(Route &r, const char *what) {
-    const uint32_t sew = r.insn().sew_bits, format = vcix_accel::rs1(r.insn()) & FORMAT;
+    const uint32_t sew = r.insn().sew_bits, format = cp::rs1(r.insn()) & FORMAT;
     r.require(sew == 32, [what, sew] { fail("%s: its elements are words of 32 bits, not of %u", what, sew); });
     r.require(format != 2, [what] { fail("%s: format 2 names nothing a word holds", what); });
   }
@@ -257,23 +257,23 @@ class Mxu {
   }
   // The rows of one register group, per lane.
   static Rows operand_rows(const Host &host, const Insn &insn) {
-    const uint32_t format = vcix_accel::rs1(insn) & FORMAT, pack = rows_in_word(format);
+    const uint32_t format = cp::rs1(insn) & FORMAT, pack = rows_in_word(format);
     Rows rows(host.lanes(), Row(uint64_t{insn.vl} * pack));
     for (uint32_t lane = 0; lane < host.lanes(); lane++)
       for (uint32_t i = 0; i < insn.vl; i++)
         for (uint32_t slot = 0; slot < pack; slot++)
-          rows[lane][i * pack + slot] = word_element(get<uint32_t>(host, lane, vcix_accel::rs2(insn), i), slot, format);
+          rows[lane][i * pack + slot] = word_element(get<uint32_t>(host, lane, cp::rs2(insn), i), slot, format);
     return rows;
   }
   // Row `row` of a vmatmul's input, as it enters: a column's output is its active weights times the row, one input
   // vector of registers x lanes, the lower lanes from vs2 and the upper from the vmatprep the vmatmul took.
   Row output(const Host &host, const Insn &insn, const Array &array, uint64_t row) const {
     const Values &v = array.values.get();
-    const uint32_t lanes = host.lanes(), width = registers_ * lanes, format = vcix_accel::rs1(insn) & FORMAT;
+    const uint32_t lanes = host.lanes(), width = registers_ * lanes, format = cp::rs1(insn) & FORMAT;
     const uint32_t pack = rows_in_word(format), word = static_cast<uint32_t>(row / pack), slot = static_cast<uint32_t>(row % pack);
     Row input(width), out(width);
     for (uint32_t k = 0; k < width; k++)
-      input[k] = k < lanes ? word_element(get<uint32_t>(host, k, vcix_accel::rs2(insn), word), slot, format) : v.upper[INPUTS][k - lanes][row];
+      input[k] = k < lanes ? word_element(get<uint32_t>(host, k, cp::rs2(insn), word), slot, format) : v.upper[INPUTS][k - lanes][row];
     for (uint32_t column = 0; column < width; column++) {
       float sum = 0;
       for (uint32_t k = 0; k < width; k++) sum = multiply_add(sum, input[k], v.active[column][k]);

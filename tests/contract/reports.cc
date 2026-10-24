@@ -2,13 +2,14 @@
 #include <cinttypes>
 #include <cstdio>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 extern "C" __attribute__((noinline)) uint32_t f16_to_f32(uint16_t) { return 0x0badc0de; }
 
 namespace {
 
-using namespace vcix_accel;
+using namespace cp;
+using Insn = vcix_insn;
 
 constexpr const char *KEYS[] = {"plain",        "quoted",     "empty",        "tilde",  "null_word", "quoted_empty",
                                 "quoted_null",  "quoted_tilde", "leading_zero", "spaced", "nested",    "listed",
@@ -67,4 +68,4 @@ class Reports : public Model {
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Reports)
+VCIX_CP_REGISTER(Reports)

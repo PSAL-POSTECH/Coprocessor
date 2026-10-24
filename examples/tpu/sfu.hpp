@@ -26,10 +26,10 @@ class Sfu {
       : entry_{name, "entry", "instructions", 1, vcix_uarch::PRIMARY}, eup_in_{name, "eup", "registers", 1} {}
   void configure(const vcix_uarch::Config &config) {
     latency_ = config.uint(LATENCY_KEY, 10);
-    if (latency_ == 0) throw vcix_accel::ConfigError(LATENCY_KEY, "0", "is not a pipeline depth: at least 1");
+    if (latency_ == 0) throw cp::ConfigError(LATENCY_KEY, "0", "is not a pipeline depth: at least 1");
     const uint64_t entries = config.uint(QUEUE_KEY, DEFAULT_ENTRIES);
     if (entries < 1 || entries > UINT32_MAX)
-      throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
+      throw cp::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
     eup_.configure(latency_, entries, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
   }
   template <class H>
@@ -46,7 +46,7 @@ class Sfu {
       const uint32_t per = host.vlen_bits() / 32, from = static_cast<uint32_t>(j) * per, to = std::min(r.vl(), from + per);
       Register out(host.lanes());
       for (uint32_t lane = 0; lane < host.lanes(); lane++)
-        for (uint32_t i = from; i < to; i++) out[lane].push_back(::exp2f(get<float>(host, lane, vcix_accel::rs2(r.insn()), i)));
+        for (uint32_t i = from; i < to; i++) out[lane].push_back(::exp2f(get<float>(host, lane, cp::rs2(r.insn()), i)));
       return out;
     });
   }
@@ -59,7 +59,7 @@ class Sfu {
       const uint32_t per = host.vlen_bits() / 32, from = static_cast<uint32_t>(j) * per;
       for (uint32_t lane = 0; lane < host.lanes() && lane < in.size(); lane++)
         for (uint32_t k = 0; k < in[lane].size() && from + k < r.vl(); k++)
-          put<float>(host, lane, vcix_accel::rd(r.insn()), from + k, in[lane][k]);
+          put<float>(host, lane, cp::rd(r.insn()), from + k, in[lane][k]);
     });
     r.when_stuck([](uint64_t) { fail("sfu_pop: lane %u has no pushed result left", 0u); });
   }
@@ -72,7 +72,7 @@ class Sfu {
               [name, sew] { fail("%s: an element of %u bits is not supported", name, sew); });
     r.use(entry_).done_after(latency_);
     r.when_done([&r](const Host &host) {
-      const uint32_t f = r.arg(), vs = vcix_accel::rs2(r.insn()), vd = vcix_accel::rd(r.insn()), sew = r.insn().sew_bits;
+      const uint32_t f = r.arg(), vs = cp::rs2(r.insn()), vd = cp::rd(r.insn()), sew = r.insn().sew_bits;
       for (uint32_t lane = 0; lane < host.lanes(); lane++)
         for (uint32_t i = 0; i < r.vl(); i++)
           if (sew == 16) put<uint16_t>(host, lane, vd, i, double_to_half(SINGLE[f](half_to_float(get<uint16_t>(host, lane, vs, i)))));
@@ -82,7 +82,7 @@ class Sfu {
   }
 
   // What the [tpu] trace adds to an issue: the EUP's queues for a push or a pop, nothing for a special function.
-  void trace_queues(const vcix_accel::Insn &insn) const {
+  void trace_queues(const vcix_insn &insn) const {
     const uint32_t form = insn.bits & FUNCTION;
     if (form == PUSH || form == POP)
       std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(eup_.input_rows()),
@@ -112,7 +112,7 @@ class Sfu {
   static constexpr uint64_t DEFAULT_ENTRIES = 16;
   static constexpr const char *QUEUE_KEY = "tpu_sfu_queue_registers";
   // The registers of the instruction's group: the EUP takes one a cycle.
-  static uint64_t registers(Route &r) { return vcix_accel::group_size(r.insn()); }
+  static uint64_t registers(Route &r) { return cp::group_size(r.insn()); }
 
   vcix_uarch::Port entry_, eup_in_;
   vcix_uarch::Pipeline<Register> eup_;

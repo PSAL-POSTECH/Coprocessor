@@ -42,7 +42,7 @@ int main() {
   Model m;
   m.configure(vcix_uarch::Config(&none));
   const vcix_uarch::Insn insn = {0x5B, 1, 32, 0};
-  const bool unknown = m.issue(insn, 1, 1) == vcix_accel::Unknown;
+  const bool unknown = m.issue(insn, 1, 1) == cp::Unknown;
   vcix_uarch::Cycle done = 0;
   for (vcix_uarch::Cycle now = 2; now < 20 && !done; now++) {
     m.tick(now);

@@ -87,7 +87,7 @@ log="$BUILD/direct.log"
 "$BUILD/direct" "$BUILD" > "$log" 2>&1; rc=$?
 grep -E '^(PASS|FAIL)  ' "$log"
 ended 0
-line 1 "vcix_accel: the model cannot be made: no such unit can be built"
+line 1 "vcix_cp: the model cannot be made: no such unit can be built"
 verdict "direct: every check above passed, and a constructor that throws says why"
 
 log="$BUILD/port_stats.log"
@@ -128,7 +128,7 @@ part 1 "libother_abi.so has ABI 12, Spike has 11"
 verdict "spike refuses a table of another ABI version"
 run spike cannot_be_made cannot_be_made "" pair
 ended 1
-line 1 "vcix_accel: the model cannot be made: no such unit can be built"
+line 1 "vcix_cp: the model cannot be made: no such unit can be built"
 verdict "spike refuses a model whose constructor throws, after the model said why"
 
 run gem5 units reports "$BUILD/one_at_a_time.yml" pair --units 2

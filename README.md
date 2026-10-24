@@ -185,14 +185,14 @@ vcix_model                                         who calls it
 leave `tick`, `ready` and `reset` NULL. `tests/contract/by_hand.cc` is such a
 table, and both simulators run it ([`tests/contract/run.sh:105-118`](tests/contract/run.sh)).
 
-Most models use the C++ wrapper, [`include/vcix_accel.hpp`](include/vcix_accel.hpp).
-You derive from `vcix_accel::Model` and add one line:
+Most models use the C++ wrapper, [`include/vcix_cp_base.hpp`](include/vcix_cp_base.hpp).
+You derive from `cp::Model` and add one line:
 
 ```cpp
-VCIX_ACCEL_REGISTER(YourModel)
+VCIX_CP_REGISTER(YourModel)
 ```
 
-The methods ([`vcix_accel.hpp:172-206`](include/vcix_accel.hpp)); "optional"
+The methods ([`vcix_cp_base.hpp:172-206`](include/vcix_cp_base.hpp)); "optional"
 ones have a default:
 
 - Both simulators
@@ -224,7 +224,7 @@ under: `vl`, SEW and LMUL. Both faces get the same `insn`, so a latency can
 depend on how much data the instruction moves. `execute` reaches the hart
 through `host`: `lanes()`, `vlen_bits()`, `vreg(lane, reg)`,
 `vreg_mut(lane, reg)`, `xreg`, `set_xreg`, `freg_bits`, `csr`, `mem_read` and
-`mem_write` ([`vcix_accel.hpp:82-104`](include/vcix_accel.hpp)).
+`mem_write` ([`vcix_cp_base.hpp:82-104`](include/vcix_cp_base.hpp)).
 
 **Instances.** A simulator makes one object per instance of the accelerator:
 Spike one per hart, gem5 one per `MinorVcixAccelFU`. Instances share nothing.
@@ -398,7 +398,7 @@ queue  [0 1]  ... [1 2]  ...           [2 3]  ...           []
 
 gem5 issues instructions before it knows they will run. After a mispredicted
 branch it takes them back. The model does not see this. The wrapper keeps the
-rule for you ([`vcix_accel.hpp:208-260`](include/vcix_accel.hpp)):
+rule for you ([`vcix_cp_base.hpp:208-260`](include/vcix_cp_base.hpp)):
 
 ```
 issue #1 ──► save a copy of the model ──► model.issue(#1)
@@ -553,8 +553,8 @@ gem5:   src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libreports.so: rep
 
 ([`tests/contract/run.sh:72-76`](tests/contract/run.sh).) A model that reads a
 value itself reports a bad one the same way: it throws
-`vcix_accel::ConfigError(key, value, why)` from `configure`
-([`vcix_accel.hpp:39-43`](include/vcix_accel.hpp)).
+`cp::ConfigError(key, value, why)` from `configure`
+([`vcix_cp_base.hpp:39-43`](include/vcix_cp_base.hpp)).
 
 A description whose top level is not a mapping is refused by both simulators
 ([`run.sh:78-83`](tests/contract/run.sh)).
@@ -563,7 +563,7 @@ A description whose top level is not a mapping is refused by both simulators
 
 Build the model with `-fvisibility=hidden -fvisibility-inlines-hidden` (in
 CMake, `CXX_VISIBILITY_PRESET hidden`, as
-[`CMakeLists.txt:11-15`](CMakeLists.txt) does). `VCIX_ACCEL_REGISTER` exports
+[`CMakeLists.txt:11-15`](CMakeLists.txt) does). `VCIX_CP_REGISTER` exports
 the one symbol a simulator looks up, `vcix_accel_model`, by itself, so nothing
 else has to be marked.
 
@@ -585,7 +585,7 @@ One process can load more than one model. `tests/contract/same_name.cc`
 is built twice, both with a class named `Accel`. `direct` loads both and checks that each
 library keeps its own table and model, built hidden and built with the default
 visibility ([`direct.cc:61-69`](tests/contract/direct.cc)). The table is hidden
-whatever the flags ([`vcix_accel.hpp:385`](include/vcix_accel.hpp)).
+whatever the flags ([`vcix_cp_base.hpp:385`](include/vcix_cp_base.hpp)).
 
 The flag covers the code compiled with it. A static library linked into the
 model that was not built hidden also needs `-Wl,-Bsymbolic` on the model's
@@ -673,7 +673,7 @@ Register<S>       unit state, read and written the same way on both simulators
                     source_.get();  source_.write() = x;
 ```
 
-- **Port** ([`vcix_accel.hpp:107-170`](include/vcix_accel.hpp)): a capacity
+- **Port** ([`vcix_cp_base.hpp:107-170`](include/vcix_cp_base.hpp)): a capacity
   per cycle. A unit has one `PRIMARY` port; its counts are the unit's
   statistics.
 - **`Pipeline<T>`** ([`vcix_uarch.hpp:268-350`](include/vcix_uarch.hpp)): rows
@@ -748,7 +748,7 @@ class Model final : public vcix_uarch::Machine<Copier> {          // Machine<Uni
   Model() : Machine("COPIER") {}                                  // each unit's name in the statistics
   const char *name() const override { return "copier"; }
 };
-VCIX_ACCEL_REGISTER(Model)
+VCIX_CP_REGISTER(Model)
 ```
 
 `Machine<Units...>` is the `Model`
@@ -783,7 +783,7 @@ void hardware(H &&h) {
 // :25-28: x[rs1] is the source of the copies after it
 void set_source(Route &r) {
   r.use(issue_).enqueue(commands_).done_when_enqueued();
-  r.at_issue([&](const Host &host) { source_.write() = host.xreg(vcix_accel::rs1(r.insn())); });
+  r.at_issue([&](const Host &host) { source_.write() = host.xreg(cp::rs1(r.insn())); });
 }
 // :30-42: 256 bytes; 2 * 256 / 8 = 64 requests at the head, one a cycle through memory_
 void copy(Route &r) {
@@ -1075,7 +1075,7 @@ Not goals:
 ```
 include/vcix_accel.h      the C ABI: vcix_model, vcix_insn, vcix_config, vcix_host,
                           vcix_encoding, vcix_stat
-include/vcix_accel.hpp    the C++ wrapper: Model, Config, Host, Port, VCIX_ACCEL_REGISTER
+include/vcix_cp_base.hpp    the C++ wrapper: Model, Config, Host, Port, VCIX_CP_REGISTER
 include/vcix_uarch.hpp    units as hardware blocks (Port, Pipeline, CommandQueue, Register)
                           and a route per instruction; Machine derives the Model
 adapters/spike/           what the Spike branch does; its code is in the Spike repository

@@ -1,16 +1,16 @@
 // Test model, built twice (WHICH 1 and 2): both libraries define a class of the same global name.
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
-class Accel : public vcix_accel::Model {
+class Accel : public cp::Model {
  public:
   const char *name() const override { return WHICH == 1 ? "first" : "second"; }
-  std::vector<vcix_accel::Encoding> owns() const override { return {{0x5Bu | (WHICH << 26), 0xFC00007Fu, "op"}}; }
+  std::vector<cp::Encoding> owns() const override { return {{0x5Bu | (WHICH << 26), 0xFC00007Fu, "op"}}; }
 
-  void execute(const vcix_accel::Host &, const vcix_accel::Insn &) override {}
-  bool can_accept(const vcix_accel::Insn &, vcix_accel::Cycle) const override { return true; }
-  vcix_accel::Cycle issue(const vcix_accel::Insn &, vcix_accel::Id, vcix_accel::Cycle) override {
+  void execute(const cp::Host &, const vcix_insn &) override {}
+  bool can_accept(const vcix_insn &, cp::Cycle) const override { return true; }
+  cp::Cycle issue(const vcix_insn &, cp::Id, cp::Cycle) override {
     return WHICH;
   }
 };
 
-VCIX_ACCEL_REGISTER(Accel)
+VCIX_CP_REGISTER(Accel)

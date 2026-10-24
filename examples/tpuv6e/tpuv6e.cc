@@ -1,6 +1,6 @@
 // Example: a TPU v6e as one model, libtpuv6e.so: the tpu example's special-function, misc and cross-lane units, and
 // its matrix unit (tpu/mxu.hpp) in the v6e's shape, in place of the systolic array and the multi-precision array.
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 #include "tpu/machine.hpp"
 #include "tpu/misc.hpp"
@@ -26,4 +26,4 @@ class Tpuv6e final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Tpuv6e)
+VCIX_CP_REGISTER(Tpuv6e)

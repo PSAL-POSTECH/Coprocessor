@@ -26,7 +26,7 @@ class Misc {
   explicit Misc(const char *name) : issue_{name, "issue", "instructions", 2, vcix_uarch::PRIMARY} {}
   void configure(const vcix_uarch::Config &config) {
     const uint64_t width = config.uint(WIDTH_KEY, 2);
-    if (width == 0) throw vcix_accel::ConfigError(WIDTH_KEY, "0", "is not an issue width: at least 1");
+    if (width == 0) throw cp::ConfigError(WIDTH_KEY, "0", "is not an issue width: at least 1");
     issue_.set_capacity(width);
     Dma configured;
     configured.configure(config);
@@ -70,10 +70,10 @@ class Misc {
   static void pack(const Host &host, const Insn &insn) {
     for (uint32_t lane = 0; lane < host.lanes(); lane++) {
       std::vector<float> both;
-      for (uint32_t i = 0; i < insn.vl; i++) both.push_back(get<float>(host, lane, vcix_accel::rs2(insn), i));
-      for (uint32_t i = 0; i < insn.vl; i++) both.push_back(get<float>(host, lane, vcix_accel::rs1(insn), i));
+      for (uint32_t i = 0; i < insn.vl; i++) both.push_back(get<float>(host, lane, cp::rs2(insn), i));
+      for (uint32_t i = 0; i < insn.vl; i++) both.push_back(get<float>(host, lane, cp::rs1(insn), i));
       for (uint32_t w = 0; w < insn.vl; w++)
-        put<uint32_t>(host, lane, vcix_accel::rd(insn), w, bf16_of(both[2 * w]) | (bf16_of(both[2 * w + 1]) << 16));
+        put<uint32_t>(host, lane, cp::rd(insn), w, bf16_of(both[2 * w]) | (bf16_of(both[2 * w + 1]) << 16));
     }
   }
 
@@ -89,10 +89,10 @@ class Misc {
   static void unpack(const Host &host, const Insn &insn, uint32_t first) {
     for (uint32_t lane = 0; lane < host.lanes(); lane++) {
       std::vector<uint32_t> words(insn.vl);
-      for (uint32_t w = 0; w < insn.vl; w++) words[w] = get<uint32_t>(host, lane, vcix_accel::rs2(insn), w);
+      for (uint32_t w = 0; w < insn.vl; w++) words[w] = get<uint32_t>(host, lane, cp::rs2(insn), w);
       for (uint32_t i = 0; i < insn.vl; i++) {
         const uint32_t e = first + i;
-        put<float>(host, lane, vcix_accel::rd(insn), i, f32_of_bf16(words[e / 2] >> (16 * (e & 1))));
+        put<float>(host, lane, cp::rd(insn), i, f32_of_bf16(words[e / 2] >> (16 * (e & 1))));
       }
     }
   }
@@ -102,7 +102,7 @@ class Misc {
   // vlane_idx: every element of vd is the number of its lane, as 64 bits whatever the element width.
   static void vlane_idx(const Host &host, const Insn &insn) {
     for (uint32_t lane = 0; lane < host.lanes(); lane++)
-      for (uint32_t i = 0; i < insn.vl; i++) put<int64_t>(host, lane, vcix_accel::rd(insn), i, lane);
+      for (uint32_t i = 0; i < insn.vl; i++) put<int64_t>(host, lane, cp::rd(insn), i, lane);
   }
 
   static constexpr const char *WIDTH_KEY = "tpu_misc_issue_width";

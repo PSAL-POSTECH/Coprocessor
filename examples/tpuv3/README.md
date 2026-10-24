@@ -246,7 +246,7 @@ A `vmatmul` operand is `vl` words of 32 bits. A word holds one single, or two
 `vmatmul` sends the rows into the array's line (`mxu.hpp:137-145`):
 
 ```cpp
-const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
+const uint32_t in_word = rows_in_word(cp::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
 ...
 r.send(array->line, uint64_t{r.vl()} * in_word / weight, weight, ...);
 ```

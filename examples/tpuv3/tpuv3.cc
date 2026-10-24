@@ -1,6 +1,6 @@
 // A TPU v3 TensorCore as one model, libtpuv3.so: the tpu example's units and its matrix unit (tpu/mxu.hpp) in the
 // v3's shape. The TensorCore's second MXU is TOGSim's array split, so tpu_mxu_units stays 1.
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 #include "tpu/machine.hpp"
 #include "tpu/misc.hpp"
@@ -27,4 +27,4 @@ class Tpuv3 final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Tpuv3)
+VCIX_CP_REGISTER(Tpuv3)

@@ -707,10 +707,10 @@ what each verb does on each simulator.
 
 ```cpp
 void matmul(Route &r) {
-  Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatmul");          // rd names the array
+  Array *array = array_for(r, cp::rd(r.insn()), "vmatmul");          // rd names the array
   if (!array) return;
-  const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
-  const bool latch = vcix_accel::rs1(r.insn()) & LATCH;                      // field [2]
+  const uint32_t in_word = rows_in_word(cp::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
+  const bool latch = cp::rs1(r.insn()) & LATCH;                      // field [2]
   words(r, "vmatmul");                                                       // e32, format not 2
   if (registers_ > 1) taken(r, *array, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);  // a held half, as many rows
   if (latch) r.require(array->state.get().pushed, [] { fail("vmatmul: no weight was pushed before it"); });

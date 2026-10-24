@@ -29,9 +29,9 @@ class Msa {
   void configure(const vcix_uarch::Config &config) {
     const uint64_t lanes = config.uint(LANES_KEY, 128), entries = config.uint(QUEUE_KEY, 256);
     if (lanes < 1)
-      throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
+      throw cp::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 1 || entries > UINT32_MAX)
-      throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
+      throw cp::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
     array_.configure(2 * lanes - 1, entries, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
     pop_.set_capacity(entries);
     lanes_ = static_cast<uint32_t>(lanes);
@@ -47,7 +47,7 @@ class Msa {
   // word holds. A weight push takes its own slot and writes the matrix as it issues, and changing the format or the
   // width empties it; an input push sends vl rows, element i of every lane one input row (row()).
   void push(Route &r) {
-    const uint32_t field = vcix_accel::rs1(r.insn()), sew = r.insn().sew_bits, format = field & 3, shift = (field >> 2) & 3;
+    const uint32_t field = cp::rs1(r.insn()), sew = r.insn().sew_bits, format = field & 3, shift = (field >> 2) & 3;
     const uint32_t pack = elements(format), held = elements(format_.get()), columns = lanes_;
     const bool weights = field & WEIGHT;
     r.require(sew == 32, [sew] { fail("msa push: its elements are words of 32 bits, not of %u", sew); });
@@ -58,7 +58,7 @@ class Msa {
     else r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return row(host, r.insn(), i); });
     if (!weights) return;
     r.at_issue([&](const Host &host) {
-      const uint32_t lanes = host.lanes(), vs = vcix_accel::rs2(r.insn());
+      const uint32_t lanes = host.lanes(), vs = cp::rs2(r.insn());
       Weights &w = weights_.write();
       if (w.columns.size() != lanes) w.columns.assign(lanes, {});
       if (format != format_.get() || shift != w.shift)
@@ -78,8 +78,8 @@ class Msa {
   void pop(Route &r) {
     const uint32_t vl = r.vl();
     r.use(issue_).receive(array_, vl, [&r](const Host &host, uint64_t i, Row &&row) {
-      const uint32_t vd = vcix_accel::rd(r.insn()), at = static_cast<uint32_t>(i);
-      const Narrow &byte = (vcix_accel::rs1(r.insn()) & 3) == E5M2_FORMAT ? E5M2 : E4M3;
+      const uint32_t vd = cp::rd(r.insn()), at = static_cast<uint32_t>(i);
+      const Narrow &byte = (cp::rs1(r.insn()) & 3) == E5M2_FORMAT ? E5M2 : E4M3;
       for (uint32_t lane = 0; lane < host.lanes(); lane++) switch (r.insn().sew_bits) {
           case 8: put<uint8_t>(host, lane, vd, at, static_cast<uint8_t>(narrow(row[lane], byte, 0))); break;
           case 16: put<uint16_t>(host, lane, vd, at, static_cast<uint16_t>(narrow(row[lane], HALF, 0))); break;
@@ -105,7 +105,7 @@ class Msa {
   // Input row i of a push, as it enters: per lane, its column of the matrix times element i of every lane; a column
   // past the width computes 0.
   Row row(const Host &host, const vcix_uarch::Insn &insn, uint64_t i) const {
-    const uint32_t lanes = host.lanes(), vs = vcix_accel::rs2(insn), format = vcix_accel::rs1(insn) & 3;
+    const uint32_t lanes = host.lanes(), vs = cp::rs2(insn), format = cp::rs1(insn) & 3;
     const uint32_t pack = elements(format), at = static_cast<uint32_t>(i);
     const Weights &w = weights_.get();
     Row in(lanes * pack), out(lanes);
