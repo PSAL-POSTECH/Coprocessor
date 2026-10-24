@@ -1,6 +1,6 @@
 // The numbers every tpu unit's values use, as the Spike these units came from did them (riscv-isa-sim branch
 // spike-fp8, 7259e73, riscv/insns/torchsim_*.h): element conversions and rounding, and an element of a register group
-// or of memory. Each unit's routes compute with them; a unit keeps its values in its own blocks.
+// or of memory. Each component's handlers compute with them; a component keeps its values in its own blocks.
 #ifndef TPU_VALUES_HPP
 #define TPU_VALUES_HPP
 
@@ -179,6 +179,6 @@ void store(const cp::Host &host, uint64_t address, T value) {
   host.mem_write(address, &value, sizeof(T));
 }
 
-}  // namespace tpu
+}
 
 #endif

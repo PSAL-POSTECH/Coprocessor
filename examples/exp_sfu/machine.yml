@@ -1,0 +1,4 @@
+vpu_num_lanes: 4
+vpu_spad_size_kb_per_lane: 128
+vpu_vector_length_bits: 256
+exp_sfu_latency_cycles: 3

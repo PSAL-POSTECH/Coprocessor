@@ -15,10 +15,12 @@ function(vcix_cp_add_model name source)
 endfunction()
 
 vcix_cp_add_model(print_args examples/print_args/print_args.cc)
+# examples/exp_sfu: the smallest cp model, the README's tutorial: one component, one instruction, one pipeline.
+vcix_cp_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)
 vcix_cp_add_model(tpu examples/tpu/tpu.cc)
 vcix_cp_add_model(tpuv6e examples/tpuv6e/tpuv6e.cc)
 vcix_cp_add_model(tpuv3 examples/tpuv3/tpuv3.cc)
-# examples/copier: examples/rtl/copier/copier.sv's timing as a vcix_uarch unit, no Verilator needed.
+# examples/copier: examples/rtl/copier/copier.sv's timing as a cp component, no Verilator needed.
 vcix_cp_add_model(copier examples/copier/copier.cc)
 # examples/tpuv6e and examples/tpuv3 are the tpu example's units, its matrix unit among them, as tpu/<unit>.hpp.
 target_include_directories(tpuv6e PRIVATE examples)

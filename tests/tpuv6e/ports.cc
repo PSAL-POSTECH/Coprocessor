@@ -1,5 +1,6 @@
-// The tpuv6e model's statistics, read through the C table with no simulator: the units it holds, under the names it
-// gives them, in the order a reader that indexes the list depends on. Usage: tpuv6e_ports libtpuv6e.so
+// The tpuv6e model's statistics, read through the C table with no simulator: a unit per component and per block
+// (<C>.insns, its queues and pipelines), under the names it gives them, in the order a reader that indexes the list
+// depends on. Usage: tpuv6e_ports libtpuv6e.so
 #include <dlfcn.h>
 
 #include <cstdio>
@@ -33,8 +34,29 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Four entries per unit at its primary port, units in the order the model holds them, then the commits.
-  const char *expected[][2] = {{"TPUV6E_SFU", "entry"}, {"TPUV6E_MISC", "issue"}, {"TPUV6E_XLU", "input"}, {"TPUV6E_MXU", "input"}};
+  // Four entries per unit at its one primary port: per component its insns, its primary port, then its blocks, the
+  // components in the order the model holds them; then the commits.
+  const char *expected[][2] = {{"TPUV6E_SFU.insns", "insns"},
+                               {"TPUV6E_SFU", "entry"},
+                               {"TPUV6E_SFU.eup_input", "eup_input"},
+                               {"TPUV6E_SFU.eup", "eup"},
+                               {"TPUV6E_SFU.eup_output", "eup_output"},
+                               {"TPUV6E_MISC.insns", "insns"},
+                               {"TPUV6E_MISC", "issue"},
+                               {"TPUV6E_XLU.insns", "insns"},
+                               {"TPUV6E_XLU", "input"},
+                               {"TPUV6E_XLU.queue", "queue"},
+                               {"TPUV6E_XLU.stages", "stages"},
+                               {"TPUV6E_XLU.moves", "moves"},
+                               {"TPUV6E_XLU.buffer", "buffer"},
+                               {"TPUV6E_XLU.line", "line"},
+                               {"TPUV6E_XLU.out", "out"},
+                               {"TPUV6E_MXU.insns", "insns"},
+                               {"TPUV6E_MXU", "input"},
+                               {"TPUV6E_MXU.array0_input", "array0_input"},
+                               {"TPUV6E_MXU.array0_line", "array0_line"},
+                               {"TPUV6E_MXU.array0_lower", "array0_lower"},
+                               {"TPUV6E_MXU.array0_upper", "array0_upper"}};
   const size_t units = sizeof expected / sizeof expected[0];
   bool ok = !strcmp(m->name, "tpuv6e") && m->num_stats(self) == 4 * units + m->num_encodings;
   for (size_t u = 0; ok && u < units; u++)
@@ -46,8 +68,10 @@ int main(int argc, char **argv) {
     const vcix_stat *s = m->stat(self, 4 * units + e);
     ok = !strcmp(s->unit, "committed") && !strcmp(s->name, m->encodings[e].name) && s->kind == VCIX_STAT_COUNT;
   }
-  printf("%s  model tpuv6e: 4 units at their primary ports (TPUV6E_SFU.entry, TPUV6E_MISC.issue, TPUV6E_XLU/TPUV6E_MXU.input), "
-         "no other port, then one commit count per encoding\n",
+  printf("%s  model tpuv6e: 21 units, each at its one primary port: per component its insns (TPUV6E_<C>.insns), its own port "
+         "(TPUV6E_SFU.entry, TPUV6E_MISC.issue, TPUV6E_XLU/TPUV6E_MXU.input), then its queues and pipelines (TPUV6E_SFU.eup_input, "
+         ".eup, .eup_output; TPUV6E_XLU.queue, .stages, .moves, .buffer, .line, .out; TPUV6E_MXU.array0_input, .array0_line, "
+         ".array0_lower, .array0_upper), components in the model's order; then one commit count per encoding\n",
          ok ? "PASS" : "FAIL");
   m->destroy(self);
   return ok ? 0 : 1;

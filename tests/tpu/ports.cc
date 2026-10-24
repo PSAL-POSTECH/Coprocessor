@@ -2,11 +2,14 @@
 // A 4 x 4 array (7 slots, queues of 8; input pushes after a weight push in cycle 0), a cross-lane unit of 3 slots, a
 // special-function unit of depth 4, misc 2 wide with a scratchpad. Usage: tpu_ports libtpu.so
 #include <dlfcn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -28,7 +31,9 @@ void check(bool ok, const std::string &what) {
   failed |= !ok;
 }
 
-// One instance, driven a cycle at a time; issued instructions commit in order once their latency has passed.
+// One instance, driven a cycle at a time, as an in-order CPU: an instruction is issued when the unit accepts it, and
+// the oldest issued one commits in the cycle ready() first says so. Nothing happens at issue, so a pop may be issued
+// before its rows exist and wait inside the unit.
 class Run {
  public:
   Run() {
@@ -52,7 +57,7 @@ class Run {
   void next() {
     now_++;
     m->tick(self_, now_);
-    while (!flight_.empty() && flight_.front().done <= now_) {
+    while (!flight_.empty() && m->ready(self_, flight_.front().id, now_)) {
       m->commit(self_, &flight_.front().insn, flight_.front().id, now_);
       flight_.erase(flight_.begin());
     }
@@ -60,8 +65,8 @@ class Run {
   bool issue(uint32_t bits, uint32_t vl) {
     const vcix_insn insn = {bits, vl, 32, 0};
     if (!m->can_accept(self_, &insn, now_)) return false;
-    const vcix_cycle_t latency = m->issue(self_, &insn, ++id_, now_);
-    flight_.push_back({id_, insn, now_ + latency});
+    m->issue(self_, &insn, ++id_, now_);
+    flight_.push_back({id_, insn});
     return true;
   }
   void squash_last() {
@@ -94,7 +99,6 @@ class Run {
   struct Flight {
     vcix_id_t id;
     vcix_insn insn;
-    vcix_cycle_t done;
   };
   void *self_;
   vcix_cycle_t now_ = 0;
@@ -104,26 +108,40 @@ class Run {
 
 std::string n(uint64_t v) { return std::to_string(v); }
 
-// The list: four entries per unit at its primary port, units in the order the model asks them, then the commits.
+// The list: four entries per unit, where a unit is a component at its primary port, or one of its queues and
+// pipelines (its insns() first) as "<component>.<block>", in the order the model holds them; then the commits.
 void list() {
   Run run;
-  const char *expected[][2] = {{"SFU", "entry"}, {"MISC", "issue"}, {"SYSTOLIC", "input"}, {"XLU", "input"}, {"MSA", "input"}};
+  const char *expected[][2] = {
+      {"SFU.insns", "insns"}, {"SFU", "entry"}, {"SFU.eup_input", "eup_input"}, {"SFU.eup", "eup"}, {"SFU.eup_output", "eup_output"},
+      {"MISC.insns", "insns"}, {"MISC", "issue"},
+      {"SYSTOLIC.insns", "insns"}, {"SYSTOLIC", "input"}, {"SYSTOLIC.commands", "commands"}, {"SYSTOLIC.input_queue", "input_queue"},
+      {"SYSTOLIC.array", "array"}, {"SYSTOLIC.output_queue", "output_queue"},
+      {"XLU.insns", "insns"}, {"XLU", "input"}, {"XLU.queue", "queue"}, {"XLU.stages", "stages"}, {"XLU.moves", "moves"},
+      {"XLU.buffer", "buffer"}, {"XLU.line", "line"}, {"XLU.out", "out"},
+      {"MSA.insns", "insns"}, {"MSA", "input"}, {"MSA.input_queue", "input_queue"}, {"MSA.array", "array"}, {"MSA.output_queue", "output_queue"}};
   const size_t units = sizeof expected / sizeof expected[0];
-  bool ok = m->num_stats(run.self()) == 4 * units + m->num_encodings;
-  for (size_t u = 0; ok && u < units; u++)
-    for (uint32_t kind = 0; kind < 4; kind++) {
+  const size_t stats = m->num_stats(run.self());
+  std::string differs;
+  if (stats != 4 * units + m->num_encodings) differs = n(stats) + " entries, not " + n(4 * units + m->num_encodings);
+  for (size_t u = 0; differs.empty() && u < units; u++)
+    for (uint32_t kind = 0; differs.empty() && kind < 4; kind++) {
       const vcix_stat *s = m->stat(run.self(), 4 * u + kind);
-      ok = ok && !strcmp(s->unit, expected[u][0]) && !strcmp(s->name, expected[u][1]) && s->kind == kind;
+      if (strcmp(s->unit, expected[u][0]) || strcmp(s->name, expected[u][1]) || s->kind != kind)
+        differs = std::string("entry ") + n(4 * u + kind) + " is " + s->unit + "." + s->name + " kind " + n(s->kind);
     }
-  for (size_t e = 0; ok && e < m->num_encodings; e++) {
+  for (size_t e = 0; differs.empty() && e < m->num_encodings; e++) {
     const vcix_stat *s = m->stat(run.self(), 4 * units + e);
-    ok = !strcmp(s->unit, "committed") && !strcmp(s->name, m->encodings[e].name) && s->kind == VCIX_STAT_COUNT;
+    if (strcmp(s->unit, "committed") || strcmp(s->name, m->encodings[e].name) || s->kind != VCIX_STAT_COUNT)
+      differs = std::string("commit entry ") + n(e) + " is " + s->unit + "." + s->name;
   }
-  check(ok, "5 units at their primary ports (SFU.entry, MISC.issue, SYSTOLIC/XLU/MSA.input), no other port, then one "
-            "commit count per encoding");
+  check(differs.empty(), n(units) + " units: each component at its primary port (SFU.entry, MISC.issue, SYSTOLIC/XLU/MSA.input) "
+                         "and each of its queues and pipelines, no other port, then one commit count per encoding" +
+                             (differs.empty() ? "" : "; but " + differs));
 }
 
-// One row through a 7-slot array: it enters in the tick after its push and is held 7 cycles.
+// One row through a 7-slot array: it is in the input queue the tick after its push, enters the array in the tick after
+// that and is held 7 cycles.
 void one_row() {
   Run run;
   run.issue(WEIGHT_PUSH, 1);
@@ -150,20 +168,19 @@ void one_row() {
             "), and no other unit admitted anything (" + n(others) + ")");
 }
 
-// Pushes and pops of two, one instruction a cycle: the array takes a row every cycle once it is full.
-// A pop is offered only for rows that were pushed: one asking more than was computed is never accepted.
+// Pushes and pops of two in program order, as a compiler schedules them: six pushes run ahead (12 rows: the input
+// queue of 8 fills to 7 and never refuses a push), then a pop and a push alternate, each pop 11 instructions behind
+// its push: exactly when its second row, behind the 2 rows queued ahead of it, is in the output queue.
 void continuous() {
   Run run;
-  const int cycles = 4000;
-  uint64_t short_by = 0, unpopped = 0;
+  const int cycles = 4000, ahead = 6;
+  uint64_t short_by = 0;
   bool bounded = true;
+  int at = 0;
   run.issue(WEIGHT_PUSH, 1);
   for (int c = 1; c <= cycles; c++) {
     run.next();
-    if (unpopped && run.issue(POP, 2))
-      unpopped -= 2;
-    else if (run.issue(INPUT_PUSH, 2))
-      unpopped += 2;
+    if (run.issue(at < ahead || (at - ahead) % 2 ? INPUT_PUSH : POP, 2)) at++;
     const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
     bounded = bounded && admitted <= uint64_t(c);
     short_by = uint64_t(c) - admitted;
@@ -171,12 +188,13 @@ void continuous() {
   const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
   const double utilization = double(admitted) / double(cycles);
   check(bounded && utilization > 0.99,
-        "pushes and pops of two for " + n(cycles) + " cycles: input admitted " + n(admitted) +
-            ", never above the cycles, utilization " + std::to_string(utilization) + " (" + n(short_by) +
-            " rows short of capacity)");
+        "pushes and pops of two in program order, six pushes ahead, for " + n(cycles) + " cycles: input admitted " +
+            n(admitted) + ", never above the cycles, utilization " + std::to_string(utilization) + " (" + n(short_by) +
+            " rows short of capacity: the first row enters in cycle 3)");
 }
 
-// A vexp every cycle fills the special-function unit's entry exactly; xlu holds each element 3 cycles.
+// A vexp every cycle, each accepted, fills the special-function unit's entry from the cycle after the first: 999 of
+// 1000, the last issued in the last cycle; xlu holds each element 3 cycles.
 void sfu_and_xlu() {
   Run run;
   bool all = true;
@@ -186,8 +204,9 @@ void sfu_and_xlu() {
   }
   const uint64_t admitted = run.stat("SFU", "entry", VCIX_STAT_ADMITTED);
   const uint64_t cycles = run.stat("SFU", "entry", VCIX_STAT_CYCLES);
-  check(all && admitted == 1000 && cycles == 1000, "a vexp each of 1000 cycles: SFU.entry admitted " + n(admitted) +
-                                                       " in " + n(cycles) + " cycles, utilization 1");
+  check(all && admitted == 999 && cycles == 1000,
+        "a vexp each of 1000 cycles, all accepted: SFU.entry admitted " + n(admitted) + " in " + n(cycles) +
+            " cycles, each in the cycle after its issue; the 1000th is issued in the last cycle: expected 999, 1000");
 
   Run xlu;
   xlu.next();
@@ -237,7 +256,8 @@ void misc() {
             n(committed) + "; expected 5, 10, 2 (5), 10");
 }
 
-// A push squashed behind a vexp still in flight leaves every count as a run that never issued it.
+// A push squashed behind a vexp still in flight (so not yet committed, though its rows are in) leaves every count as
+// a run that never issued it.
 void squashed() {
   Run with, without;
   for (Run *run : {&with, &without}) {
@@ -270,39 +290,82 @@ int wait_for(Run &run, uint32_t bits, uint32_t vl) {
   return waited;
 }
 
-// `box`: a pop is issued at once and waits in a queue of one for what it takes. `weights`: what its pushes follow, or
-// 0.
+// What a run in a child process ended with: its exit status (-1 if it did not exit) and what it wrote to stderr.
+struct Ended {
+  int status;
+  std::string said;
+};
+Ended in_child(const std::function<void()> &body) {
+  int ends[2];
+  fflush(stdout);
+  if (pipe(ends) || fflush(stderr)) {
+    perror("pipe");
+    exit(1);
+  }
+  const pid_t child = fork();
+  if (child < 0) {
+    perror("fork");
+    exit(1);
+  }
+  if (child == 0) {
+    dup2(ends[1], 2);
+    close(ends[0]);
+    close(ends[1]);
+    body();
+    fflush(stderr);
+    _exit(0);
+  }
+  close(ends[1]);
+  std::string said;
+  char buffer[4096];
+  for (ssize_t got; (got = read(ends[0], buffer, sizeof buffer)) > 0;) said.append(buffer, static_cast<size_t>(got));
+  close(ends[0]);
+  int status = 0;
+  waitpid(child, &status, 0);
+  return {WIFEXITED(status) ? WEXITSTATUS(status) : -1, said};
+}
+std::string one_line(std::string text) {
+  for (char &c : text)
+    if (c == '\n') c = '|';
+  return text;
+}
+
+// `weights`: what its pushes follow, or 0. `short_of`: how its pop's fault counts the rows it had.
 struct Unit {
   const char *name;
-  uint32_t push, pop;
-  int slots;
-  bool box;
-  uint32_t weights;
+  uint32_t push, pop, weights;
+  const char *short_of;
 };
-const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, 7, false, WEIGHT_PUSH},
-           MSA = {"msa", MSA_PUSH, MSA_POP, 7, false, 0}, XLU = {"xlu", XLU_PUSH, XLU_POP, 3, true, 0};
+const Unit SYSTOLIC = {"systolic", INPUT_PUSH, POP, WEIGHT_PUSH, "computed"},
+           MSA = {"msa", MSA_PUSH, MSA_POP, 0, "computed"}, XLU = {"xlu", XLU_PUSH, XLU_POP, 0, "left"};
 // A run of the unit, its weights issued in cycle 0.
 void begin(Run &run, const Unit &unit) {
   if (unit.weights) run.issue(unit.weights, 1);
 }
 
-// A pop of more than was pushed never ends: an array never accepts it; the cross-lane unit's is issued at once and
-// never finishes, so the pop after it is never accepted.
+// A pop of 2 after a push of 1 is accepted the cycle after, as is a second pop behind it; it waits at the head, and
+// once the row is through and nothing more is on its way it faults: as it commits, the process prints why and exits 1.
 void fewer_pushed(const Unit &unit) {
-  Run run;
-  begin(run, unit);
-  run.next();
-  run.issue(unit.push, 1);
-  const int first = wait_for(run, unit.pop, 2);
-  const int second = wait_for(run, unit.pop, 2);
-  const int want_first = unit.box ? 1 : 100, want_second = 100;
-  check(first == want_first && second == want_second,
-        std::string(unit.name) + ": a push of 1 is popped by 2 after " + n(first) + " cycles, and popped again after " +
-            n(second) + "; expected " + n(want_first) + ", " + n(want_second) + " (" + n(unit.slots) + " slots)");
+  const Ended ended = in_child([&] {
+    Run run;
+    begin(run, unit);
+    run.next();
+    run.issue(unit.push, 1);
+    const int first = wait_for(run, unit.pop, 2), second = wait_for(run, unit.pop, 2);
+    fprintf(stderr, "pops issued after %d and %d cycles\n", first, second);
+    for (int c = 0; c < 100; c++) run.next();
+    fprintf(stderr, "no pop faulted in 100 cycles\n");
+  });
+  const std::string expected = std::string("pops issued after 1 and 1 cycles\ntpu: ") + unit.name +
+                               " pop: 2 elements asked, 1 " + unit.short_of + "\n";
+  check(ended.status == 1 && ended.said == expected,
+        std::string(unit.name) + ": a push of 1, then two pops of 2: exit " + n(ended.status) + ", stderr \"" +
+            one_line(ended.said) + "\"; expected 1, \"" + one_line(expected) + "\"");
 }
 
-// A push of 4 and a pop of 2, over and over, through queues of 8: what the pops leave stays, the output queue
-// fills, the array stops and a push waits for good. Nothing drops what was left: the program is the one at fault.
+// A push of 4 and a pop of 2, over and over, through queues of 8: what the pops leave stays, the output queue fills,
+// the array stops and a push waits at the head for good, one more instruction behind it; nothing is accepted after.
+// Nothing drops what was left: the program is the one at fault.
 void more_pushed(const Unit &unit) {
   Run run;
   begin(run, unit);
@@ -319,24 +382,25 @@ void more_pushed(const Unit &unit) {
                                            " of the 1000 cycles after; expected fewer than 100, 1000");
 }
 
-// Tiles of 4 popped by 2 twice: each tile's first pop, issued the cycle after its push, takes the fourth element
-// 3 + 3 + 1 cycles later, makes 4 slots in the next, which leave at once, and takes 2 of them 3 after that; the
-// second, issued then, takes the other 2 from what is left at once, and the next push is issued the cycle after.
+// Tiles of 4 popped by 2 twice: each tile's pops are issued 1 and 1 cycles after its push and wait at the head; the
+// fourth element enters the stages 4 cycles after the push's head and leaves 3 later, the tile is taken, lined and
+// popped by both in the next three cycles, and the next push is accepted the cycle after: 10 after the second pop.
 void xlu_shallower() {
   Run run;
   int as_first = 0;
   const int first = wait_for(run, XLU_PUSH, 4);
   for (int tile = 0; tile < 100; tile++) {
     const int pop = wait_for(run, XLU_POP, 2), rest = wait_for(run, XLU_POP, 2), push = wait_for(run, XLU_PUSH, 4);
-    as_first += pop == 1 && rest == 3 + 3 + 1 + 1 + 3 && push == 1;
+    as_first += pop == 1 && rest == 1 && push == 1 + 4 + 3 + 1 + 1 + 1 - 1;
   }
   check(first == 1 && as_first == 100, "xlu: 100 tiles pushed by 4 and popped by 2 twice: " + n(as_first) +
-                                           " first pops issued 1 cycle after their own push, the second 3 + 3 + 1 + 1 "
-                                           "+ 3 after it and the next push 1 after that; expected 100");
+                                           " first pops issued 1 cycle after their own push, the second 1 after it "
+                                           "and the next push 10 after that; expected 100");
 }
 
-// Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: pushes and pops of equal size,
-// whose timing is the queues' and the line's alone. 48 rows at one a cycle, then 7 slots and the pop.
+// Subtiles of 4 rows, pushed 4 ahead of their pops as 2 x queues of 8 / 4 rows allows: pushes and pops of equal size.
+// The pops wait at the head of insns(), 2 deep, so each is accepted the cycle after the one two before it ends: the
+// last, the 24th, at 2 + 40 rows in at one a cycle + 7 slots + 1 + 1 = 51 (it commits at 58).
 void interleaved(const Unit &unit, int expected) {
   Run run;
   begin(run, unit);
@@ -367,8 +431,8 @@ int main(int argc, char **argv) {
   void *lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
   auto entry = lib ? reinterpret_cast<const vcix_model *(*)()>(dlsym(lib, "vcix_accel_model")) : nullptr;
   m = entry ? entry() : nullptr;
-  if (!m || m->abi_version != VCIX_ACCEL_ABI_VERSION || !m->num_stats) {
-    fprintf(stderr, "%s: no table of ABI %u with statistics\n", argv[1], VCIX_ACCEL_ABI_VERSION);
+  if (!m || m->abi_version != VCIX_ACCEL_ABI_VERSION || !m->num_stats || !m->ready) {
+    fprintf(stderr, "%s: no table of ABI %u with statistics and ready\n", argv[1], VCIX_ACCEL_ABI_VERSION);
     return 1;
   }
   list();
@@ -381,7 +445,7 @@ int main(int argc, char **argv) {
   more_pushed(SYSTOLIC);
   more_pushed(MSA);
   xlu_shallower();
-  interleaved(SYSTOLIC, 48 + 7 + 1);
-  interleaved(MSA, 48 + 7 + 1);
+  interleaved(SYSTOLIC, 2 + 40 + 7 + 1 + 1);
+  interleaved(MSA, 2 + 40 + 7 + 1 + 1);
   return failed;
 }

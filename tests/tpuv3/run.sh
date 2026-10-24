@@ -40,6 +40,12 @@ issues() {
     "$BUILD/tpuv3-$1.gem5.log" | tr '\n' ' ' | sed 's/ $//'
 }
 
+# commits <run>: of each commit, the cycles after its own issue; an instruction waits at the head of its unit, so this
+# is where its latency shows
+commits() {
+  sed -n 's/^\[tpu\] commit \([a-z]*\): \([0-9]*\) cycles after its issue$/\1:\2/p' "$BUILD/tpuv3-$1.gem5.log" | tr '\n' ' ' | sed 's/ $//'
+}
+
 for program in mxu mxu_rate; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv3-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
@@ -52,46 +58,49 @@ echo "-- the units' statistics, with no simulator"
 "$BUILD/tpuv3_ports" "$MODEL" > "$BUILD/tpuv3-ports.log" 2>&1
 rc[ports]=$?
 report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpuv3-ports.log") passed" "exit 0, 1 passed" \
-  "tpuv3_ports: the model's units under the names it gives them, in its order (tpuv3-ports.log)"
+  "tpuv3_ports: the model's 20 units, one per component and per block, under the names it gives them, in its order (tpuv3-ports.log)"
 
 echo "-- matrix unit, 4 lanes: an array of 4 x 4, 7 slots, a row a cycle, one MXU slot, queues of 8"
 on_gem5 mxu mxu "$HERE/mxu.yml"
-report "exit ${rc[mxu]}, $(issues mxu)" "exit 0, vmatmul:1:0/0 vpop:11:0/4 vpop:4:0/4" \
-  "one MXU slot a cycle, no vmatprep; eight bfloat16 rows enter one a cycle: the first pop 4 + 7 cycles after the vmatmul, the next 4 later"
-report "units $(units mxu); TPUV3_MXU admitted $(unit_stat mxu TPUV3_MXU admitted), capacity $(unit_stat mxu TPUV3_MXU capacity), occupancy $(unit_stat mxu TPUV3_MXU occupancy)" \
-  "units TPUV3_MISC TPUV3_MXU TPUV3_SFU TPUV3_XLU; TPUV3_MXU admitted 8, capacity 1, occupancy 56" \
-  "gem5 reports the model's four units under the names it gives them, the eight rows in at the matrix unit one a cycle, 7 cycles each in the line"
+report "exit ${rc[mxu]}, $(issues mxu); commits $(commits mxu)" "exit 0, vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0; commits vmatpush:1 vmatmul:2 vpop:13 vpop:17" \
+  "one MXU slot a cycle, no vmatprep: the vmatmul issues beside the vmatpush and is carried out the cycle after it; both pops are accepted at once and wait at the head: eight bfloat16 rows enter one a cycle, the first pop commits 13 cycles after its issue (4 rows + 7 slots + a cycle at the input and the output queue), the next 4 later"
+report "units $(units mxu); TPUV3_MXU admitted $(unit_stat mxu TPUV3_MXU admitted), capacity $(unit_stat mxu TPUV3_MXU capacity), occupancy $(unit_stat mxu TPUV3_MXU occupancy); insns $(unit_stat mxu TPUV3_MXU_insns admitted), $(unit_stat mxu TPUV3_MXU_insns capacity), $(unit_stat mxu TPUV3_MXU_insns occupancy); array0_line $(unit_stat mxu TPUV3_MXU_array0_line admitted), $(unit_stat mxu TPUV3_MXU_array0_line capacity), $(unit_stat mxu TPUV3_MXU_array0_line occupancy)" \
+  "units TPUV3_MISC TPUV3_MISC_insns TPUV3_MXU TPUV3_MXU_array0_input TPUV3_MXU_array0_line TPUV3_MXU_array0_output TPUV3_MXU_insns TPUV3_SFU TPUV3_SFU_eup TPUV3_SFU_eup_input TPUV3_SFU_eup_output TPUV3_SFU_insns TPUV3_XLU TPUV3_XLU_buffer TPUV3_XLU_insns TPUV3_XLU_line TPUV3_XLU_moves TPUV3_XLU_out TPUV3_XLU_queue TPUV3_XLU_stages; TPUV3_MXU admitted 8, capacity 1, occupancy 56; insns 4, 2, 33; array0_line 8, 1, 56" \
+  "gem5 reports the model's 20 units, each component and each of its blocks as <component>_<block>: the eight rows in at the matrix unit one a cycle, 7 cycles each in the line; its insns() took the 4 instructions, 2 a cycle at most"
 
 on_gem5 mxu_rate mxu_rate "$HERE/mxu.yml"
-report "exit ${rc[mxu_rate]}, $(issues mxu_rate)" "exit 0, vmatmul:1:0/0 vmatmul:4:0/0 vpop:7:1/4 vpop:4:0/4 vpop:4:0/4" \
-  "queues of 8: the eight bfloat16 rows wait 4 cycles for the four singles to enter; the singles out 4 + 7 cycles after their vmatmul"
+report "exit ${rc[mxu_rate]}, $(issues mxu_rate); commits $(commits mxu_rate)" \
+  "exit 0, vmatmul:0:0/0 vmatmul:1:0/0 vpop:0:0/0 vpop:1:4/0 vpop:1:3/0; commits vmatpush:1 vmatmul:2 vmatmul:6 vpop:13 vpop:17 vpop:20" \
+  "queues of 8: the second vmatmul, eight bfloat16 rows, is accepted a cycle after the first and waits at the head until the four singles have left the queue, committing 6 cycles after its issue; the three pops are accepted one a cycle and commit 13, 17 and 20 after theirs"
 printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 16\n' > "$BUILD/tpuv3-mxu-16.yml"
 on_gem5 mxu_rate-16 mxu_rate "$BUILD/tpuv3-mxu-16.yml"
-report "exit ${rc[mxu_rate-16]}, $(issues mxu_rate-16 | cut -d' ' -f1-2)" "exit 0, vmatmul:1:0/0 vmatmul:1:3/0" \
-  "with queues of 16, the second vmatmul waits only for the one MXU slot, a cycle, in which one of the four singles entered"
+report "exit ${rc[mxu_rate-16]}, $(issues mxu_rate-16 | cut -d' ' -f1-2); commits $(commits mxu_rate-16 | cut -d' ' -f1-3)" \
+  "exit 0, vmatmul:0:0/0 vmatmul:1:0/0; commits vmatpush:1 vmatmul:2 vmatmul:2" \
+  "with queues of 16, the second vmatmul waits only for the one MXU slot: it commits 2 cycles after its issue, as the first does, a cycle behind it"
 
 printf 'tpu_trace: 1\n' > "$BUILD/tpuv3-128.yml"
 on_gem5 lanes-128 mxu "$BUILD/tpuv3-128.yml"
-report "exit ${rc[lanes-128]}, $(issues lanes-128)" "exit 0, vmatmul:1:0/0 vpop:259:0/4 vpop:4:0/4" \
-  "128 lanes, the default: an array of 128 x 128, so 255 slots, and the pop of four is issued 4 + 255 cycles after the vmatmul"
+report "exit ${rc[lanes-128]}, $(issues lanes-128); commits $(commits lanes-128)" "exit 0, vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0; commits vmatpush:1 vmatmul:2 vpop:261 vpop:265" \
+  "128 lanes, the default: an array of 128 x 128, so 255 slots; the pops are accepted at once, and the first commits 261 cycles after its issue (4 rows + 255 slots + a cycle at each queue), the next 4 later"
 
 echo "-- tpu_mxu_bound_to_lanes: 1, an array of lanes x lanes whatever the model's"
 printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 8\ntpu_mxu_bound_to_lanes: 1\n' > "$BUILD/tpuv3-bound-4.yml"
 on_gem5 tpuv6e-bound-4 mxu "$BUILD/tpuv3-bound-4.yml" "$BUILD/libtpuv6e.so"
-report "exit ${rc[tpuv6e-bound-4]}, $(issues tpuv6e-bound-4); TPUV6E_MXU capacity $(unit_stat tpuv6e-bound-4 TPUV6E_MXU capacity), occupancy $(unit_stat tpuv6e-bound-4 TPUV6E_MXU occupancy)" \
-  "exit 0, vmatmul:0:0/0 vpop:9:0/4 vpop:2:0/4; TPUV6E_MXU capacity 2, occupancy 56" \
-  "libtpuv6e.so on 4 lanes, bound: an array of 4 x 4, 7 slots, a word a cycle in two slots: the pop 2 + 7 cycles after the vmatmul"
+report "exit ${rc[tpuv6e-bound-4]}, $(issues tpuv6e-bound-4); commits $(commits tpuv6e-bound-4); TPUV6E_MXU capacity $(unit_stat tpuv6e-bound-4 TPUV6E_MXU capacity), occupancy $(unit_stat tpuv6e-bound-4 TPUV6E_MXU occupancy)" \
+  "exit 0, vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0; commits vmatpush:1 vmatmul:1 vpop:10 vpop:12; TPUV6E_MXU capacity 2, occupancy 56" \
+  "libtpuv6e.so on 4 lanes, bound: an array of 4 x 4, 7 slots, a word a cycle in two slots: the vmatmul is carried out beside the vmatpush, the pops are accepted with its 8 rows already queued, and the first commits 10 cycles after its issue (2 words + 7 slots + a cycle at each queue), the next 2 later"
 printf 'tpu_trace: 1\ntpu_mxu_bound_to_lanes: 1\n' > "$BUILD/tpuv3-bound-128.yml"
 on_gem5 tpuv6e-bound-128 mxu "$BUILD/tpuv3-bound-128.yml" "$BUILD/libtpuv6e.so"
-report "exit ${rc[tpuv6e-bound-128]}, $(issues tpuv6e-bound-128)" "exit 0, vmatmul:0:0/0 vpop:257:0/4 vpop:2:0/4" \
-  "libtpuv6e.so on 128 lanes, bound: an array of 128 x 128, 255 slots, the pop 2 + 255 cycles after the vmatmul"
+report "exit ${rc[tpuv6e-bound-128]}, $(issues tpuv6e-bound-128); commits $(commits tpuv6e-bound-128)" "exit 0, vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0; commits vmatpush:1 vmatmul:1 vpop:258 vpop:260" \
+  "libtpuv6e.so on 128 lanes, bound: an array of 128 x 128, 255 slots: the first pop commits 258 cycles after its issue (2 words + 255 slots + a cycle at each queue), the next 2 later"
 printf 'tpu_trace: 1\nvpu_num_lanes: 8\ntpu_mxu_queue_entries: 8\n' > "$BUILD/tpuv3-8.yml"
 { cat "$BUILD/tpuv3-8.yml"; echo "tpu_mxu_bound_to_lanes: 1"; } > "$BUILD/tpuv3-bound-8.yml"
 on_gem5 lanes-8 mxu "$BUILD/tpuv3-8.yml"
 on_gem5 bound-8 mxu "$BUILD/tpuv3-bound-8.yml"
 same=$(cmp -s <(grep '^\[tpu\]' "$BUILD/tpuv3-lanes-8.gem5.log") <(grep '^\[tpu\]' "$BUILD/tpuv3-bound-8.gem5.log") && echo same || echo different)
-report "exit ${rc[lanes-8]} and ${rc[bound-8]}, $(issues lanes-8), bound: trace $same" "exit 0 and 0, vmatmul:1:0/0 vpop:19:0/4 vpop:4:0/4, bound: trace same" \
-  "libtpuv3.so on 8 lanes: an array of 8 x 8, 15 slots, the pop 4 + 15 cycles after the vmatmul; bound, the same"
+report "exit ${rc[lanes-8]} and ${rc[bound-8]}, $(issues lanes-8); commits $(commits lanes-8), bound: trace $same" \
+  "exit 0 and 0, vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0; commits vmatpush:1 vmatmul:2 vpop:21 vpop:25, bound: trace same" \
+  "libtpuv3.so on 8 lanes: an array of 8 x 8, 15 slots: the first pop commits 21 cycles after its issue (4 rows + 15 slots + a cycle at each queue), the next 4 later; bound, the same"
 { cat "$HERE/../tpuv6e/mxu.yml"; echo "tpu_mxu_bound_to_lanes: 0"; } > "$BUILD/tpuv3-tpuv6e-unbound.yml"
 on_gem5 tpuv6e-mxu tpuv6e_mxu "$HERE/../tpuv6e/mxu.yml" "$BUILD/libtpuv6e.so"
 on_gem5 tpuv6e-unbound tpuv6e_mxu "$BUILD/tpuv3-tpuv6e-unbound.yml" "$BUILD/libtpuv6e.so"
@@ -150,8 +159,8 @@ report "$(window addresses 2 system.cpu.numCycles)" "104" \
   "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 104 cycles"
 report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 32 of 51 cycles" \
   "tests/tpuv6e/valu.S's 64 independent vfadds and vfmuls keep the VALUs busy 32 cycles: 2 a cycle, whatever the mix"
-report "exit ${rc[machine-mxu]}, $(issues machine-mxu)" "exit 0, vmatmul:1:0/0 vpop:11:0/4 vpop:4:0/4" \
-  "mxu.S on the machine as on gem5_se.py: the matrix unit's timing is the model's, not the machine's"
+report "exit ${rc[machine-mxu]}, $(issues machine-mxu); commits $(commits machine-mxu)" "exit 0, vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0; commits vmatpush:1 vmatmul:2 vpop:13 vpop:17" \
+  "mxu.S on the machine as on gem5_se.py: the matrix unit's timing is the model's, not the machine's; its insns() takes 2 a cycle, so the machine's wider issue changes nothing"
 report "$(grep -c 'generic machine' "$BUILD/tpuv3-machine-scratchpad.gem5.log") warnings" "0 warnings" \
   "the v3 machine is a model's own: the tpu machine's warning that it is the generic one is not printed"
 

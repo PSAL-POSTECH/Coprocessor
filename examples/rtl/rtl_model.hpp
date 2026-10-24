@@ -73,7 +73,7 @@ class MemRestore final : public VerilatedDeserialize {
   size_t pos_ = 0;
 };
 
-// What the process did with its units, on stderr at exit if anything: clocks (gem5's squash replays included), copies
+// What the process did with its units, on stderr at exit if anything: clocks (the cycles gem5 runs again after a squash included), copies
 // (gem5's before each issue, Spike's before each execute of a unit with memory), and the executes undone by a trap.
 struct Counters {
   uint64_t clocks = 0, copies = 0, restores = 0;

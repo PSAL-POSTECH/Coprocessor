@@ -10,12 +10,18 @@
 
 namespace {
 
-class Tpu final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Systolic, tpu::Xlu, tpu::Msa> {
+class Tpu final : public tpu::Coprocessor {
  public:
-  Tpu() : Machine("SFU", "MISC", "SYSTOLIC", "XLU", "MSA") {}
   const char *name() const override { return "tpu"; }
+
+ private:
+  tpu::Sfu sfu_{*this, "SFU"};
+  tpu::Misc misc_{*this, "MISC"};
+  tpu::Systolic systolic_{*this, "SYSTOLIC"};
+  tpu::Xlu xlu_{*this, "XLU"};
+  tpu::Msa msa_{*this, "MSA"};
 };
 
-}  // namespace
+}
 
 VCIX_CP_REGISTER(Tpu)

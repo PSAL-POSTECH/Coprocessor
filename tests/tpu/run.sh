@@ -49,9 +49,9 @@ burst=$(said sfu "issue vexp: the first" \
   "issue vexp: 1 cycles after the last issue, 2 in flight" \
   "issue vexp: 1 cycles after the last issue, 3 in flight" \
   "issue vexp: 1 cycles after the last issue, 4 in flight")
-report "exit ${rc[sfu]}, issues $burst, commits $(times sfu "commit vexp: 10 cycles after its issue")" \
+report "exit ${rc[sfu]}, issues $burst, commits $(times sfu "commit vexp: 11 cycles after its issue")" \
   "exit 0, issues 5, commits 5" \
-  "gem5 issues five back-to-back vexp one per cycle and commits each 10 cycles after its issue"
+  "gem5 issues five back-to-back vexp one per cycle and commits each 11 cycles after its issue: it enters the EUP the cycle after, and leaves 10 later"
 
 chain() {
   local name readers=() commits=()
@@ -61,10 +61,10 @@ chain() {
   done
   echo "readers $(said "$1" "${readers[@]}"), commits $(said "$1" "${commits[@]}") and $(lines "$1" commit)"
 }
-report "$(chain sfu 10)" "readers 6, commits 6 and 11" \
-  "gem5 issues the reader of a special function's result 10 cycles after it, down a chain of the seven"
-report "exit ${rc[latency-4]}, $(chain latency-4 4)" "exit 0, readers 6, commits 6 and 11" \
-  "gem5 follows tpu_sfu_latency_cycles: 4 from the machine description"
+report "$(chain sfu 11)" "readers 6, commits 6 and 11" \
+  "gem5 issues the reader of a special function's result 11 cycles after it, down a chain of the seven"
+report "exit ${rc[latency-4]}, $(chain latency-4 5)" "exit 0, readers 6, commits 6 and 11" \
+  "gem5 follows tpu_sfu_latency_cycles: 4 from the machine description: each step of the chain is 4 + 1"
 
 echo "-- systolic array, 4 lanes: 7 slots, queues of 8"
 on_gem5 systolic_stream systolic_stream "$HERE/systolic.yml"
@@ -72,36 +72,39 @@ on_gem5 systolic_full systolic_full "$HERE/systolic.yml"
 
 delay=$(said systolic_full "issue systolic weight push: the first, input queue 0, output queue 0" \
   "issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0" \
-  "issue systolic pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4")
-report "exit ${rc[systolic_full]}, lines $delay" "exit 0, lines 3" \
-  "a pop of four is issued 4 + 7 cycles after the push of four, as the fourth element is in the output queue"
+  "issue systolic pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0")
+report "exit ${rc[systolic_full]}, lines $delay, commits $(times systolic_full "commit systolic pop: 12 cycles after its issue")" \
+  "exit 0, lines 3, commits 1" \
+  "a pop of four is issued the cycle after its push of four, with the four rows in the input queue, and commits when the fourth is in the output queue, 4 + 7 + 1 cycles after"
 
 pushes=("issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
-for entries in 1 2 3 4 5 6; do
+for entries in 2 3 4 5 6 7; do
   pushes+=("issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue $entries, output queue 0")
 done
-for entries in 1 3 5; do
-  pushes+=("issue systolic input push: 2 cycles after the last issue, 0 in flight, input queue 6, output queue $entries")
+pushes+=("issue systolic input push: 1 cycles after the last issue, 1 in flight, input queue 6, output queue 0")
+for entries in 1 3; do
+  pushes+=("issue systolic input push: 2 cycles after the last issue, 1 in flight, input queue 6, output queue $entries")
 done
 stream="$(said systolic_stream "${pushes[@]}") of $(lines systolic_stream issue)"
 report "exit ${rc[systolic_stream]}, lines $stream" "exit 0, lines 10 of 11" \
-  "pushes of two go in one per cycle while the input queue has room, then one every two cycles, as the array drains"
+  "pushes of two are issued one per cycle while the input queue has room (the rows of the push before are in it), then one every two cycles behind the push waiting at the head, as the array drains"
 
 full=$(said systolic_full \
   "issue systolic weight push: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 8" \
   "issue systolic pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 8" \
-  "issue systolic weight push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 5")
+  "issue systolic weight push: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 4")
 report "lines $full of $(lines systolic_full issue)" "lines 3 of 11" \
-  "with the output queue full the array stops, and moves again in the cycle after a pop"
+  "with the output queue full the array stops; the pop takes its four rows at the head the cycle after its issue, and the array moves again in the cycle after that"
 
 echo "-- multi-precision array, 4 lanes: 7 slots, queues of 8"
 on_gem5 msa msa "$HERE/systolic.yml"
 
 delay=$(said msa "issue msa push: the first, input queue 0, output queue 0" \
   "issue msa push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0" \
-  "issue msa pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4")
-report "exit ${rc[msa]}, lines $delay of $(lines msa issue)" "exit 0, lines 3 of 3" \
-  "a weight push enters nothing, and a pop of four is issued 4 + 7 cycles after the input push of four"
+  "issue msa pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0")
+report "exit ${rc[msa]}, lines $delay of $(lines msa issue), commits $(times msa "commit msa pop: 12 cycles after its issue")" \
+  "exit 0, lines 3 of 3, commits 1" \
+  "a weight push enters nothing, and a pop of four is issued the cycle after the input push of four and commits 4 + 7 + 1 cycles after, as the fourth row is in the output queue"
 
 echo "-- cross-lane unit: a delay line of 3 slots, an input queue of 8, a buffer of any tile"
 on_gem5 xlu xlu "$HERE/xlu.yml"
@@ -112,46 +115,48 @@ on_gem5 xlu-pattern xlu_pattern "$HERE/xlu.yml"
 on_gem5 xlu-move xlu_pattern "$HERE/xlu_move.yml"
 on_gem5 xlu-move-exchange xlu "$HERE/xlu_move.yml"
 folded=$(said xlu-fold "issue xlu_push_reduce: the first, input queue 0, output queue 0" \
-  "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0")
-report "exit ${rc[xlu-fold]}, lines $folded, commits $(times xlu-fold "commit xlu_pop: 9 cycles after its issue")" \
+  "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 0")
+report "exit ${rc[xlu-fold]}, lines $folded, commits $(times xlu-fold "commit xlu_pop: 8 cycles after its issue")" \
   "exit 0, lines 2, commits 1" \
-  "a fold push of 2 (xlu_push_reduce) is timed as xlu_push: one element a cycle into the 3 stages, then its pop"
-wide=$(said xlu-wide "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
-report "exit ${rc[xlu-wide]}, lines $wide, commits $(times xlu-wide "commit xlu_pop: 8 cycles after its issue")" \
+  "a fold push of 2 (xlu_push_reduce) is timed as xlu_push: its pop is issued the cycle after, with both elements in the input queue; they enter the 3 stages one a cycle from the next, and the pop commits in 8"
+wide=$(said xlu-wide "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 0")
+report "exit ${rc[xlu-wide]}, lines $wide, commits $(times xlu-wide "commit xlu_pop: 7 cycles after its issue")" \
   "exit 0, lines 1, commits 1" \
-  "with tpu_xlu_elements_per_cycle: 2 both elements enter the stages in one cycle: the pop ends a cycle sooner"
-issued=$(said xlu-issue "issue xlu_pop: 0 cycles after the last issue, 1 in flight, input queue 2, output queue 0")
-report "exit ${rc[xlu-issue]}, lines $issued" "exit 0, lines 1" \
-  "with tpu_xlu_issue_per_cycle: 2 the pop issues in the push's cycle"
+  "with tpu_xlu_elements_per_cycle: 2 both elements enter the stages in one cycle: the pop ends a cycle sooner, in 7"
+issued=$(said xlu-issue "issue xlu_pop: 0 cycles after the last issue, 1 in flight, input queue 0, output queue 0")
+report "exit ${rc[xlu-issue]}, lines $issued, commits $(times xlu-issue "commit xlu_pop: 9 cycles after its issue")" \
+  "exit 0, lines 1, commits 1" \
+  "with tpu_xlu_issue_per_cycle: 2 the pop issues in the push's cycle, before the push's elements are in the input queue, and ends in the same cycle as when issued a cycle later: 9 after its own issue"
 
 delay=$(said xlu "issue xlu_push: the first, input queue 0, output queue 0" \
-  "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0")
-report "exit ${rc[xlu]}, lines $delay, commits $(times xlu "commit xlu_pop: 9 cycles after its issue")" \
+  "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 0")
+report "exit ${rc[xlu]}, lines $delay, commits $(times xlu "commit xlu_pop: 8 cycles after its issue")" \
   "exit 0, lines 2, commits 2" \
-  "a pop is issued the cycle after its tile's last push; the last element is in the buffer 1 + 3 cycles later, the tile taken in the next, its slots made in the next and out at once, and the first two taken 3 after: both tiles' first pops commit in 9"
+  "a pop is issued the cycle after its tile's last push, whose two elements are in the input queue; they enter the stages one a cycle from the next, the last is in the buffer 3 later, the tile is taken in the next, its slots leave the line in the next and are taken in the next: both tiles' first pops commit in 8"
 
 report "exit ${rc[xlu-pattern]}, sets $(lines xlu-pattern "issue xlu_set_pattern:"), commits $(lines xlu-pattern "commit xlu_pop:")" \
   "exit 0, sets 3, commits 2" \
   "a set pattern is taken by the pushes after it on gem5 too: both tiles' first pops are accepted, the second's with a set between its pushes"
 
-report "commits $(times xlu-pattern "commit xlu_pop: 9 cycles after its issue") and $(times xlu-move "commit xlu_pop: 12 cycles after its issue"), $(times xlu-move-exchange "commit xlu_pop: 9 cycles after its issue")" \
+report "commits $(times xlu-pattern "commit xlu_pop: 8 cycles after its issue") and $(times xlu-move "commit xlu_pop: 11 cycles after its issue"), $(times xlu-move-exchange "commit xlu_pop: 8 cycles after its issue")" \
   "commits 2 and 2, 2" \
-  "a move's tile passes tpu_xlu_move_latency_cycles (6 in xlu_move.yml): its first pops commit 3 cycles later than through 3 stages; an exchange's tile keeps tpu_xlu_latency_cycles"
+  "a move's tile passes tpu_xlu_move_latency_cycles (6 in xlu_move.yml): its first pops commit in 11, 3 cycles later than through 3 stages; an exchange's tile keeps tpu_xlu_latency_cycles, 8"
 
-pushes=("issue xlu_push: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
-for queues in "1 0" "2 0" "3 0" "4 1" "5 2" "6 3"; do
+pushes=("issue xlu_push: 1 cycles after the last issue, 1 in flight, input queue 1, output queue 0" \
+  "issue xlu_push: 8 cycles after the last issue, 0 in flight, input queue 1, output queue 0")
+for queues in "2 0" "3 0" "4 1" "5 2" "6 3" "7 4"; do
   pushes+=("issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue ${queues% *}, output queue ${queues#* }")
 done
-pushes+=("issue xlu_push: 2 cycles after the last issue, 0 in flight, input queue 6, output queue 5")
-report "lines $(said xlu "${pushes[@]}")" "lines 8" \
-  "the push after the pop waits for it, then pushes of two go in one per cycle while the input queue has room, then wait for it"
+report "lines $(said xlu "${pushes[@]}"), waits $(times xlu "commit xlu_push: 7 cycles after its issue") and $(times xlu "commit xlu_push: 2 cycles after its issue")" \
+  "lines 8, waits 1 and 1" \
+  "the push after the pop is issued behind it and waits at the head until it ends (7 cycles); then pushes of two are issued one per cycle while the input queue has room, the last waiting at the head 2 cycles for it"
 
 full=$(said xlu \
-  "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 16" \
-  "issue xlu_pop: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0" \
-  "commit xlu_pop: 1 cycles after its issue")
+  "issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 16" \
+  "issue xlu_pop: 1 cycles after the last issue, 1 in flight, input queue 1, output queue 16" \
+  "commit xlu_pop: 7 cycles after its issue")
 report "lines $full of $(lines xlu issue)" "lines 3 of 13" \
-  "the buffer holds the whole tile, 16 elements, and the line never stops; the second pop waits for the first, then takes 2 more slots in 1"
+  "the buffer holds the whole tile, 16 + 2 elements, and the line never stops; the second pop is issued the cycle after the first and waits behind it at the head, then takes 2 more slots from what is left: it commits in 7, the cycle after the first"
 
 echo "-- one-cycle instructions"
 on_gem5 one_cycle one_cycle "$HERE/trace.yml"
@@ -161,11 +166,11 @@ for name in vlane_idx compute dma_config_desc dma_index_key mvin mvin2 mvin3 mvo
   one_cycle+=("commit $name: 1 cycles after its issue")
 done
 drained=$(times one_cycle \
-  "issue systolic weight push: 10 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
+  "issue systolic weight push: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 0")
 commits="$(said one_cycle "${one_cycle[@]}") of $(lines one_cycle commit)"
 report "exit ${rc[one_cycle]}, behind an empty model $drained, commits $commits" \
   "exit 0, behind an empty model 1, commits 8 of 10" \
-  "gem5 takes each custom-2 and DMA instruction of tpu::Misc and commits it one cycle after its issue"
+  "gem5 takes each custom-2 and DMA instruction of tpu::Misc and commits it one cycle after its issue (the weight push reading the vexp's result is issued 11 after it)"
 
 echo "-- the model"
 on_gem5 latency-0 sfu "$BUILD/tpu-latency-0.yml"
@@ -183,8 +188,8 @@ echo "-- the machine PyTorchSim measures on (examples/tpu/gem5)"
 timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine" "$REPO/examples/tpu/gem5/script_systolic.py" -c "$BUILD/tpu-sfu" \
   --model "$BUILD/libtpu.so" --machine-config "$HERE/trace.yml" > "$BUILD/tpu-machine.gem5.log" 2>&1
 rc[machine]=$?
-report "exit ${rc[machine]}, $(chain machine 10)" "exit 0, readers 6, commits 6 and 11" \
-  "script_systolic.py runs sfu.S to the program's exit, the reader of a special function's result issued 10 cycles after it"
+report "exit ${rc[machine]}, $(chain machine 11)" "exit 0, readers 6, commits 6 and 11" \
+  "script_systolic.py runs sfu.S to the program's exit, the reader of a special function's result issued 11 cycles after it"
 
 
 # machine_stat <run> <name>: the value of the stat ending in .<name> in the run's one dump

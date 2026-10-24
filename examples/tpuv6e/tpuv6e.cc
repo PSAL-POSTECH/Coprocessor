@@ -18,12 +18,17 @@ struct Shape {
   static constexpr bool WORD_A_CYCLE = true;
 };
 
-class Tpuv6e final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
+class Tpuv6e final : public tpu::Coprocessor {
  public:
-  Tpuv6e() : Machine("TPUV6E_SFU", "TPUV6E_MISC", "TPUV6E_XLU", "TPUV6E_MXU") {}
   const char *name() const override { return "tpuv6e"; }
+
+ private:
+  tpu::Sfu sfu_{*this, "TPUV6E_SFU"};
+  tpu::Misc misc_{*this, "TPUV6E_MISC"};
+  tpu::Xlu xlu_{*this, "TPUV6E_XLU"};
+  tpu::Mxu<Shape> mxu_{*this, "TPUV6E_MXU"};
 };
 
-}  // namespace
+}
 
 VCIX_CP_REGISTER(Tpuv6e)
