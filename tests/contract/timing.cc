@@ -4,11 +4,12 @@
 #include <deque>
 #include <set>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 namespace {
 
-using namespace vcix_accel;
+using namespace cp;
+using Insn = vcix_insn;
 
 constexpr size_t DEPTH = 2;
 constexpr Cycle TICKS = 10;
@@ -84,4 +85,4 @@ class Timing : public Model {
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Timing)
+VCIX_CP_REGISTER(Timing)

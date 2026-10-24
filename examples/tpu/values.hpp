@@ -1,6 +1,6 @@
 // The numbers every tpu unit's values use, as the Spike these units came from did them (riscv-isa-sim branch
 // spike-fp8, 7259e73, riscv/insns/torchsim_*.h): element conversions and rounding, and an element of a register group
-// or of memory. Each unit's routes compute with them; a unit keeps its values in its own blocks.
+// or of memory. Each component's handlers compute with them; a component keeps its values in its own blocks.
 #ifndef TPU_VALUES_HPP
 #define TPU_VALUES_HPP
 
@@ -10,7 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 namespace tpu {
 
@@ -155,7 +155,7 @@ inline uint16_t half_add(uint16_t a, uint16_t b) {
 
 // Element `index` of the group that starts at vector register `reg`, as the type T.
 template <class T>
-T get(const vcix_accel::Host &host, uint32_t lane, uint32_t reg, uint64_t index) {
+T get(const cp::Host &host, uint32_t lane, uint32_t reg, uint64_t index) {
   const uint64_t per_register = host.vlen_bits() / 8 / sizeof(T);
   T value;
   std::memcpy(&value, host.vreg<unsigned char>(lane, reg + index / per_register) + index % per_register * sizeof(T),
@@ -163,22 +163,22 @@ T get(const vcix_accel::Host &host, uint32_t lane, uint32_t reg, uint64_t index)
   return value;
 }
 template <class T>
-void put(const vcix_accel::Host &host, uint32_t lane, uint32_t reg, uint64_t index, T value) {
+void put(const cp::Host &host, uint32_t lane, uint32_t reg, uint64_t index, T value) {
   const uint64_t per_register = host.vlen_bits() / 8 / sizeof(T);
   std::memcpy(host.vreg_mut<unsigned char>(lane, reg + index / per_register) + index % per_register * sizeof(T),
               &value, sizeof(T));
 }
 template <class T>
-T load(const vcix_accel::Host &host, uint64_t address) {
+T load(const cp::Host &host, uint64_t address) {
   T value;
   host.mem_read(address, &value, sizeof(T));
   return value;
 }
 template <class T>
-void store(const vcix_accel::Host &host, uint64_t address, T value) {
+void store(const cp::Host &host, uint64_t address, T value) {
   host.mem_write(address, &value, sizeof(T));
 }
 
-}  // namespace tpu
+}
 
 #endif

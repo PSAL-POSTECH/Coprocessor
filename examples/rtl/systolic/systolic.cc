@@ -17,10 +17,10 @@ struct Systolic {
       {0x2600305B, FORM, "systolic weight push", 1, true, false},
       {0x0800305B, FORM, "systolic pop", 2, false, true},
   };
-  static void check(const vcix_accel::Config &config) {
+  static void check(const cp::Config &config) {
     if (config.uint("vpu_num_lanes", 128) != LANES) {
       const char *lanes = config.get("vpu_num_lanes");
-      throw vcix_accel::ConfigError("vpu_num_lanes", lanes ? lanes : "(absent)",
+      throw cp::ConfigError("vpu_num_lanes", lanes ? lanes : "(absent)",
                                     "is not the lanes this RTL was built with");
     }
   }
@@ -29,4 +29,4 @@ struct Systolic {
 }  // namespace
 
 using SystolicModel = rtl::Model<Vsystolic, Systolic>;
-VCIX_ACCEL_REGISTER(SystolicModel)
+VCIX_CP_REGISTER(SystolicModel)

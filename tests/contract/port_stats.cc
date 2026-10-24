@@ -10,11 +10,12 @@
 #include <string>
 #include <vector>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 namespace {
 
-using namespace vcix_accel;
+using namespace cp;
+using Insn = vcix_insn;
 
 int failed = 0;
 
@@ -46,7 +47,7 @@ class Toy : public Model {
   }
   void execute(const Host &, const Insn &) override {}
   bool can_accept(const Insn &insn, Cycle now) const override {
-    if (form_of(insn) == OP) return issue_.room(now) >= 1 && lanes_.room(now) >= insn.vl;
+    if (form_of(insn) == OP) return issue_.available(now) >= 1 && lanes_.available(now) >= insn.vl;
     if (form_of(insn) == PUSH) return insn.vl <= QUEUE - input_;
     return insn.vl <= output_ || (!input_ && !in_line_);
   }
@@ -62,7 +63,7 @@ class Toy : public Model {
   void tick(Cycle now) override {
     if (output_ != QUEUE) {
       if (line_[head_]) output_++, in_line_--;
-      line_[head_] = input_ && entry_.room(now);
+      line_[head_] = input_ && entry_.available(now);
       if (line_[head_]) entry_.admit(1, now), input_--, in_line_++;
       head_ = (head_ + 1) % SLOTS;
     }
@@ -75,20 +76,20 @@ class Toy : public Model {
     input_ = output_ = in_line_ = head_ = 0;
     for (bool &slot : line_) slot = false;
   }
-  std::vector<const Port *> ports() const override {
+  std::vector<const Stats *> ports() const override {
     if (V == LISTED_TWICE) return {&issue_, &lanes_, &entry_, &issue_};
     return {&issue_, &lanes_, &entry_};
   }
 
  private:
-  Port issue_{V == NAMED_COMMITTED ? "committed" : V == CLASHING_UNITS ? "pi.pe" : "pipe",
+  Stats issue_{V == NAMED_COMMITTED ? "committed" : V == CLASHING_UNITS ? "pi.pe" : "pipe",
               V == CLASHING_PORTS ? "la.nes" : "issue", "instructions", 2,
-              V == NO_PRIMARY ? Port::REPORTING : Port::PRIMARY};
-  Port lanes_{V == CLASHING_UNITS ? "pi_pe" : "pipe",
+              V == NO_PRIMARY ? Stats::REPORTING : Stats::PRIMARY};
+  Stats lanes_{V == CLASHING_UNITS ? "pi_pe" : "pipe",
               V == SAME_NAME ? "issue" : V == CLASHING_PORTS ? "la_nes" : "lanes", "elements", 8,
-              V == TWO_PRIMARIES || V == CLASHING_UNITS ? Port::PRIMARY : Port::REPORTING};
+              V == TWO_PRIMARIES || V == CLASHING_UNITS ? Stats::PRIMARY : Stats::REPORTING};
   static constexpr uint32_t SLOTS = 3, QUEUE = 4;
-  Port entry_{"array", "entry", "rows", 1, Port::PRIMARY};
+  Stats entry_{"array", "entry", "rows", 1, Stats::PRIMARY};
   uint32_t input_ = 0, output_ = 0, in_line_ = 0, head_ = 0;
   bool line_[SLOTS] = {};
 };
@@ -186,7 +187,7 @@ void aborts_beyond_room() {
   const pid_t child = fork();
   if (child == 0) {
     dup2(out[1], 2);
-    Port port("unit", "port", "rows", 2, Port::PRIMARY);
+    Stats port("unit", "port", "rows", 2, Stats::PRIMARY);
     port.admit(2, 5);
     port.admit(1, 5);
     _exit(0);
@@ -198,11 +199,11 @@ void aborts_beyond_room() {
   int status = 0;
   waitpid(child, &status, 0);
   expect(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT &&
-             strstr(said, "vcix_accel: port unit.port admitted 1 rows in cycle 5 with room for 0") != nullptr,
+             strstr(said, "vcix_cp: port unit.port admitted 1 rows in cycle 5 with room for 0") != nullptr,
          "admitting past room() aborts, naming the port");
-  Port port("unit", "port", "rows", 2, Port::PRIMARY);
+  Stats port("unit", "port", "rows", 2, Stats::PRIMARY);
   port.admit(2, 5);
-  expect(port.room(5) == 0 && port.room(6) == 2 && port.admitted() == 2, "room() is the capacity again the next cycle");
+  expect(port.available(5) == 0 && port.available(6) == 2 && port.admitted() == 2, "room() is the capacity again the next cycle");
 }
 
 void the_list() {
@@ -318,7 +319,7 @@ void registration_follows_copies() {
   Instance<Toy<GOOD>> instance;
   instance.configure(Config(&NO_CONFIG));
   const auto inside = [](const Toy<GOOD> &model) {
-    for (const Port *p : model.ports())
+    for (const Stats *p : model.ports())
       if (reinterpret_cast<const char *>(p) < reinterpret_cast<const char *>(&model) ||
           reinterpret_cast<const char *>(p) >= reinterpret_cast<const char *>(&model + 1))
         return false;

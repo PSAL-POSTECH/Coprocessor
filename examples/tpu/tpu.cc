@@ -1,5 +1,5 @@
 // Example: a TPU's units as one model, libtpu.so; each call goes to the unit that owns the instruction.
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 #include "machine.hpp"
 #include "misc.hpp"
@@ -10,12 +10,18 @@
 
 namespace {
 
-class Tpu final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Systolic, tpu::Xlu, tpu::Msa> {
+class Tpu final : public tpu::Coprocessor {
  public:
-  Tpu() : Machine("SFU", "MISC", "SYSTOLIC", "XLU", "MSA") {}
   const char *name() const override { return "tpu"; }
+
+ private:
+  tpu::Sfu sfu_{*this, "SFU"};
+  tpu::Misc misc_{*this, "MISC"};
+  tpu::Systolic systolic_{*this, "SYSTOLIC"};
+  tpu::Xlu xlu_{*this, "XLU"};
+  tpu::Msa msa_{*this, "MSA"};
 };
 
-}  // namespace
+}
 
-VCIX_ACCEL_REGISTER(Tpu)
+VCIX_CP_REGISTER(Tpu)

@@ -3,11 +3,12 @@
 #include <cstdio>
 #include <deque>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 namespace {
 
-using namespace vcix_accel;
+using namespace cp;
+using Insn = vcix_insn;
 
 constexpr size_t DEPTH = 4;
 constexpr Cycle LATENCY = 10;
@@ -42,4 +43,4 @@ class Pipelined : public Model {
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(Pipelined)
+VCIX_CP_REGISTER(Pipelined)

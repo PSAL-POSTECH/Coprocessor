@@ -1,38 +1,45 @@
 // The DMA, tpu::Misc's untimed side path (TOGSim counts its time): a tensor of up to four dimensions between memory
 // and the scratchpad, one slice of the split axis per lane, as the Spike these units came from did it (9f555b4).
-// dma_config_desc names the descriptor; mvin and mvout read it when they run.
+// dma_config_desc names the descriptor; mvin and mvout read it, and return why one left the scratchpad ("" if not).
 #ifndef TPU_DMA_HPP
 #define TPU_DMA_HPP
 
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <string>
 #include <vector>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 #include "values.hpp"
 
 namespace tpu {
 
 class Dma {
-  using Host = vcix_accel::Host;
-  using Insn = vcix_accel::Insn;
+  using Host = cp::Host;
+  using Insn = vcix_insn;
 
  public:
-  void configure(const vcix_accel::Config &config) {
+  void configure(const cp::Config &config) {
     if (config.get(SPAD_LANE_KEY)) spad_lane_bytes_ = config.uint(SPAD_LANE_KEY, 0) * 1024;
     spad_base_ = config.hex(SPAD_BASE_KEY, 0xD0000000);
   }
+  // Back to no descriptor, as configure left it.
+  void reset() { dma_descriptor_ = 0; }
   static constexpr const char *SPAD_LANE_KEY = "vpu_spad_size_kb_per_lane";
   bool scratchpad() const { return spad_lane_bytes_ != 0; }
-  // The exit code of a transfer that leaves a lane's scratchpad; SKIP, an address another transfer owns.
+  // The exit code of the fault of a transfer that leaves a lane's scratchpad; SKIP, an address another transfer owns.
   static constexpr int INVALID_SPAD_ACCESS = 200;
   static constexpr uint64_t SKIP = ~uint64_t{0};
+  // That fault's why: `name` is MVIN or MVOUT, `address` the lane's scratchpad address it reached.
+  static std::string overflow(const char *name, uint64_t address) {
+    char text[96];
+    std::snprintf(text, sizeof text, "%s ERROR: Scratchpad address overflow: 0x%llx", name, static_cast<unsigned long long>(address));
+    return text;
+  }
 
-  void dma_config_desc(const Host &host, const Insn &insn) { dma_descriptor_ = host.xreg(vcix_accel::rs1(insn)); }
-  // x[rs1] once named the indirect transfers' index dumps; nothing reads it now, and programs that issue it still run.
-  void dma_index_key(const Host &, const Insn &) {}
+  void dma_config_desc(const Host &host, const Insn &insn) { dma_descriptor_ = host.xreg(cp::rs1(insn)); }
 
   struct Transfer {
     uint64_t memory, scratchpad;
@@ -52,8 +59,8 @@ class Dma {
 
   Transfer dma_transfer(const Host &host, const Insn &insn, const char *name, bool skips) const {
     Transfer t;
-    t.memory = host.xreg(vcix_accel::rs1(insn));
-    t.scratchpad = host.xreg(vcix_accel::rs2(insn));
+    t.memory = host.xreg(cp::rs1(insn));
+    t.scratchpad = host.xreg(cp::rs2(insn));
     const uint64_t d = dma_descriptor_;
     for (int i = 0; i < 4; i++) {
       t.dim_size[i] = static_cast<uint64_t>(static_cast<int64_t>(load<int32_t>(host, d + 0 + 4 * i)));
@@ -162,7 +169,7 @@ class Dma {
   static void mvin_element(const Host &host, uint64_t from, uint64_t to, bool used, uint64_t fill) {
     store<T>(host, to, used ? load<T>(host, from) : static_cast<T>(fill));
   }
-  void mvin(const Host &host, const Insn &insn) {
+  std::string mvin(const Host &host, const Insn &insn) {
     const Transfer t = dma_transfer(host, insn, "mvin", true);
     for (uint64_t outer = 0; outer < t.outer_loops; outer++)
       for (uint64_t lane = 0; lane < t.lanes; lane++)
@@ -180,10 +187,7 @@ class Dma {
                 uint64_t from = used ? dma_address(t, "mvin", position) : 0;
                 if (from == SKIP) continue;
                 used = used && from != 0;
-                if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) {
-                  std::fprintf(stderr, "MVIN ERROR: Scratchpad address overflow: 0x%llx\n", static_cast<unsigned long long>(to));
-                  std::exit(INVALID_SPAD_ACCESS);
-                }
+                if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) return overflow("MVIN", to);
                 if (t.indirect && used) from += dma_indirect(host, t, "mvin", outer, lane, at, spad_index);
                 if (t.memory_bytes && (from < t.memory_base || from + t.element_size > t.memory_base + t.memory_bytes))
                   used = false;
@@ -195,9 +199,10 @@ class Dma {
                   default: break;
                 }
               }
+    return "";
   }
 
-  void mvout(const Host &host, const Insn &insn) {
+  std::string mvout(const Host &host, const Insn &insn) {
     const Transfer t = dma_transfer(host, insn, "mvout", false);
     for (uint64_t outer = 0; outer < t.outer_loops; outer++)
       for (uint64_t lane = 0; lane < t.used_lanes; lane++)
@@ -213,10 +218,7 @@ class Dma {
                 const uint64_t from = t.scratchpad + spad_index * t.element_size + lane * spad_lane_bytes_;
                 uint64_t to = dma_address(t, "mvout", position);
                 if (to == 0) continue;
-                if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) {
-                  std::fprintf(stderr, "MVOUT ERROR: Scratchpad address overflow: 0x%llx\n", static_cast<unsigned long long>(from));
-                  std::exit(INVALID_SPAD_ACCESS);
-                }
+                if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) return overflow("MVOUT", from);
                 if (t.indirect) to += dma_indirect(host, t, "mvout", outer, lane, at, spad_index);
                 if (t.memory_bytes && (to < t.memory_base || to + t.element_size > t.memory_base + t.memory_bytes))
                   continue;
@@ -243,6 +245,7 @@ class Dma {
                     store<uint64_t>(host, to, (t.accumulate ? load<uint64_t>(host, to) : 0) + load<uint64_t>(host, from));
                 }
               }
+    return "";
   }
   // What memory holds at `to` plus what the scratchpad holds at `from`, read in that order; a NaN is from's first.
   template <class F>

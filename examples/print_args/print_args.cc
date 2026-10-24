@@ -4,11 +4,12 @@
 #include <cstdio>
 #include <cstring>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 namespace {
 
-using namespace vcix_accel;
+using namespace cp;
+using Insn = vcix_insn;
 
 constexpr uint32_t MATCH_CUSTOM_2 = 0x5B;
 constexpr uint32_t MATCH_CUSTOM_1 = 0x2B;
@@ -115,4 +116,4 @@ class PrintArgs : public Model {
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(PrintArgs)
+VCIX_CP_REGISTER(PrintArgs)

@@ -1,12 +1,13 @@
 // Built three ways, each a library a caller must refuse: WHICH 1 hands over no table, 2 a table of another ABI version, 3 a model whose constructor throws.
 #include <stdexcept>
 
-#include "vcix_accel.hpp"
+#include "vcix_cp_base.hpp"
 
 #if WHICH == 3
 namespace {
 
-using namespace vcix_accel;
+using namespace cp;
+using Insn = vcix_insn;
 
 class CannotBeMade : public Model {
  public:
@@ -20,7 +21,7 @@ class CannotBeMade : public Model {
 
 }  // namespace
 
-VCIX_ACCEL_REGISTER(CannotBeMade)
+VCIX_CP_REGISTER(CannotBeMade)
 #else
 extern "C" __attribute__((visibility("default"))) const vcix_model *vcix_accel_model(void) {
   static const vcix_model other_abi = {VCIX_ACCEL_ABI_VERSION + 1};

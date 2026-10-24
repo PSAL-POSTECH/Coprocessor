@@ -1,15 +1,17 @@
 # tpu
 
 `libtpu.so` (model name `tpu`) is a TPU's vector-side units on the two custom
-opcodes. It is five `vcix_uarch` units in one `tpu::Machine`. Each unit says,
-per instruction, which blocks it uses and what it computes. gem5 runs that
-description for the timing; Spike runs the same description for the values.
-How `vcix_uarch` works (ports, pipelines, routes, `require`, `when_stuck`) is
-in the [root README](../../README.md). This page is about the tpu units.
+opcodes. It is five `cp::Component`s in one `tpu::Coprocessor`. Each unit
+writes one `cycle()` over its blocks (ports, queues, pipelines) and says,
+per instruction, what it computes. gem5 runs that `cycle` for the timing;
+Spike runs the same `cycle` for the values. How the cp engine works
+(`cp::Port`, `cp::Queue`, `cp::Pipeline`, a component's `insns()`,
+`complete`, `fault`) is in the [root README](../../README.md). This page is
+about the tpu units.
 
 ```mermaid
 flowchart LR
-  I["custom-2 / custom-1<br>instruction"] --> M{"tpu::Machine<br>tpu.cc:13"}
+  I["custom-2 / custom-1<br>instruction"] --> M{"tpu::Coprocessor<br>tpu.cc:13"}
   M -->|"verf ... vexp, sfu_push, sfu_pop"| S["tpu::Sfu<br>SFU"]
   M -->|"vlane_idx, compute, pack, unpack,<br>dma_config_desc, mvin, mvout ..."| C["tpu::Misc<br>MISC"]
   M -->|"input push, weight push, pop"| Y["tpu::Systolic<br>SYSTOLIC"]
@@ -17,14 +19,17 @@ flowchart LR
   M -->|"msa push, msa pop"| A["tpu::Msa<br>MSA"]
 ```
 
-- [tpu.cc:13-15](tpu.cc#L13-L15) lists the units and the names their
+- [tpu.cc:18-22](tpu.cc#L18-L22) lists the units and the names their
   statistics use: `SFU`, `MISC`, `SYSTOLIC`, `XLU`, `MSA`. An instruction goes
-  to the first unit whose encoding matches it. Nothing on custom-3 is owned.
-- [machine.hpp](machine.hpp) is `vcix_uarch::Machine` plus one key,
-  `tpu_trace` ([below](#reading-tpu_trace)).
+  to the first unit whose encoding matches it
+  ([vcix_cp.hpp:384-390](../../include/vcix_cp.hpp#L372-L378)). Nothing on
+  custom-3 is owned.
+- [machine.hpp](machine.hpp) is `tpu::Coprocessor`, a `cp::Coprocessor` plus
+  one key, `tpu_trace` ([below](#reading-tpu_trace)), and `tpu::Component`, a
+  `cp::Component` that adds its queues to the trace.
 - [mxu.hpp](mxu.hpp) is in this directory, but `libtpu.so` does not hold it.
   It is the matrix unit of [tpuv6e](../tpuv6e/README.md) and
-  [tpuv3](../tpuv3/README.md) (`tpuv6e.cc:21`, `tpuv3.cc:22`), which also use
+  [tpuv3](../tpuv3/README.md) (`tpuv6e.cc:30`, `tpuv3.cc:31`), which also use
   `Sfu`, `Misc` and `Xlu` from here.
 - [values.hpp](values.hpp) holds the number formats every unit uses.
   [dma.hpp](dma.hpp) is the DMA that `tpu::Misc` carries out.
@@ -33,8 +38,8 @@ Contents: [Encodings](#encodings) · [Sfu](#sfu-special-functions-and-the-eup) �
 [Misc](#misc-one-cycle-instructions-and-the-dma) ·
 [Systolic](#systolic-the-systolic-array) · [Msa](#msa-the-multi-precision-array) ·
 [Xlu](#xlu-the-cross-lane-unit) · [When a run ends](#when-the-model-ends-a-run) ·
-[Keys](#keys-read-from-the-machine-description) · [tpu_trace](#reading-tpu_trace) ·
-[Where the values come from](#where-the-values-come-from) ·
+[Keys](#keys-read-from-the-machine-description) · [Statistics](#statistics-one-unit-per-block) ·
+[tpu_trace](#reading-tpu_trace) · [Where the values come from](#where-the-values-come-from) ·
 [The gem5 machine](#the-gem5-machine) · [Running the examples](#running-the-examples-on-this-page)
 
 ## Encodings
@@ -79,13 +84,13 @@ custom-1 (opcode 0x2B): .insn r 0x2b, 3, <funct7>, x0, a0, a1
   funct7 3                        0x06b5302b   mvout                  Misc
 ```
 
-The match words and masks are each unit's `INSTRUCTIONS` table:
-[sfu.hpp:96](sfu.hpp#L96), [misc.hpp:118](misc.hpp#L118),
-[systolic.hpp:103](systolic.hpp#L103), [msa.hpp:96](msa.hpp#L96),
-[xlu.hpp:224](xlu.hpp#L224). Most masks are `0xFE00707F`: funct6, vm, funct3
-and the opcode. vsin, vcos, vlog, vatan, unpack_lo and unpack_hi also match the
-field (`0xFE0FF07F`). sfu_push and xlu_push differ only in funct3
-(`0x2E00005B` and `0x2E00305B`).
+The match words and masks are each unit's `cp::Encoding` constants, registered
+in its constructor: [sfu.hpp:35-43](sfu.hpp#L35-L43),
+[misc.hpp:28-38](misc.hpp#L28-L38), [systolic.hpp:45-47](systolic.hpp#L45-L47),
+[msa.hpp:27-28](msa.hpp#L27-L28), [xlu.hpp:73-76](xlu.hpp#L73-L76). Most masks
+are `0xFE00707F`: funct6, vm, funct3 and the opcode. vsin, vcos, vlog, vatan,
+unpack_lo and unpack_hi also match the field (`0xFE0FF07F`). sfu_push and
+xlu_push differ only in funct3 (`0x2E00005B` and `0x2E00305B`).
 
 <details><summary>Reproduce</summary>
 
@@ -101,16 +106,38 @@ riscv64-unknown-elf-objdump -d build/tpu-msa | awk '/<main>:/,/ret/' | grep -E '
 
 ## Sfu: special functions and the EUP
 
-### Seven special functions
-
-A special function is a pipeline that takes one instruction a cycle. Each one
-is done `tpu_sfu_latency_cycles` (default 10) after it entered. Any number can
-be inside at once.
+`tpu::Sfu` has one pipeline, the EUP: `eup`, a `cp::Pipeline` of
+`tpu_sfu_latency_cycles` stages that takes one register a cycle
+([sfu.hpp:169-172](sfu.hpp#L169-L172) lists its blocks). The seven special
+functions and `sfu_push` share it: a special function sends its group's
+registers through it and writes `vd = f(vs2)` when the last one leaves;
+`sfu_push` queues registers for it and `sfu_pop` takes them back. A queued push
+register enters before a special function's next register.
 
 ```
-cycle    0     1     2     3     4   ...  10    11    12    13    14
+ insns() ──head, one a cycle──► entry port (the SFU statistic)
+    │ verf .. vexp: one register a cycle          │ sfu_push                 ▲ sfu_pop
+    ▼                                             ▼                          │
+ eup, tpu_sfu_latency_cycles stages ◄─1 a cycle── eup_input ──► eup ──► eup_output
+    │ a special function's last register out: vd written (Spike), complete()
+```
+
+### Seven special functions
+
+An instruction is accepted into `insns()` at its issue (2 deep, one a cycle).
+At the next `cycle` the head puts its first register into the EUP and spends
+`entry` ([sfu.hpp:76-80](sfu.hpp#L76-L80), [120-122](sfu.hpp#L120-L122)); the
+register is done `tpu_sfu_latency_cycles` (default 10) later, when `cycle`
+takes it, writes `vd` on Spike and calls `complete()`
+([sfu.hpp:63-70](sfu.hpp#L63-L70)). So a special function of one register
+issued at t is ready at t + 1 + 10; a group of m registers enters one a cycle
+and is ready at t + m + 10. Any number can be in the EUP at once.
+
+```
+cycle    0     1     2     3     4     5  ...  11    12    13    14    15
 issue   vexp  vexp  vexp  vexp  vexp
-done                                      #1    #2    #3    #4    #5
+in EUP        #1    #2    #3    #4    #5
+done                                           #1    #2    #3    #4    #5
 ```
 
 `tests/tpu/sfu.S` issues five independent `vexp`, then a chain of six, each
@@ -122,59 +149,100 @@ reading the one before it. On gem5 with `tests/tpu/trace.yml`:
 [tpu] issue vexp: 1 cycles after the last issue, 2 in flight
 [tpu] issue vexp: 1 cycles after the last issue, 3 in flight
 [tpu] issue vexp: 1 cycles after the last issue, 4 in flight
-[tpu] commit vexp: 10 cycles after its issue          (5 times)
-[tpu] issue vtanh: 10 cycles after the last issue, 0 in flight
-[tpu] commit vtanh: 10 cycles after its issue
-[tpu] issue verf: 10 cycles after the last issue, 0 in flight
+[tpu] commit vexp: 11 cycles after its issue          (5 times)
+[tpu] issue vtanh: 11 cycles after the last issue, 0 in flight
+[tpu] commit vtanh: 11 cycles after its issue
+[tpu] issue verf: 11 cycles after the last issue, 0 in flight
 ...                                                   (vsin, vcos, vlog, vatan the same)
 ```
 
-With `tpu_sfu_latency_cycles: 4`, every 10 above becomes 4. The first `vexp`
-is then done before the fifth issues, so the fifth finds 3 in flight:
-
-```
-[tpu] issue vexp: 1 cycles after the last issue, 3 in flight
-[tpu] commit vexp: 4 cycles after its issue
-[tpu] issue vexp: 1 cycles after the last issue, 3 in flight
-```
+With `tpu_sfu_latency_cycles: 4`, every 11 above becomes 5.
 
 <details><summary>Reproduce</summary>
 
-Asserted by `tests/tpu/run.sh:43-67`. `tests/tpu/run.sh build` leaves the
-traces in `build/tpu-sfu.gem5.log` and `build/tpu-latency-4.gem5.log`.
+`sfu.S` on `tests/tpu/trace.yml`, and on a description of `tpu_trace: 1` and
+`tpu_sfu_latency_cycles: 4`, as [Running the examples](#running-the-examples-on-this-page)
+runs a program on gem5.
 </details>
 
-The route is three lines ([sfu.hpp:68-82](sfu.hpp#L68-L82)):
+The unit's `cycle` is one function ([sfu.hpp:62-81](sfu.hpp#L62-L81)); its
+head's work is `head()` ([sfu.hpp:93-123](sfu.hpp#L93-L123)):
 
 ```cpp
-void special_function(Route &r) {
-  ...
-  r.require(!r.vl() || sew == 16 || sew == 32 || (sew == 64 && WIDE[f]), ...);     // which widths it has
-  r.use(entry_).done_after(latency_);                 // one slot of the entry port, done latency_ later
-  r.when_done([&r](const Host &host) { ... });        // Spike only: vd[i] = f(vs2[i]) in every lane
+void cycle() override {
+  if (eup_.length()) {                                   // the EUP's finished register leaves
+    const Row &out = eup_.front();
+    if (out.special) {                                    // a special function's: the last completes it
+      const Row row = eup_.pop();
+      if (row.j + 1 == cp::group_size(row.insn)) {
+        values([&](const Host &host) { special_function(host, row.insn); });   // Spike only: vd[i] = f(vs2[i])
+        complete(row.insn);
+      }
+    } else if (!eup_output_.full()) {                  // a pushed one: into the output queue
+      eup_output_.push(eup_.pop().pushed);
+    }
+  }
+  if (eup_.available() && eup_input_.length()) eup_.push({Insn{}, 0, false, eup_input_.pop()});
+  if (insns().length() && head(insns().front())) {   // the head: a register in, or a push / pop step
+    insns().pop();
+    entry_.utilize(1);
+    moved_ = 0;
+  }
 }
 ```
 
-- gem5 uses only `require`, `use` and `done_after`: a slot a cycle, a fixed latency.
-- Spike also runs `when_done`, which writes `vd` the cycle the instruction is done.
+- gem5 and Spike run the same `cycle`. Only `values(...)` differs: on Spike it
+  runs the lambda (`special_function`, `pushed`, `popped`); on gem5 nothing.
 - Widths: halves and singles for all seven; doubles only for `vlog` and
-  `vatan`. A `vexp` on doubles ends the run ([below](#when-the-model-ends-a-run)).
+  `vatan` ([sfu.hpp:149-153](sfu.hpp#L149-L153)). Another width is a `fault`
+  as the instruction reaches the head ([sfu.hpp:95-98](sfu.hpp#L95-L98)): a
+  `vexp` on doubles ends the run ([below](#when-the-model-ends-a-run)).
 
 ### The EUP: sfu_push and sfu_pop
 
-`sfu_push` and `sfu_pop` also belong to `tpu::Sfu`. They are the v6e's EUP: a
-push sends registers into a pipeline of `tpu_sfu_latency_cycles` stages, and a
-later pop takes them back. What they compute, and a trace, are in
-[tpuv6e: the EUP](../tpuv6e/README.md#the-eup-sfu_push-and-sfu_pop). The
-[root README](../../README.md#a-pipeline-cycle-by-cycle) walks one push and its
-pop cycle by cycle. The EUP's keys are [below](#keys-read-from-the-machine-description).
+`sfu_push` and `sfu_pop` also belong to `tpu::Sfu`. They are the v6e's EUP.
+
+- **`sfu_push`**: at the head it pushes its group's registers into `eup_input`,
+  as many as fit a cycle, each element as `2^x` (Spike), and completes with
+  the last ([sfu.hpp:99-107](sfu.hpp#L99-L107)). The EUP then takes them one
+  a cycle, and each leaves into `eup_output` `tpu_sfu_latency_cycles` later.
+- **`sfu_pop`**: accepted at once; at the head it takes every visible register
+  of `eup_output` it still needs, each cycle, and completes with the last
+  ([sfu.hpp:108-119](sfu.hpp#L108-L119)). A pop with nothing left anywhere
+  (input queue, EUP and output queue empty) is a `fault`:
+  `tpu: sfu_pop: lane 0 has no pushed result left`.
+
+[eup.S](#running-the-examples-on-this-page), two pushes of a group of eight
+registers and their two pops, on gem5 with `tests/tpu/trace.yml`:
+
+```
+[tpu] issue sfu_push: the first, input queue 0, output queue 0
+[tpu] commit sfu_push: 1 cycles after its issue
+[tpu] issue sfu_push: 1 cycles after the last issue, 0 in flight, input queue 8, output queue 0
+[tpu] commit sfu_push: 1 cycles after its issue
+[tpu] issue sfu_pop: 1 cycles after the last issue, 0 in flight, input queue 15, output queue 0
+[tpu] issue sfu_pop: 1 cycles after the last issue, 1 in flight, input queue 14, output queue 0
+[tpu] commit sfu_pop: 18 cycles after its issue
+[tpu] commit sfu_pop: 25 cycles after its issue
+```
+
+The first push's eight registers enter the EUP one a cycle from cycle 2; the
+eighth is out, visible to the pop, at cycle 20: the first pop, issued at 2 and
+waiting at the head, completes 18 cycles after its issue. The second pop's
+registers follow one a cycle, so it completes 8 cycles later. What the EUP
+computes, and a one-push trace, are in
+[tpuv6e: the EUP](../tpuv6e/README.md#the-eup-sfu_push-and-sfu_pop). The EUP's
+keys are [below](#keys-read-from-the-machine-description).
 
 ## Misc: one-cycle instructions and the DMA
 
 `tpu::Misc` owns every instruction with no timing of its own: `vlane_idx`,
-`compute`, `pack`, `unpack_lo`, `unpack_hi`, and the DMA's six. Each takes one
-slot of a port `tpu_misc_issue_width` (default 2) wide, and is done one cycle
-later ([misc.hpp:43-56](misc.hpp#L43-L56)).
+`compute`, `pack`, `unpack_lo`, `unpack_hi`, and the DMA's six. Its `insns()`
+takes `tpu_misc_issue_width` (default 2) a cycle, 2 x that deep
+([misc.hpp:47-54](misc.hpp#L47-L54)); at the next `cycle` each pops, spends
+one slot of the `issue` port, writes its values (Spike) and completes
+([misc.hpp:59-74](misc.hpp#L59-L74)). So each is done one cycle after its
+issue.
 
 `tests/tpu/one_cycle.S` runs a `vexp`, a weight push that reads it, then the
 eight Misc instructions. On gem5 (`examples/gem5_se.py`, `tests/tpu/trace.yml`)
@@ -198,28 +266,31 @@ The width is a key. On the [generic gem5 machine](#the-gem5-machine), whose CPU
 issues up to 12 instructions a cycle, the same program gives:
 
 - default: at most 2 Misc instructions a cycle; `MISC.capacity` 2, `MISC.admitted` 8.
-- `tpu_misc_issue_width: 3`: at most 3 a cycle; `MISC.capacity` 3.
+- `tpu_misc_issue_width: 3`: 3 a cycle (`vlane_idx`, `compute` and
+  `dma_config_desc` issue together); `MISC.capacity` 3.
 - `tpu_misc_issue_width: 0`: gem5 stops with
   `tpu: machine description: tpu_misc_issue_width: '0' is not an issue width: at least 1`.
 
 <details><summary>Reproduce</summary>
 
-The commit lines are asserted by `tests/tpu/run.sh:145-157`; the issue lines
-are from `build/tpu-one_cycle.gem5.log` of the same run. The widths 2, 3 and 0
-are asserted by `tests/tpu/run.sh:190-216`.
+`one_cycle.S` on `tests/tpu/trace.yml`, on `examples/gem5_se.py` and on
+`examples/tpu/gem5/script_systolic.py`; for the widths, a description of
+`tpu_trace: 1`, `vpu_spad_size_kb_per_lane: 512` and the key. The statistics
+are `MISC.capacity` and `MISC.admitted` of `m5out/stats.txt`
+([Statistics](#statistics-one-unit-per-block)).
 </details>
 
 ### What the Misc instructions compute
 
 - `vlane_idx`: every element of `vd` is its lane's number, written as 64 bits
-  whatever the element width ([misc.hpp:103](misc.hpp#L103)).
+  whatever the element width ([misc.hpp:134-137](misc.hpp#L134-L137)).
 - `compute`: nothing.
 - `pack` (the v6e's `vpack.c.bf16`): `vd` gets `vl` 32-bit words. Their bf16
   halves are `vs2`'s `vl` singles, then `vs1`'s, rounded to nearest even;
-  element `2w` goes in the low half of word `w` ([misc.hpp:64-78](misc.hpp#L64-L78)).
+  element `2w` goes in the low half of word `w` ([misc.hpp:95-111](misc.hpp#L95-L111)).
 - `unpack_lo` / `unpack_hi` (the v6e's `vunpack.c.l/h.bf16`): the other way.
   `vs2`'s `vl` words hold `2 vl` bf16; `vd` gets elements `0 .. vl-1` (lo) or
-  `vl .. 2vl-1` (hi) as singles, widened exactly ([misc.hpp:89-98](misc.hpp#L89-L98)).
+  `vl .. 2vl-1` (hi) as singles, widened exactly ([misc.hpp:114-131](misc.hpp#L114-L131)).
 
 A pack of four singles, `vl` = 2:
 
@@ -238,9 +309,8 @@ vd  = word 0: 0x3f82 3f80          word 1: 0x3f81 7fc0
 
 `show pack` ([show.c](#running-the-examples-on-this-page)) on Spike prints
 `pack of 0x3f808000 0x3f818000 (vs2) and 0x7f800001 0x3f808001 (vs1): words 0x3f823f80 0x3f817fc0`.
-`tests/tpu/functional/run.sh:134-139` checks pack and unpack on every lane
-against the formula: `pack: 2048 words a lane, 0 wrong`,
-`unpack: 4096 singles a lane, 0 wrong`.
+`tests/tpu/functional/run.sh` checks pack and unpack on every lane against the
+formula.
 </details>
 
 ### The DMA
@@ -249,12 +319,12 @@ The DMA moves a tensor of up to four dimensions between memory and the
 scratchpad, one slice of its split axis per lane ([dma.hpp](dma.hpp)). It has
 no timing of its own (TOGSim counts its time): on gem5 its instructions are the
 one-cycle slots above. On Spike its values are carried out as the instruction
-issues.
+leaves `insns()`, one cycle after its issue.
 
 - `dma_config_desc` takes the descriptor's address from `x[rs1]`. `mvin`,
   `mvin2`, `mvin3` and `mvout` read the descriptor when they run: `x[rs1]` is
   the memory address, `x[rs2]` the scratchpad address.
-- The descriptor ([dma.hpp:59-81](dma.hpp#L59-L81)): `dim_size[4]` at byte 0,
+- The descriptor ([dma.hpp:66-88](dma.hpp#L66-L88)): `dim_size[4]` at byte 0,
   `dim_low[4]` at 16, `dim_high[4]` at 32 (int32 each); `mm_stride[4]` at 48,
   `spad_stride[4]` at 80 (uint64 each); `element_size` at 112, `vlane_stride`
   at 114, `split_axis` at 116, `flags` at 118 (indirect, masked, accumulate,
@@ -263,19 +333,28 @@ issues.
 - `dma_index_key` is accepted and does nothing: an indirect transfer writes no
   file of the indices it read. TOGSim takes those offsets from the runtime
   attributes the compiler records.
-- A transfer needs `vpu_spad_size_kb_per_lane`. Without it the transfer is
-  never accepted, on both simulators ([misc.hpp:53-56](misc.hpp#L53-L56)).
-  Spike ends with `tpu: mvin: the machine description has no vpu_spad_size_kb_per_lane`;
-  gem5 runs into its limit (`simulate() limit reached`).
+- A transfer needs `vpu_spad_size_kb_per_lane`. Without it the transfer is a
+  `fault` as it leaves `insns()`, on both simulators
+  ([misc.hpp:63-66](misc.hpp#L63-L66)): Spike ends with
+  `tpu: mvin: the machine description has no vpu_spad_size_kb_per_lane`
+  (exit 1); gem5 issues and commits the instruction, prints the same line and
+  exits 1.
+- A transfer that leaves a lane's scratchpad is a `fault` with exit code 200,
+  `MVIN ERROR: Scratchpad address overflow: 0x...` ([misc.hpp:67-72](misc.hpp#L67-L72),
+  [dma.hpp:33-40](dma.hpp#L33-L40)). Only Spike reaches it: gem5 runs no values.
 
 <details><summary>Reproduce</summary>
 
 [mvin.S](#running-the-examples-on-this-page), one `mvin`, with no machine
 description:
 `spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xvcixaccel --varch=vlen:256,elen:64 pk mvin`
-(exit 1), and
-`gem5.opt examples/gem5_se.py --model build/libtpu.so --max-ticks 100000000 mvin`
-(exit 1, `exit: simulate() limit reached at cycle 100000`).
+(exit 1), and on gem5 with a description of `tpu_trace: 1` only (exit 1):
+
+```
+[tpu] issue mvin: the first
+[tpu] commit mvin: 1 cycles after its issue
+tpu: mvin: the machine description has no vpu_spad_size_kb_per_lane
+```
 </details>
 
 ## Systolic: the systolic array
@@ -301,22 +380,28 @@ anti-diagonal work in the same step.
 
 The model does not keep a register per PE. It keeps:
 
-- **One pipeline of `2 x lanes - 1` stages** ([systolic.hpp:55-56](systolic.hpp#L55-L56)).
-  Stage k is anti-diagonal k. With 4 lanes that is 7 stages.
-- **A `Row` per input vector**, riding the pipeline's slots
-  ([systolic.hpp:36-39](systolic.hpp#L36-L39)): its `input` (x), its `sums`
+- **One pipeline of `2 x lanes - 1` stages**, `array`
+  ([systolic.hpp:67](systolic.hpp#L67), [71](systolic.hpp#L71)). Stage k is
+  anti-diagonal k. With 4 lanes that is 7 stages.
+- **A `Row` per input vector**, riding the pipeline
+  ([systolic.hpp:38-41](systolic.hpp#L38-L41)): its `input` (x), its `sums`
   (one partial sum per output lane), and the weights it computes with.
-- **The weights in a `Register`** ([systolic.hpp:198](systolic.hpp#L198)): per
+- **The weights in a plain member**, `weights_`
+  ([systolic.hpp:24-35](systolic.hpp#L24-L35), [271](systolic.hpp#L271)): per
   lane, its last `lanes` weights.
-- **A `stage` function** ([systolic.hpp:128-137](systolic.hpp#L128-L137)): at
+- **A `stage` function** ([systolic.hpp:186-195](systolic.hpp#L186-L195)): at
   stage k, lane L adds `input[k-L] * W[L][k-L]` to its sum. Only Spike calls
-  it; gem5's slots carry no values.
+  it (`on_stage`, [systolic.hpp:54](systolic.hpp#L54)); gem5's rows carry no
+  values.
 
 ```
-input queue ──► entry, 1 row a cycle ──► [ stage 0 | stage 1 | ... | stage 2L-2 ] ──► output queue ──► pop
-(tpu_systolic_queue_entries)               one anti-diagonal each                   (the same size)    takes exactly vl
-                                      the whole line stops while the output queue is full
+insns() ──head──► input_queue ──► array, 1 row a cycle ──► [ stage 0 | stage 1 | ... | stage 2L-2 ] ──► output_queue ──► pop
+          an input push puts   (tpu_systolic_queue_entries)   one anti-diagonal each                   (the same size)    takes exactly vl
+          all vl rows in            a row leaves and a row enters only while the output queue had room as the cycle began
 ```
+
+The blocks are [systolic.hpp:264-270](systolic.hpp#L264-L270); `cycle` is
+[systolic.hpp:88-107](systolic.hpp#L88-L107).
 
 ### Row 0, worked through
 
@@ -374,103 +459,131 @@ and follows one stage behind. Each row carries its own `sums`, so rows never mix
 
 ```
 [tpu] issue systolic weight push: the first, input queue 0, output queue 0
+[tpu] commit systolic weight push: 1 cycles after its issue
 [tpu] issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] issue systolic pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4
+[tpu] commit systolic input push: 1 cycles after its issue
+[tpu] issue systolic pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0
+[tpu] commit systolic pop: 12 cycles after its issue
 ```
 
 ```
-cycle   0     1     2     3     4     5     6     7     8     9     10    11    12
-issue   wgt   in(4)                                                             pop
-row 0               s0    s1    s2    s3    s4    s5    s6    out
-row 1                     s0    s1    s2    s3    s4    s5    s6    out
-row 2                           s0    s1    s2    s3    s4    s5    s6    out
-row 3                                 s0    s1    s2    s3    s4    s5    s6    out
-                                                                                └ 4 rows out: the pop issues
+cycle   0     1     2     3     4     5     6     7     8     9     10    11    12    13    14
+issue   wgt   in(4) pop
+head          wgt   in(4) pop waits at the head of insns() .....................................  takes 4
+row 0                     s0    s1    s2    s3    s4    s5    s6    out
+row 1                           s0    s1    s2    s3    s4    s5    s6    out
+row 2                                 s0    s1    s2    s3    s4    s5    s6    out
+row 3                                       s0    s1    s2    s3    s4    s5    s6    out   ──► visible
 ```
 
-- A row enters the stages in the cycle after its push and is held 7 cycles
-  (`tests/tpu/ports.cc` `one_row`: admitted 1, occupancy 7).
-- The 4 rows enter one a cycle, so the fourth is out 4 + 7 = 11 cycles after
-  the push. The pop asks for exactly 4, so it waits until the output queue
-  holds 4.
+- An instruction is accepted into `insns()` at its issue and worked by the
+  head one cycle later ([systolic.hpp:92-93](systolic.hpp#L92-L93)): the weight
+  push's beats are taken at 1, the input push's 4 rows go into the input queue
+  at 2 (the pop's issue line already shows them: `input queue 4`), and the pop
+  waits at the head from 3.
+- A row enters the stages the cycle after it reached the input queue, one a
+  cycle (`array_.issue`, [systolic.hpp:102-105](systolic.hpp#L102-L105)), is in
+  them 7 cycles, leaves into the output queue in the next (`out`) and is
+  visible to the pop a cycle after that. The fourth row enters at 6 and is
+  visible at 14.
+- The pop takes exactly `vl` rows, all in one cycle (the default, `whole_`,
+  [systolic.hpp:165-182](systolic.hpp#L165-L182)): at 14, 12 cycles after its
+  issue.
 - A weight push moves no row through the stages. gem5's `SYSTOLIC.admitted`
-  counts rows at the entry port: 20 for the whole `systolic_full.S` (its 4 + 16
-  input rows), none for its four weight pushes.
+  counts rows entering the array: 20 for the whole `systolic_full.S` (its 4 +
+  16 input rows), none for its four weight pushes
+  ([Statistics](#statistics-one-unit-per-block)).
 
 <details><summary>Reproduce</summary>
 
-The three lines are asserted by `tests/tpu/run.sh:73-77`, and `one_row` by
-`tests/tpu/ports.cc:126-151`. `SYSTOLIC.admitted 20` is from the same run's
-`stats.txt` (`system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.admitted`).
+`systolic_full.S` on `tests/tpu/systolic.yml`, as
+[Running the examples](#running-the-examples-on-this-page) runs a program on
+gem5; `SYSTOLIC.admitted` from that run's `stats.txt`.
 </details>
 
 ### When the queues fill
 
 `tests/tpu/systolic_stream.S`: a weight push, then ten input pushes of 2 back
-to back into an input queue of 8. The input queue gains 2 rows a push and loses
-1 a cycle. Pushes go one a cycle while 2 rows of room are left, then one every
-two cycles:
+to back into an input queue of 8. The head puts a push's 2 rows in the cycle
+after its issue, or waits until both fit; the queue loses 1 row a cycle from
+cycle 3. Pushes go one a cycle while 2 rows of room are left, then one every
+two cycles, the waiting push `1 in flight` and the next one accepted behind it
+(`insns()` holds 2):
 
 ```
 [tpu] issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0
-  ... input queue 2, 3, 4, 5, 6, one a cycle ...
-[tpu] issue systolic input push: 2 cycles after the last issue, 0 in flight, input queue 6, output queue 1
-[tpu] issue systolic input push: 2 cycles after the last issue, 0 in flight, input queue 6, output queue 3
-[tpu] issue systolic input push: 2 cycles after the last issue, 0 in flight, input queue 6, output queue 5
+[tpu] issue systolic input push: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 0
+  ... input queue 3, 4, 5, 6, 7, one a cycle ...
+[tpu] issue systolic input push: 1 cycles after the last issue, 1 in flight, input queue 6, output queue 0
+[tpu] issue systolic input push: 2 cycles after the last issue, 1 in flight, input queue 6, output queue 1
+[tpu] issue systolic input push: 2 cycles after the last issue, 1 in flight, input queue 6, output queue 3
 ```
 
 The end of `systolic_full.S` pushes 16 rows and pops none until the output
-queue is full. The array stops with 8 rows out, 7 in the stages and 1 waiting.
-A pop of 4 frees the queue, and in the next cycle the array moves again (4
-left + 1 more = 5):
+queue is full. The array stops with 8 rows out, 7 in the stages and 1 waiting
+(`enable`, [systolic.hpp:90](systolic.hpp#L90), [101-102](systolic.hpp#L101-L102)).
+A pop of 4 takes its rows at the head the cycle after its issue; the weight
+push issued in that cycle sees the queue at 4, and the array moves again in
+the cycle after:
 
 ```
-[tpu] issue systolic weight push: 361 cycles after the last issue, 0 in flight, input queue 1, output queue 8
+[tpu] issue systolic weight push: 366 cycles after the last issue, 0 in flight, input queue 1, output queue 8
 [tpu] issue systolic weight push: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 8
 [tpu] issue systolic pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 8
-[tpu] issue systolic weight push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 5
+[tpu] commit systolic pop: 1 cycles after its issue
+[tpu] issue systolic weight push: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 4
 ```
 
 <details><summary>Reproduce</summary>
 
-Asserted by `tests/tpu/run.sh:79-95` (`lines 10 of 11` and `lines 3 of 11`). The
-logs are `build/tpu-systolic_stream.gem5.log` and `build/tpu-systolic_full.gem5.log`;
-the 361 (the program's `nop`s) is from that log, not asserted.
+`systolic_stream.S` and `systolic_full.S` on `tests/tpu/systolic.yml`. The 366
+is the program's `nop`s.
 </details>
 
 ### Every pop takes exactly vl
 
-A pop is a `receive` of exactly `vl` rows ([systolic.hpp:90-99](systolic.hpp#L90-L99)).
+A pop takes exactly `vl` rows ([systolic.hpp:165-177](systolic.hpp#L165-L177)).
 Two mistakes a program can make, and what happens:
 
-- **Pop more than was pushed.** The pop is never accepted. gem5 runs into its
-  limit; Spike ends with `tpu: systolic pop: 1 elements asked, 0 computed`.
-  (`ports.cc` `fewer_pushed`: after a push of 1, a pop of 2 waits 100 of 100 cycles.)
+- **Pop more than was pushed.** The pop is accepted and waits at the head.
+  Once nothing can add rows (input queue empty, array idle, fewer rows out than
+  it asks) it is a `fault` ([systolic.hpp:166-170](systolic.hpp#L166-L170)):
+  `tpu: systolic pop: 1 elements asked, 0 computed`. Spike exits 1 as the
+  pop's execute returns; gem5 prints the line and exits 1 when the pop commits.
 - **Push more than you pop.** What a pop leaves stays in the output queue, and
   the next pop takes it first. Pushing 4 and popping 2, over and over, fills
-  the output queue; the array stops, and a push then waits for good.
-  (`ports.cc` `more_pushed`: it stops in fewer than 100 rounds, and then a push
-  is refused in 1000 of the next 1000 cycles.)
+  the output queue; the array stops, and a push then waits at the head for
+  good. On gem5 the run reaches its tick limit; on Spike, which runs each
+  instruction to its end, the engine ends it:
+  `vcix_cp: systolic input push waits, and nothing in its unit moves any more: on Spike, which runs each instruction to its end before the next, it never ends`
+  ([vcix_cp.hpp:416-427](../../include/vcix_cp.hpp#L404-L415)).
 
 <details><summary>Reproduce</summary>
 
-`tests/tpu/ports.cc:289-320`, run by `tests/tpu/run.sh:38-41`. The Spike message
-is the `pop` case of `tests/tpu/functional/run.sh:153`.
+The Spike message is the `pop` case of `tests/tpu/functional/refused.c`
+(`tests/tpu/functional/run.sh`). The stuck push is shown in
+[examples/rtl: the limits](../rtl/README.md#the-limits).
 </details>
 
 ### Which weights a row meets
 
-By default (`tpu_systolic_command_queue: 0`) every step of an instruction
-happens at its issue, and a row carries the weights that are in the register
-when it is pushed ([systolic.hpp:139-145](systolic.hpp#L139-L145),
-`weights_.share()`). A later weight push travels down the array behind the
-rows already in it.
+By default (`tpu_systolic_command_queue: 0`) the head of `insns()` moves the
+whole instruction in one cycle, and a row carries the weights that are in the
+register when it is pushed ([systolic.hpp:201-206](systolic.hpp#L201-L206),
+`whole_ ? weights_ : nullptr`; `stage` reads `row.weights`,
+[186-187](systolic.hpp#L186-L187)). A later weight push travels down the array
+behind the rows already in it.
 
-With `tpu_systolic_command_queue: N` the instructions wait in an in-order queue
-of N, the head working, as the RTL array `examples/rtl/systolic/systolic.sv`
-does. A row then reads the register as it is at each stage, so a weight push
-lands on rows still in the array.
+With `tpu_systolic_command_queue: N` the unit is `examples/rtl/systolic/systolic.sv`
+behind its wrapper: an instruction is accepted only while none is pending and
+a command slot is free (`valid`, [systolic.hpp:82-84](systolic.hpp#L82-L84)),
+enters an in-order queue of N the cycle after (`enter`,
+[137-141](systolic.hpp#L137-L141)), and the head of that queue works one
+command a cycle, as many rows a cycle as `tpu_systolic_in_rows_per_cycle`
+allows. A row then reads the register as it is at each stage (`held()`), and a
+weight push's beats land the cycle after they are taken (`land`,
+[215-224](systolic.hpp#L215-L224)), so a weight push lands on rows still in
+the array.
 
 The program: weights W, 4 input rows, weights 2W, 4 input rows, two pops of 4.
 
@@ -512,7 +625,7 @@ tpu: machine description: tpu_systolic_command_queue: '0' is no queue: what move
 ### Element formats
 
 What an element is rides the push or the pop in its rs1 field, one table at
-every width ([systolic.hpp:113-119](systolic.hpp#L113-L119)):
+every width ([systolic.hpp:115-122](systolic.hpp#L115-L122)):
 
 - e8: 0 an int8, 1 an E4M3 float, 2 an E5M2 float. 3 is refused.
 - e16: 0 a half, 3 a bfloat16. 1 and 2 are refused.
@@ -520,9 +633,11 @@ every width ([systolic.hpp:113-119](systolic.hpp#L113-L119)):
 - e64: 0 pushes zeros, and a pop writes singles. 1 to 3 are refused.
 - Any code above 3 is refused.
 
-A pop reads the same table and also refuses 3: a bfloat16 result is not
-modeled. A pop to halves or 8-bit floats rounds by `frm`, read through the host
-([systolic.hpp:157-171](systolic.hpp#L157-L171)).
+A refused code is a `fault` as the instruction reaches the head (`wrong`,
+[systolic.hpp:126-133](systolic.hpp#L126-L133)). A pop reads the same table
+and also refuses 3: a bfloat16 result is not modeled. A pop to halves or 8-bit
+floats rounds by `frm`, read through the host
+([systolic.hpp:226-240](systolic.hpp#L226-L240)).
 `tests/tpu/functional/systolic.c` covers every width, both 8-bit floats and
 every value of `frm`.
 
@@ -530,9 +645,10 @@ every value of `frm`.
 
 The multi-precision array is the systolic array on 32-bit words. A word holds 1
 single, 2 halves or 4 floats of 8 bits, so a column keeps `lanes` times that
-many weights ([msa.hpp](msa.hpp)). It has its own pipeline of
-`2 x vpu_num_lanes - 1` stages and its own queues, sized by the same two keys
-as the systolic array.
+many weights ([msa.hpp:68-71](msa.hpp#L68-L71), [117-130](msa.hpp#L117-L130)).
+It has its own pipeline of `2 x vpu_num_lanes - 1` stages and its own queues,
+sized by the same two keys as the systolic array
+([msa.hpp:35-46](msa.hpp#L35-L46); blocks [176-182](msa.hpp#L176-L182)).
 
 One instruction, `msa push`, serves both operands. Its field (bits 19:15) says
 which:
@@ -550,39 +666,50 @@ which:
                    sf.vc.iv 0x2, 0x0, v1, 0      field 0b00000: inputs of singles
 ```
 
-- A weight push takes its own slot and writes the matrix as it issues; no row
-  enters the stages ([msa.hpp:49-75](msa.hpp#L49-L75)). A weight push of
-  another format or shift empties the matrix.
-- An input push sends `vl` rows. Each row's result is computed as it enters
-  (with the matrix as it is then) and rides the slots to the output queue
-  ([msa.hpp:107-122](msa.hpp#L107-L122)).
-- A pop takes `vl` rows, as singles, halves, or 8-bit floats (E5M2 when its
-  field's [1:0] is 3, E4M3 otherwise), rounded to nearest even.
+Every instruction is carried out whole at the head of `insns()`, one a cycle
+(`carry_out`, [msa.hpp:87-115](msa.hpp#L87-L115)):
+
+- A weight push writes the matrix as it is carried out; no row enters the
+  stages ([msa.hpp:107-111](msa.hpp#L107-L111)). A weight push of another
+  format or shift empties the matrix.
+- An input push puts `vl` rows into the input queue at once, when all fit.
+  Each row's result is computed as it enters (with the matrix as it is then)
+  and rides the stages to the output queue ([msa.hpp:100-106](msa.hpp#L100-L106),
+  [133-147](msa.hpp#L133-L147)); the array hands a finished row on while the
+  output queue has room ([msa.hpp:53-61](msa.hpp#L53-L61)).
+- A pop waits at the head until `vl` rows are visible, then takes them at
+  once, as singles, halves, or 8-bit floats (E5M2 when its field's [1:0] is 3,
+  E4M3 otherwise), rounded to nearest even.
 - There are `2 x lanes - 1` stages whatever the shift and the format. No
   hardware says what a reduced width takes; this is the model's choice.
 
 `tests/tpu/msa.S` on gem5 (`tests/tpu/systolic.yml`). The weight push enters
-nothing, so the pop issues 4 + 7 cycles after the input push:
+nothing; the pop, issued the cycle after the input push, waits at the head and
+takes its 4 rows 12 cycles later, as the systolic array's pop does:
 
 ```
 [tpu] issue msa push: the first, input queue 0, output queue 0
+[tpu] commit msa push: 1 cycles after its issue
 [tpu] issue msa push: 1 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] issue msa pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4
+[tpu] commit msa push: 1 cycles after its issue
+[tpu] issue msa pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0
+[tpu] commit msa pop: 12 cycles after its issue
 ```
 
-Refused (Spike's message; gem5 never accepts the instruction):
+Refused, a `fault` at the head (`refusal`, [msa.hpp:75-83](msa.hpp#L75-L83);
+Spike exits 1 as the instruction's execute returns, gem5 as it commits):
 
 - `tpu: msa push: its elements are words of 32 bits, not of 16` (a push at e16)
 - `tpu: msa push: inputs of <n> to a word, weights of <m>` (inputs packed unlike the weights)
 - `tpu: msa push: no column is left of 4 when shifted by 3` (4 lanes, field `0b11100`)
-- `tpu: msa pop: 8 elements asked, 3 computed`
+- `tpu: msa pop: 8 elements asked, 3 computed` (a pop of more than the idle array holds, [msa.hpp:91-93](msa.hpp#L91-L93))
 
 <details><summary>Reproduce</summary>
 
-The trace is asserted by `tests/tpu/run.sh:97-104`, the `words` and `msa-pop`
-messages by `tests/tpu/functional/run.sh:161-162`. The shift message is
+`msa.S` on `tests/tpu/systolic.yml`. The `words` and `msa-pop` messages are
+cases of `tests/tpu/functional/refused.c`; the shift message is
 `show msa-shift` ([show.c](#running-the-examples-on-this-page)), exit 1. The
-packing message is the format string at [msa.hpp:55](msa.hpp#L55).
+packing message is the format string at [msa.hpp:82](msa.hpp#L82).
 </details>
 
 ## Xlu: the cross-lane unit
@@ -591,108 +718,127 @@ packing message is the format string at [msa.hpp:55](msa.hpp#L55).
 
 The cross-lane unit moves a tile across the lanes, or folds it across them. It
 is timed as a black box: only how many elements go in and come out is timed,
-not how the tile moves inside.
+not how the tile moves inside. Its blocks ([xlu.hpp:407-413](xlu.hpp#L407-L413)):
 
 ```
-xlu_push ─► input queue ─► [ stages ] ─► buffer ══ first pop ══► output line ─► output queue ─► xlu_pop
-            tpu_xlu_       tpu_xlu_      holds     takes the      1 stage; the                  takes
-            queue_entries  latency_      any tile  whole tile,    whole result                  exactly vl
-                           cycles                  computes it    is one entry
+xlu_push ─► queue ─► [ stages | moves ] ─► buffer ══ first pop ══► line ─► out ─► xlu_pop
+            tpu_xlu_   tpu_xlu_latency_     holds     takes the      1 stage; the           takes
+            queue_     cycles / tpu_xlu_    any tile  whole tile,    whole result           exactly vl
+            entries    move_latency_cycles            computes it    is one entry
             tpu_xlu_elements_per_cycle enter the stages a cycle
 ```
 
-- A push of `vl` elements, of any kind, waits for the pop before it and for
-  room in the input queue ([xlu.hpp:118](xlu.hpp#L118)).
-- The first pop after pushes waits until the whole tile is in the buffer,
-  takes it at once, and computes the result. The result has one slot per
-  element, or `vpu_num_lanes` slots for an exchange
-  ([xlu.hpp:178-200](xlu.hpp#L178-L200)).
-- The whole result leaves together, as one entry of that many slots. Each pop
-  takes exactly `vl` of them.
-- The first element push after a pop forgets what is left of the tile
-  ([xlu.hpp:132](xlu.hpp#L132)). A pop is never served from the tile before.
-- A pop is issued at once and waits in a queue of one for what it takes. So a
-  pop of more than is left issues and never ends, and the pop after it is never
-  accepted (`ports.cc` `fewer_pushed`: the first pop issues after 1 cycle, the
-  second waits 100 of 100). Spike ends with `tpu: xlu pop: 8 elements asked, 3 left`.
+Instructions wait in `insns()` in order; only the head works, and a start
+spends one slot of `issue` (`tpu_xlu_issue_per_cycle` a cycle;
+[xlu.hpp:137](xlu.hpp#L137), [156-162](xlu.hpp#L156-L162)).
+
+- A push of `vl` elements, of any kind, waits at the head for room for all of
+  them in the input queue ([xlu.hpp:203](xlu.hpp#L203)), then puts them in
+  and completes. They enter the stages in groups of `gcd(vl,
+  tpu_xlu_elements_per_cycle)`, one group a cycle, a move's tile through
+  `moves`, a fold's or an exchange's through `stages`
+  ([xlu.hpp:126-136](xlu.hpp#L126-L136), [222-227](xlu.hpp#L222-L227)).
+- The first pop after pushes starts, waits until the whole tile is in the
+  buffer, takes it at once and computes the result (Spike). The result has one
+  slot per element, or `vpu_num_lanes` slots for an exchange
+  ([xlu.hpp:153](xlu.hpp#L153), [245-269](xlu.hpp#L245-L269)).
+- The whole result leaves together, through the output line of one stage, as
+  one entry of that many slots. Each pop takes exactly `vl` of them
+  ([xlu.hpp:275-291](xlu.hpp#L275-L291)).
+- A push after a pop drops what is left of a fold's or an exchange's result
+  ([xlu.hpp:205-208](xlu.hpp#L205-L208)); a move's leftover slots stay, and
+  the next pop takes them before any new tile.
+- A pop is accepted at once and waits at the head, and so does everything
+  behind it. A pop of more than is left, once nothing is on its way, is a
+  `fault` ([xlu.hpp:270-274](xlu.hpp#L270-L274)):
+  `tpu: xlu pop: 8 elements asked, 3 left`.
 
 How long the stages are on hardware is not known to this model: the 10 of
-`tpu_xlu_latency_cycles` is a placeholder ([xlu.hpp:343](xlu.hpp#L343)).
+`tpu_xlu_latency_cycles` is a placeholder ([xlu.hpp:396-397](xlu.hpp#L396-L397)).
 [tpuv6e](../tpuv6e/README.md) gives what was measured on a v6e.
 
 ### One tile, cycle by cycle
 
 `tests/tpu/xlu.S` on gem5 with `tests/tpu/xlu.yml` (3 stages, an input queue of
-8): a push of 2 and its pop of 2.
+8): a push of 2 and its pop of 2, then the first push of the next tile,
+accepted behind the pop:
 
 ```
 [tpu] issue xlu_push: the first, input queue 0, output queue 0
-[tpu] issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0
-[tpu] commit xlu_pop: 9 cycles after its issue
+[tpu] commit xlu_push: 1 cycles after its issue
+[tpu] issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 0
+[tpu] issue xlu_push: 1 cycles after the last issue, 1 in flight, input queue 1, output queue 0
+[tpu] commit xlu_pop: 8 cycles after its issue
+[tpu] commit xlu_push: 7 cycles after its issue
 ```
 
 ```
-cycle    0      1      2      3      4      5      6      7      8      9      10
+cycle    0      1      2      3      4      5      6      7      8      9
          push   pop
-elem 0          ── stages ────────   buf
-elem 1                 ── stages ────────   buf
-                                                   tile   slots                pop takes 2,
-                                                   taken  made                 commits
+elem 0          queue  ── stages ────────  buf
+elem 1                 queue  ── stages ────────  buf
+                                                         tile   slots  pop takes 2,
+                                                         taken  made   commits
 ```
 
-The test states the 9 as 1 + 3 (the last element in the buffer) + 1 (the tile
-taken) + 1 (its slots made, all leaving together) + 3 (the first two taken).
+The push's two elements are in the input queue at 1 (the pop's issue line
+shows them). From there: 1 cycle for each element to enter the stages (2 and
+3), 3 in the stages, 1 to be visible in the buffer (6 and 7), 1 for the tile
+to be taken and its result put in the output line (7), 1 for the line (8) and
+1 for the slots to be visible in the output queue, where the pop takes them
+(9): 8 cycles after the pop's issue. The second tile's first push waits at the
+head behind the pop the whole time (`1 in flight`, commit 7 after its issue).
 
 The two keys of the box, on `tests/tpu/xlu_fold.S` (a fold push of 2 and its
 pop, timed as `xlu_push`; with `xlu.yml` its pop issues 1 cycle after the push
-and commits 9 cycles after its issue, as above):
+and commits 8 cycles after its issue, as above):
 
 - `tests/tpu/xlu_wide.yml` (`tpu_xlu_elements_per_cycle: 2`): both elements
-  enter in one cycle, and the pop commits 8 cycles after its issue.
+  enter in one cycle, and the pop commits 7 cycles after its issue.
 - `tests/tpu/xlu_issue.yml` (`tpu_xlu_issue_per_cycle: 2`): the pop issues in
-  the push's cycle:
+  the push's cycle, and both start at the head in the next:
 
 ```
 [tpu] issue xlu_push_reduce: the first, input queue 0, output queue 0
-[tpu] issue xlu_pop: 0 cycles after the last issue, 1 in flight, input queue 2, output queue 0
+[tpu] issue xlu_pop: 0 cycles after the last issue, 1 in flight, input queue 0, output queue 0
 [tpu] commit xlu_push_reduce: 1 cycles after its issue
-[tpu] commit xlu_pop: 10 cycles after its issue
+[tpu] commit xlu_pop: 9 cycles after its issue
 ```
 
-Then `xlu.S` pushes eight more of 2 with no pop. The first waits 9 cycles for
-the pop before it. Then the input queue fills by one a cycle, and the buffer
-(the trace's "output queue") starts to fill after the 3 stages:
+Then `xlu.S` pushes eight more of 2 with no pop. The first waited behind the
+pop (above); the second is accepted as it leaves, 8 cycles after it. Then the
+input queue fills by one a cycle (2 in, 1 out), and the buffer (the trace's
+"output queue") starts to fill after the 3 stages. The eighth finds room for 1
+and waits a cycle at the head:
 
 ```
-[tpu] issue xlu_push: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 0
+[tpu] issue xlu_push: 8 cycles after the last issue, 0 in flight, input queue 1, output queue 0
 [tpu] issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 0
 [tpu] issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue 3, output queue 0
 [tpu] issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 1
 [tpu] issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue 5, output queue 2
 [tpu] issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue 6, output queue 3
-[tpu] issue xlu_push: 2 cycles after the last issue, 0 in flight, input queue 6, output queue 5
+[tpu] issue xlu_push: 1 cycles after the last issue, 0 in flight, input queue 7, output queue 4
+[tpu] commit xlu_push: 2 cycles after its issue
 ```
 
 The buffer holds the whole tile, 16 elements, and the line never stops. A
-push more adds 2 more. The first pop takes all 18; the second pop waits for
-it, then takes 2 more slots in 1 cycle:
+push more adds 2 more. The first pop takes all 18 and 2 of the slots; the
+second pop, accepted behind it, takes 2 more in the same cycle:
 
 ```
-[tpu] issue xlu_push: 351 cycles after the last issue, 0 in flight, input queue 0, output queue 16
-[tpu] issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 1, output queue 16
-[tpu] commit xlu_pop: 9 cycles after its issue
-[tpu] issue xlu_pop: 9 cycles after the last issue, 0 in flight, input queue 0, output queue 0
-[tpu] commit xlu_pop: 1 cycles after its issue
+[tpu] issue xlu_push: 353 cycles after the last issue, 0 in flight, input queue 0, output queue 16
+[tpu] commit xlu_push: 1 cycles after its issue
+[tpu] issue xlu_pop: 1 cycles after the last issue, 0 in flight, input queue 2, output queue 16
+[tpu] issue xlu_pop: 1 cycles after the last issue, 1 in flight, input queue 1, output queue 16
+[tpu] commit xlu_pop: 8 cycles after its issue
+[tpu] commit xlu_pop: 7 cycles after its issue
 ```
 
 <details><summary>Reproduce</summary>
 
-Asserted by `tests/tpu/run.sh:106-143`. The 1 + 3 + 1 + 1 + 3 is the check's
-own statement (line 128) and `tests/tpu/ports.cc:322-336` (`xlu_shallower`).
-Of the `xlu_issue.yml` lines only the `xlu_pop` issue is asserted; the others,
-and the last `xlu_push` line, are from the same
-run's logs, `build/tpu-xlu-issue.gem5.log` and `build/tpu-xlu.gem5.log`.
+`xlu.S` on `tests/tpu/xlu.yml`; `xlu_fold.S` on `xlu.yml`, `xlu_wide.yml` and
+`xlu_issue.yml`. The 353 is the program's `nop`s.
 </details>
 
 ### What it computes
@@ -711,12 +857,14 @@ The push's field (bits 19:15) is the operation:
 ```
 
 The pattern of the shuffle before is set by `xlu_set_pattern` (`sf.vc.ivv 0x3`):
-`vl` words of `vs2` in each lane, a lane number each, kept until the next set.
-Each push takes it as it issues, its element i reading entry i mod the
-pattern's width, so a set between two pushes of one tile changes only the pushes
-after it. This is the v6e's `vset.pattern.permute` before its `vperm`s: one set
-serves every register a pattern moves, and no register holds the pattern while
-they push ([xlu.hpp:92-177](xlu.hpp#L92-L177)). Elements are raw 8, 16 or 32 bits.
+`vl` words of `vs2` in each lane, a lane number each, kept until the next set
+([xlu.hpp:233-241](xlu.hpp#L233-L241)). Each push takes it as it is carried
+out, its element i reading entry i mod the pattern's width, so a set between
+two pushes of one tile changes only the pushes after it. This is the v6e's
+`vset.pattern.permute` before its `vperm`s: one set serves every register a
+pattern moves, and no register holds the pattern while they push. The tile is
+shuffled, exchanged and shuffled by `transform`
+([xlu.hpp:311-355](xlu.hpp#L311-L355)). Elements are raw 8, 16 or 32 bits.
 
 A 4-lane tile, pushed and popped with four different fields, on Spike:
 
@@ -738,7 +886,9 @@ field 8 (shuffle before:                  field 16 (shuffle before by pattern:
 Field 0 gives the tile back unchanged.
 
 A shuffle by a pattern needs a lane number for every column it walks. Without
-one, the pop is never accepted, and Spike exits with 201:
+one, the first pop is a `fault` with exit code 201
+([xlu.hpp:359-371](xlu.hpp#L359-L371)): Spike exits 201, and so does gem5 as
+the pop commits:
 
 ```
 XLU ERROR: the pre stage walks 1 columns but lane 0 carries 0 pattern entries (SIMM5 16)
@@ -747,11 +897,11 @@ XLU ERROR: the pre stage walks 1 columns but lane 0 carries 0 pattern entries (S
 <details><summary>Reproduce</summary>
 
 `show xlu` ([show.c](#running-the-examples-on-this-page)) on Spike with
-`tests/tpu/functional/machine.yml`. The exit 201 is asserted by
-`tests/tpu/functional/run.sh:161`. All 24 operations are checked against the
-Spike these units came from by `run.sh:123` (`cross_lane.c`); the set pattern,
-kept across pops, read i mod its width and changed between pushes, by
-`run.sh:143` (`xlu_pattern.c`).
+`tests/tpu/functional/machine.yml`. The exit 201 is the `pattern` case of
+`tests/tpu/functional/refused.c`. All 24 operations are checked against the
+Spike these units came from by `tests/tpu/functional/run.sh` (`cross_lane.c`);
+the set pattern, kept across pops, read i mod its width and changed between
+pushes, by `xlu_pattern.c`.
 </details>
 
 ### Folding across the lanes: xlu_push_reduce
@@ -780,14 +930,16 @@ xlu_push_reduce field 2 (min)            field 3 (argmax)     field 4 (argmin)
   lane 3: 0 1 2 3                          lane 3: 3 3 3 3      lane 3: 0 0 0 0
 ```
 
-- Max and min are the v6e's `vmax.f32` / `vmin.f32` ([xlu.hpp:27-38](xlu.hpp#L27-L38)):
+- Max and min are the v6e's `vmax.f32` / `vmin.f32` ([xlu.hpp:24-35](xlu.hpp#L24-L35)):
   a NaN in any lane is the column's answer, and -0 is below +0. For argmax and
-  argmin a NaN's lane wins over any number.
+  argmin a NaN's lane wins over any number ([xlu.hpp:331-337](xlu.hpp#L331-L337)).
 - A tile is one kind and one width. A move pushed into a fold, or a fold of
-  another kind or width, ends the run:
+  another kind or width, is a `fault` at the head (`fits`,
+  [xlu.hpp:175-184](xlu.hpp#L175-L184)):
   `tpu: xlu push: a tile of one kind takes a push of another (fold 2, or another width)`.
-- A fold the hardware has no form of ends the run: a field above 4, or a bf16
-  sum, argmax or argmin. For a bf16 sum:
+- A fold the hardware has no form of is a `fault` too (`fields`,
+  [xlu.hpp:164-173](xlu.hpp#L164-L173)): a field above 4, or a bf16 sum,
+  argmax or argmin. For a bf16 sum:
   `tpu: xlu push_reduce: fold 1 of 16-bit elements; every fold takes f32, max and min also bf16`.
 
 <details><summary>Reproduce</summary>
@@ -795,22 +947,25 @@ xlu_push_reduce field 2 (min)            field 3 (argmax)     field 4 (argmin)
 The values: `show xlu`. `tests/tpu/functional/xlu_fold.c` checks every fold
 against C: max, sum, min, argmax and argmin of f32, max and min of bf16, tiles of
 one or two pushes, NaNs, signed zeros and argmax / argmin ties
-(`xlu_fold: all pass`, `run.sh:174-176`). The bf16 sum message is `refused bf16-sum`
-in `run.sh`. The kind message is
-`show xlu-kind`, exit 1. Its gem5 timing is in [One tile, cycle by cycle](#one-tile-cycle-by-cycle).
+(`xlu_fold: all pass`). The bf16 sum message is the `bf16-sum` case of
+`refused.c`; the kind message is `show xlu-kind`, exit 1. Its gem5 timing is in
+[One tile, cycle by cycle](#one-tile-cycle-by-cycle).
 </details>
 
 ### The 65535 limits
 
 The result leaves as one entry, and an entry holds at most 65535 slots
-([vcix_uarch.hpp:102](../../include/vcix_uarch.hpp#L102)). So:
+(`MAX_SLOTS`, [xlu.hpp:399](xlu.hpp#L399); the buffer and the output queue are
+sized to it, [xlu.hpp:105](xlu.hpp#L105)). So:
 
 - The box holds at most 65535 elements between two pops; a push past that is
-  refused. Pushing 64 elements at a time, the 1024th push finds 65472 held:
+  a `fault` ([xlu.hpp:180-182](xlu.hpp#L180-L182)). Pushing 64 elements at a
+  time, the 1024th push finds 65472 held:
   ```
   tpu: xlu push: 65472 elements held, and a result holds at most 65535; a pop must take them first
   ```
-- `vpu_num_lanes` is at most 65535, the slots of an exchange. gem5 stops on 65536:
+- `vpu_num_lanes` is at most 65535, the slots of an exchange
+  ([xlu.hpp:96-98](xlu.hpp#L96-L98)). gem5 stops on 65536:
   ```
   tpu: machine description: vpu_num_lanes: '65536' is more than 65535 lanes: an exchange's result of that many slots does not fit one entry
   ```
@@ -824,11 +979,16 @@ The result leaves as one entry, and an entry holds at most 65535 slots
 
 ## When the model ends a run
 
-An instruction the model cannot carry out has no trap to take. The model says
-why on standard error and ends the run ([values.hpp:17-26](values.hpp#L17-L26)).
-Most of these are a `require` with a reason, so gem5 never accepts the same
-instruction and stops there too. Only the DMA's checks of what it reads (the
-descriptor, an index, an address) are Spike's alone: gem5 sees no values.
+An instruction the model cannot carry out has no trap to take. The unit
+`fault`s it at the head of `insns()` with a reason and an exit code
+([vcix_cp.hpp:188-190](../../include/vcix_cp.hpp#L184-L186),
+[463-466](../../include/vcix_cp.hpp#L463-L466)): Spike prints the reason on
+standard error and exits as the instruction's execute returns; gem5 prints it
+and exits when the instruction commits
+([vcix_cp.hpp:429-436](../../include/vcix_cp.hpp#L417-L424)), so a squashed
+one never does. Only the DMA's checks of what it reads (the descriptor, an
+index, an address) call `fail` ([values.hpp:18-26](values.hpp#L18-L26))
+directly and are Spike's alone: gem5 sees no values.
 
 `tests/tpu/functional/refused.c` runs each of these, and `run.sh` checks the
 exit code and the text:
@@ -855,16 +1015,19 @@ The sections above show the other four: `msa push` with no column left, the
 XLU's mixed kinds and its 65535 elements, and a transfer with no scratchpad.
 
 Other reasons in the code: `sfu_push` or `sfu_pop` on elements of other than 32
-bits ([sfu.hpp:44](sfu.hpp#L44), [57](sfu.hpp#L57)); an `xlu_push_reduce`
-fold above 4 ([xlu.hpp:102](xlu.hpp#L102)); a descriptor that splits axis 4 or
-more, has an element size or a lane stride of 0, has a dimension of 0, or
-reaches past its tensor; an index of other than 1, 2, 4 or 8 bytes
-([dma.hpp:83-86](dma.hpp#L83-L86), [156](dma.hpp#L156), [255](dma.hpp#L255)).
+bits ([sfu.hpp:95-98](sfu.hpp#L95-L98), [150](sfu.hpp#L150)); an
+`xlu_push_reduce` fold above 4 ([xlu.hpp:168-169](xlu.hpp#L168-L169)); an
+`xlu_set_pattern` of other than 32 bits ([xlu.hpp:166](xlu.hpp#L166)); a
+descriptor that splits axis 4 or more, has an element size or a lane stride of
+0, has a dimension of 0, or reaches past its tensor; an index of other than 1,
+2, 4 or 8 bytes ([dma.hpp:90-93](dma.hpp#L90-L93), [163](dma.hpp#L163),
+[258](dma.hpp#L258)).
 
 <details><summary>Reproduce</summary>
 
-`tests/tpu/functional/run.sh:144-163`. The messages land in
-`build/tpu-functional/refused-<case>.err`.
+`tests/tpu/functional/run.sh`, or `refused <case>` on Spike with
+`tests/tpu/functional/machine.yml`, built as `run.sh` builds it; the cases are
+named in `refused.c`.
 </details>
 
 ## Keys read from the machine description
@@ -873,16 +1036,18 @@ Each key, its default, and what it changes. The sections above show most of
 them at work.
 
 Sfu
-- `tpu_sfu_latency_cycles` (10): a special function's latency and the EUP's
-  stages; at least 1. 0 stops gem5 with
-  `tpu_sfu_latency_cycles: '0' is not a pipeline depth: at least 1` (`tests/tpu/run.sh:159-163`).
+- `tpu_sfu_latency_cycles` (10): the EUP's stages, a special function's and a
+  push's latency; at least 1. 0 stops gem5 with
+  `tpu_sfu_latency_cycles: '0' is not a pipeline depth: at least 1`.
 - `tpu_sfu_queue_registers` (16): registers the EUP's input queue and output
-  queue each hold. A push or pop of a larger group never issues. At least 1.
+  queue each hold. A push of a larger group puts in what fits and waits at the
+  head for the rest. At least 1.
 
 Misc and the DMA
-- `tpu_misc_issue_width` (2): Misc instructions a cycle; at least 1.
+- `tpu_misc_issue_width` (2): Misc instructions a cycle, the width of `issue`
+  and of `insns()` (2 x the width deep); at least 1.
 - `vpu_spad_size_kb_per_lane` (none): one lane's scratchpad. A transfer
-  without it is never accepted.
+  without it is a `fault`.
 - `vpu_spad_base_vaddr` (`0xD0000000`): where the scratchpad starts, written `0x...`.
 
 Systolic and Msa
@@ -890,10 +1055,11 @@ Systolic and Msa
   `2 x lanes - 1`), and the slots of an XLU exchange; 1 to 65535.
 - `tpu_systolic_queue_entries` (256): the input queue and the output queue of
   each array; at least 1.
-- `tpu_systolic_command_queue` (0): 0, every step at issue. N, an in-order
-  queue of N, as `examples/rtl/systolic/systolic.sv`.
+- `tpu_systolic_command_queue` (0): 0, the head of `insns()` moves the whole
+  instruction. N, a command queue of N worked one command a cycle, as
+  `examples/rtl/systolic/systolic.sv`.
 - `tpu_systolic_in_rows_per_cycle` (no limit): rows a cycle of a push at the
-  queue head; needs the queue.
+  command queue's head; needs the queue.
 - `tpu_systolic_pop_rows_per_cycle` (`tpu_systolic_queue_entries`): rows a
   cycle of a pop; given, it needs the queue.
 - `tpu_systolic_weight_waits` (0): not 0, a weight push moves only once the
@@ -905,38 +1071,92 @@ Xlu
 - `tpu_xlu_move_latency_cycles` (`tpu_xlu_latency_cycles`): its stages for a tile
   whose first push is a move; at least 1.
 - `tpu_xlu_queue_entries` (256): its input queue; at least 1. The buffer and
-  the output queue have no limit.
-- `tpu_xlu_elements_per_cycle` (1): elements entering the stages a cycle; an
-  entry carries as many as divide `vl`; 1 to `tpu_xlu_queue_entries`.
-- `tpu_xlu_issue_per_cycle` (1): XLU instructions a cycle; at least 1.
+  the output queue hold 65535.
+- `tpu_xlu_elements_per_cycle` (1): elements entering the stages a cycle; a
+  group carries as many as divide `vl`; 1 to `tpu_xlu_queue_entries`.
+- `tpu_xlu_issue_per_cycle` (1): XLU instructions accepted a cycle, and starts
+  a cycle at the head; at least 1.
 
 All
 - `tpu_trace` (0): not 0, a line at every issue and every commit.
 
-Each unit reads its keys in `configure`: [sfu.hpp:27](sfu.hpp#L27),
-[misc.hpp:27](misc.hpp#L27), [systolic.hpp:49](systolic.hpp#L49),
-[msa.hpp:29](msa.hpp#L29), [xlu.hpp:59](xlu.hpp#L59),
-[dma.hpp:23](dma.hpp#L23), [machine.hpp:23](machine.hpp#L23).
+Each unit reads its keys in `configure`: [sfu.hpp:49](sfu.hpp#L49),
+[misc.hpp:47](misc.hpp#L47), [systolic.hpp:56](systolic.hpp#L56),
+[msa.hpp:35](msa.hpp#L35), [xlu.hpp:82](xlu.hpp#L82),
+[dma.hpp:24](dma.hpp#L24), [machine.hpp:40](machine.hpp#L40). A refused value
+is a `cp::ConfigError`, which stops the run before anything is issued.
+
+## Statistics: one unit per block
+
+gem5 reports one unit per block: `<UNIT>` is the component's primary port,
+`<UNIT>_insns` its instruction queue, and `<UNIT>_<block>` each of its queues
+and pipelines. Each unit has `admitted`, `capacity` (per cycle), `cycles`,
+`occupancy` (what it held, summed over cycles) and `utilized_cycles`
+(admitted / capacity) ([vcix_cp_base.hpp:288-308](../../include/vcix_cp_base.hpp#L288-L308),
+[326-363](../../include/vcix_cp_base.hpp#L326-L363)); then each encoding's
+commits as `committed.<name>`. A reporting port (`SYSTOLIC`'s `in` and `pop`,
+`MSA`'s `issue`, `weight_push` and `pop`, `XLU`'s `issue`) only times
+([vcix_cp.hpp:67-68](../../include/vcix_cp.hpp#L65-L66)).
+
+```
+unit        primary port: what it admits                 the other units
+SFU         entry: instructions leaving insns(), 1/cycle SFU_insns, SFU_eup_input, SFU_eup (registers; occupancy = in its stages), SFU_eup_output
+MISC        issue: instructions, tpu_misc_issue_width    MISC_insns
+SYSTOLIC    input: rows into the array, 1/cycle;         SYSTOLIC_insns, SYSTOLIC_commands, SYSTOLIC_input_queue, SYSTOLIC_array,
+            occupancy = rows in the stages               SYSTOLIC_output_queue
+MSA         input: rows into the array                   MSA_insns, MSA_input_queue, MSA_array, MSA_output_queue
+XLU         input: elements into the stages;             XLU_insns, XLU_queue, XLU_stages, XLU_moves, XLU_buffer, XLU_line, XLU_out
+            occupancy = elements in the stages
+```
+
+From the `systolic_full.S` run above (gem5 prefixes each line with
+`system.cpu.executeFuncUnits.funcUnits8.`; `stats.txt` sorts the units by name):
+
+```
+vcix.SYSTOLIC.admitted                   20    # rows admitted at port input
+vcix.SYSTOLIC.capacity                   1
+vcix.SYSTOLIC_array.admitted             20
+vcix.SYSTOLIC_commands.admitted          0     # the command queue: unused without tpu_systolic_command_queue
+vcix.SYSTOLIC_input_queue.admitted       20
+vcix.SYSTOLIC_input_queue.capacity       8
+vcix.SYSTOLIC_insns.admitted             11
+vcix.SYSTOLIC_output_queue.admitted      16
+vcix.committed.systolic_input_push       5
+vcix.committed.systolic_weight_push      4
+vcix.committed.systolic_pop              2
+```
+
+The `sfu.S` run gives `SFU.admitted 11`, `SFU_eup.admitted 11` and
+`SFU_eup.occupancy 110` (11 registers, 10 cycles each in the EUP); the
+`msa.S` run `MSA.admitted 4`, `MSA.occupancy 28` (4 rows, 7 cycles each).
 
 ## Reading tpu_trace
 
 With `tpu_trace: 1` the model prints a line at every issue and every commit
-([machine.hpp:65-84](machine.hpp#L65-L84)):
+([machine.hpp:68-87](machine.hpp#L68-L87)):
 
 ```
-[tpu] issue systolic pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4
+[tpu] issue systolic pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0
             └────┬─────┘  └─────────────┬──────────────┘  └────┬────┘  └─────────────┬─────────────┘
           the encoding's    cycles since the previous     issued and       the unit's queues as
-               name            issue, of any unit        not committed  this instruction finds them
-[tpu] commit systolic pop: 1 cycles after its issue
+               name            issue, of any unit        not committed  this instruction is accepted
+[tpu] commit systolic pop: 12 cycles after its issue
 ```
 
-- The queues are counted before this instruction acts.
-- Which units add the queue fields: `Systolic` and `Msa` (their one pipeline);
-  `Xlu` (its input queue, and its buffer as "output queue"); `Sfu` only for
-  `sfu_push` and `sfu_pop`. `Misc` and the special functions add nothing.
-- The lines do not change what the model answers. `tests/tpu/run.sh` checks the
-  timing of all five units with them.
+- The queues are counted as the instruction is accepted into `insns()`: every
+  row they hold after that cycle's tick. The instruction's own rows are never
+  among them (it is worked a cycle later at the earliest); the rows of the
+  instruction before it, worked in that same cycle, are.
+- Which units add the queue fields (`trace_queues`, of a `tpu::Component`,
+  [machine.hpp:27-32](machine.hpp#L27-L32), [74](machine.hpp#L74)): `Systolic`
+  and `Msa`, their input and output queue ([systolic.hpp:108-110](systolic.hpp#L108-L110),
+  [msa.hpp:62-64](msa.hpp#L62-L64)); `Xlu`, its input queue and its buffer as
+  "output queue" ([xlu.hpp:141-143](xlu.hpp#L141-L143)); `Sfu` only for
+  `sfu_push` and `sfu_pop`, the EUP's two queues ([sfu.hpp:83-87](sfu.hpp#L83-L87)).
+  `Misc` is a plain `cp::Component` and adds nothing.
+- The lines do not change what the model answers, and Spike prints none: its
+  execute runs the engine's base methods ([vcix_cp.hpp:354-365](../../include/vcix_cp.hpp#L342-L353)).
+  `tests/tpu/run.sh` checks the timing of all five units with them.
 
 ## Where the values come from
 
@@ -992,7 +1212,7 @@ gem5.opt -d m5out examples/tpu/gem5/script_systolic.py -c <binary> --model libtp
 - `--cpu`: `RiscvVPU` by default. The parser accepts nine names (ten entries, `RiscvMinorCPU`
   twice), but `machine()`
   builds only `RiscvVPU`, `RiscvMinorCPU` and `RiscvDerivO3CPU`
-  ([script_systolic.py:126-130](gem5/script_systolic.py#L126-L130)). Another
+  ([script_systolic.py:125-130](gem5/script_systolic.py#L125-L130)). Another
   name stops the script: `--cpu RiscvTimingSimpleCPU` gives
   `KeyError: 'RiscvTimingSimpleCPU'`.
 - `--mem`, `--sparse`: accepted; nothing reads them.
@@ -1052,7 +1272,7 @@ Where it differs from PyTorchSim's pool ([vpu_config.py:148-218](gem5/vpu_config
 The LSQ takes two requests a cycle (`executeLSQRequestsQueueSize = 2`,
 [vpu_config.py:306](gem5/vpu_config.py#L306)), and the scratchpad is two banks
 interleaved by the 64-byte line, 32 GB/s each
-([script_systolic.py:190-196](gem5/script_systolic.py#L190-L196)). PyTorchSim's
+([script_systolic.py:189-196](gem5/script_systolic.py#L189-L196)). PyTorchSim's
 machine has one request and one bank of 32 GB/s.
 
 ```
@@ -1082,14 +1302,14 @@ take turns.
 
 <details><summary>Reproduce</summary>
 
-This machine's 85, 51 and the reads per bank are asserted by
-`tests/tpu/run.sh:239-249` (with `config.ini` giving
-`0:17179869184:0:64 at 29.000000, 0:17179869184:1:64 at 29.000000` and
-`executeLSQRequestsQueueSize=2`). The other row is a copy of
+This machine's row: `script_systolic.py -c loads --model build/libtpu.so`;
+`numCycles` of dumps 2 and 4 of `stats.txt` and each `mem_ctrls*.numReads::cpu.data`
+(`config.ini` gives `0:17179869184:0:64 at 29.000000, 0:17179869184:1:64 at
+29.000000` and `executeLSQRequestsQueueSize=2`). The other row is a copy of
 `examples/tpu/gem5` with `executeLSQRequestsQueueSize = 1`, `spad_num_bank = 1`
-and `spad_bandwidth = "32GB/s"`, on the same binary: `numCycles` of dumps 2
-and 4. The binaries were built with the toolchain of `setup/versions.env`; the
-cycle counts depend on the built binary.
+and `spad_bandwidth = "32GB/s"`, on the same binary. The binaries were built
+with the toolchain of `setup/versions.env`; the cycle counts depend on the
+built binary.
 </details>
 
 ### Two more integer units
@@ -1125,15 +1345,16 @@ loads.S, 64 B apart      60        57        51
 
 <details><summary>Reproduce</summary>
 
-The 6-unit column is asserted by `tests/tpu/run.sh:239-257` (with
-`integer units 6` from `config.ini`). The 4- and 5-unit columns are copies of
-`examples/tpu/gem5` with the last two, or the last one, `MinorCustomIntFU()`
-removed from `MinorCustomFUPool`, on the same binaries (`numCycles` of the
-measured dumps). Built with the toolchain of `setup/versions.env`.
+The 6-unit column: `script_systolic.py -c addresses` and `-c loads` on
+`build/libtpu.so` (`config.ini` lists 6 `opClass=IntAlu`). The 4- and 5-unit
+columns are copies of `examples/tpu/gem5` with the last two, or the last one,
+`MinorCustomIntFU()` removed from `MinorCustomFUPool`, on the same binaries
+(`numCycles` of the measured dumps). Built with the toolchain of
+`setup/versions.env`.
 </details>
 
 `tests/tpu/run.sh` also runs `sfu.S` on this machine: the reader of a special
-function's result issues 10 cycles after it, as on `examples/gem5_se.py`.
+function's result issues 11 cycles after it, as on `examples/gem5_se.py`.
 
 ## Running the examples on this page
 
@@ -1141,9 +1362,20 @@ All of `tests/tpu` runs with `tests/tpu/run.sh [build-dir [spike [pk [gem5.opt]]
 It leaves each gem5 log as `<build>/tpu-<name>.gem5.log` and the Spike outputs
 under `<build>/tpu-functional/`.
 
+A program of `tests/tpu` on gem5, as the traces on this page were made
+(`scripts/sim.sh` gives `rv_program`, `spike_run` and `gem5_run`):
+
+```
+source scripts/sim.sh build
+rv_program tests/tpu/systolic_full.S systolic_full
+gem5_run m5out build/libtpu.so tests/tpu/systolic.yml systolic_full --max-ticks 100000000 | grep '^\[tpu\]'
+grep 'vcix\.' m5out/stats.txt                      # the statistics
+```
+
 The examples not in `tests/tpu` use three small programs, below. Build them as
-the tests build theirs (`scripts/sim.sh`'s `rv_program`;
-`tests/tpu/functional/run.sh:25-29` for C), and run them as the tests run theirs:
+the tests build theirs (`rv_program` for assembly; `tests/tpu/functional/run.sh`
+for C), and run them as the tests run theirs. `spike_run` puts its options
+before `pk`, so a program with arguments is run with `spike` written out:
 
 ```
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c tests/tpu/functional/kernels.S -o kernels.o
@@ -1152,8 +1384,9 @@ riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d \
 spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xvcixaccel \
     --machine-config=tests/tpu/functional/machine.yml --kernel-addr=2000000:2100000 pk show matmul
 
-clang --target=riscv64 -march=rv64gcv_xsfvcp -c eup.S -o eup.o && riscv64-unknown-elf-gcc -static eup.o -o eup
+rv_program eup.S eup
 riscv64-unknown-elf-objdump -d eup | awk '/<main>:/,/ret/' | grep sf.vc     # the sfu_push and sfu_pop words
+gem5_run m5out build/libtpu.so tests/tpu/trace.yml eup --max-ticks 100000000 | grep '^\[tpu\]'
 ```
 
 <details><summary>eup.S</summary>
@@ -1322,4 +1555,15 @@ int main(int argc, char **argv) {
   return 0;
 }
 ```
+</details>
+
+<details><summary>Where the numbers on this page come from</summary>
+
+Every trace line, cycle count, statistic and message above is from a run of
+the `cp-engine` tree as built on 2026-10-24, in the environment image of
+[setup/](../../setup) (`setup/versions.env`: gem5 `vcix-v0.3.5`, Spike
+`751354f`, pk `9435c61`, the riscv-gnu-toolchain of 2026.08.27: clang 22, GCC
+16.1.0), with the commands of this section. The gem5 runs of `tests/tpu`'s
+programs use `examples/gem5_se.py` unless the text names the machine
+(`examples/tpu/gem5/script_systolic.py`).
 </details>
