@@ -31,7 +31,7 @@ flowchart LR
 
 The matrix unit uses the encodings that the tpu model gives its two arrays.
 So the same 32-bit word is a different instruction in each library
-(`examples/tpu/mxu.hpp:180-184`, `systolic.hpp:104-106`, `msa.hpp:96-97`):
+(`examples/tpu/mxu.hpp:192-196`, `systolic.hpp:104-106`, `msa.hpp:96-97`):
 
 ```
  encoding       match        libtpu.so              libtpuv6e.so
@@ -170,7 +170,7 @@ words from `tests/tpuv6e/mxu_arrays.S`, as `llvm-objdump` prints them:
 With one array both fields are 0, so a program for one array runs unchanged
 on a machine of more.
 
-The field at 19:15 (`mxu.hpp:35-38`: `FORMAT = 0x3, SECOND = 0x4, LATCH =
+The field at 19:15 (`mxu.hpp:36-39`: `FORMAT = 0x3, SECOND = 0x4, LATCH =
 0x4, DEPTH = 0x18`):
 
 ```
@@ -196,7 +196,7 @@ What each instruction does:
   With [2] set it first copies the staged weights into the active ones.
 - **`vpop`** (`sf.vc.v.i 2`): takes exactly `vl` result rows of one half of
   the columns, as singles. Row i goes to element i of `vd`; lane l gets
-  column l of that half (`mxu.hpp:155-158`).
+  column l of that half (`mxu.hpp:167-170`).
 
 The fields the tests use, decoded:
 
@@ -216,7 +216,7 @@ The fields the tests use, decoded:
 ### Words and rows
 
 Every element is a word of 32 bits (`vsetvli ... e32`). The format says how
-many rows a word holds (`mxu.hpp:39`, `237-245`):
+many rows a word holds (`mxu.hpp:40`, `237-245`):
 
 ```
  format 0 (single):    │             row w (f32)              │   1 row a word
@@ -230,7 +230,7 @@ returns singles (format 0, `e32`).
 
 ### Weights: staged and active, a worked example
 
-Two rules (`mxu.hpp:89-119`, `134-137`):
+Two rules (`mxu.hpp:101-131`, `134-137`):
 
 1. A `vmatpush` of n rows writes the **staged** weights, in one half of the
    depth. What that half held moves down n depths; what passes the half's
@@ -423,7 +423,7 @@ its own tile and held halves, array 1 popped before array 0
 (`tests/tpuv6e/functional/run.sh:37-40`, `64-68`).
 
 A second `vmatprep` of an operand whose held half is still untaken waits
-(`mxu.hpp:78`). In an in-order program nothing can take that half any more,
+(`mxu.hpp:90`). In an in-order program nothing can take that half any more,
 so the program stops there. On Spike:
 
 ```
@@ -437,7 +437,7 @@ vcix_uarch: vmatprep waits, and nothing in its unit moves any more: on Spike, wh
 
 #### Issue slots
 
-Per cycle (`mxu.hpp:30-32`, `72-81`, `101`, `131`, `154`):
+Per cycle (`mxu.hpp:31-33`, `72-81`, `101`, `131`, `154`):
 
 ```
  shared by all arrays:    [ MXU slot ] [ MXU slot ]       vmatprep, vmatpush, vmatmul
@@ -458,7 +458,7 @@ A `vmatmul` puts its rows in its array's input queue. One **word** a cycle
 leaves the queue into the delay line (`WORD_A_CYCLE`). So rows of 16 bits
 enter two a cycle, and singles one a cycle. Each `vmatmul`'s rows enter at
 their own format's rate. The unit's input port, `TPUV6E_MXU.input`, takes
-`2 x tpu_mxu_units` rows a cycle (`mxu.hpp:59`).
+`2 x tpu_mxu_units` rows a cycle (`mxu.hpp:71`).
 
 After `tpu_mxu_delay_cycles` slots a row leaves the line into **both** output
 queues of its array (`vcix_uarch.hpp:308-311`). A `vpop` takes from its own
@@ -466,7 +466,7 @@ half's queue.
 
 The line moves all together or not at all. It holds still when the entry
 about to leave has more rows than the room left in either output queue
-(`Stall::WHEN_HEAD_BLOCKED`, `mxu.hpp:62`; `vcix_uarch.hpp:305-307`):
+(`Stall::WHEN_HEAD_BLOCKED`, `mxu.hpp:74`; `vcix_uarch.hpp:305-307`):
 
 ```cpp
 if (stall_ == Stall::WHEN_OUTPUT_FULL ? out_[q].rows() == depth_ : leaving > depth_ - out_[q].rows())
@@ -502,7 +502,7 @@ upper by turns. The `[tpu]` trace on gem5:
 An issue line gives the cycles since the issue before it, how many issued
 instructions have not committed, and the rows in the array's input queue and
 in its lower and upper output queues **as the instruction issues, before it
-takes anything** (`machine.hpp:27-29`, `65-77`; `mxu.hpp:166-177`).
+takes anything** (`machine.hpp:27-29`, `65-77`; `mxu.hpp:178-189`).
 
 The same run, cycle by cycle (cycle 0 is the first issue):
 
@@ -553,7 +553,7 @@ The same program with one key more:
 ```
 
 The default is the array's width + depth - 1, that is
-`4 x vpu_num_lanes - 1` (`mxu.hpp:56`): 15 on 4 lanes and 511 on 128.
+`4 x vpu_num_lanes - 1` (`mxu.hpp:68`): 15 on 4 lanes and 511 on 128.
 
 <details><summary>Reproduce</summary>
 
@@ -634,7 +634,7 @@ where the trace is the same. With two arrays the input port takes 4 rows a cycle
 #### Two arrays share one pop port: `tests/tpuv6e/mxu_pops.S`
 
 The `vpop`s of all arrays share a pop port that takes `tpu_mxu_queue_entries`
-rows a cycle (`mxu.hpp:60`, `159`). With queues of 4 and two arrays, both
+rows a cycle (`mxu.hpp:72`, `159`). With queues of 4 and two arrays, both
 `vmatmul`s (4 singles each) issue in one cycle. Array 1's `vpop` still waits
 a cycle behind array 0's:
 
@@ -675,7 +675,7 @@ instruction. Each line below is asserted by
 ```
 
 A `vpop` asks for exactly `vl` rows. While rows are still coming it waits.
-It ends the run only when nothing more will be computed (`mxu.hpp:155-162`).
+It ends the run only when nothing more will be computed (`mxu.hpp:167-174`).
 Here is `mxu.S` with a fifth `vpop` (`sf.vc.v.i 0x2, 0x0, v6, 0`) after the
 four that take all 8 rows, on both simulators:
 
@@ -701,7 +701,7 @@ The gem5 trace has 8 issues: the fifth `vpop` never issues. `extra.yml` is
 
 ### The code, for `vmatmul`
 
-`mxu.hpp:122-142`. The unit describes the instruction to a route `r`; both
+`mxu.hpp:134-154`. The unit describes the instruction to a route `r`; both
 simulators run the same description. The [root README](../../README.md) says
 what each verb does on each simulator.
 
@@ -709,7 +709,7 @@ what each verb does on each simulator.
 void matmul(Route &r) {
   Array *array = array_for(r, vcix_accel::rd(r.insn()), "vmatmul");          // rd names the array
   if (!array) return;
-  const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = Shape::WORD_A_CYCLE ? in_word : 1;
+  const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = word_a_cycle_ ? in_word : 1;
   const bool latch = vcix_accel::rs1(r.insn()) & LATCH;                      // field [2]
   words(r, "vmatmul");                                                       // e32, format not 2
   if (registers_ > 1) taken(r, *array, "vmatmul", INPUTS, uint64_t{r.vl()} * in_word);  // a held half, as many rows
@@ -731,7 +731,7 @@ void matmul(Route &r) {
 
 `send` makes `vl` entries: of 2 rows each for the 16-bit formats, of 1 row
 for singles. An entry is what enters the line in a cycle, so a word's rows
-travel together. `output()` (`mxu.hpp:258-271`) computes a row's results as
+travel together. `output()` (`mxu.hpp:270-283`) computes a row's results as
 it is sent; only Spike, which has the values, calls it.
 
 ## The EUP: `sfu_push` and `sfu_pop`
@@ -959,7 +959,7 @@ machine; they are not counts of the v6e.
 
 ## Keys read from the machine description
 
-The matrix unit's (`mxu.hpp:43-63`):
+The matrix unit's (`mxu.hpp:44-75`):
 
 - **`vpu_num_lanes`**, default 128. The array is 2 x this wide and deep.
   1 to 65535, the most the cross-lane unit takes.
@@ -984,10 +984,16 @@ The matrix unit's (`mxu.hpp:43-63`):
   `vpu_num_lanes x vpu_num_lanes` and an operand is one register, as in
   [`examples/tpuv3`](../tpuv3/README.md); the slots and the word a cycle stay
   this model's. A `vmatprep`, a `vmatpush` to the second half and an upper
-  `vpop` are then refused (`mxu.hpp:79`, `98-99`, `152-153`).
+  `vpop` are then refused (`mxu.hpp:91`, `110-111`, `164-165`).
   `tests/tpuv3/run.sh:77-105` runs it on `libtpuv6e.so`: on 4 lanes a 4 x 4
   array, 7 slots, the `vpop` 2 + 7 cycles after the `vmatmul`; 0 gives the
   same trace as no key; 2 is refused.
+- **`tpu_mxu_registers`**, **`tpu_mxu_issue_slots`**, **`tpu_mxu_word_a_cycle`**,
+  defaults this model's `Shape` (2, 2, 1). The registers an operand spans (1 or
+  2; 1 with `tpu_mxu_bound_to_lanes: 1`), the instructions of `vmatprep`,
+  `vmatpush` and `vmatmul` a cycle (at least 1), and whether a word of two
+  16-bit rows enters a cycle (1) or a row (0); see
+  [`examples/tpuv3`](../tpuv3/README.md#the-models-source).
 
 The other units read the `tpu_sfu_*`, `tpu_misc_*` and `tpu_xlu_*` keys and the
 DMA's keys, as [the tpu example's key list](../tpu/README.md#keys-read-from-the-machine-description)
