@@ -1,7 +1,6 @@
 // A TPU's cross-lane unit, a black box: pushed elements pass the stages tpu_xlu_elements_per_cycle a cycle into its
-// buffer; its first pop after pushes moves the tile across the lanes at once (or folds it across them), and the whole
-// result leaves at once into the output queue.
-// The first element push after a pop forgets what is left of the tile before. Values on Spike, counts on gem5.
+// buffer; its first pop after pushes moves (or folds) the tile across the lanes at once, the whole result leaving at once
+// into the output queue. The first push after a pop forgets what is left of the tile before. Values on Spike, counts on gem5.
 #ifndef TPU_XLU_HPP
 #define TPU_XLU_HPP
 
@@ -17,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "vcix_uarch.hpp"
+#include "machine.hpp"
 
 #include "values.hpp"
 
@@ -36,16 +35,19 @@ inline float minimum(float a, float b) {
   return a < b ? a : b;
 }
 
-class Xlu {
-  using Host = vcix_uarch::Host;
-  using Insn = vcix_uarch::Insn;
-  using Route = vcix_uarch::Route;
+// stages_ takes a fold's or an exchange's elements (tpu_xlu_latency_cycles), moves_ a move's (tpu_xlu_move_latency_cycles);
+// left_: the result slots the pops have not taken; keep_: whether a push keeps them (a move's, not a fold's or an
+// exchange's); pattern_: the set pattern, kept across pops (values: Spike only), pattern_width_ its width (both).
+class Xlu : public Component {
+  using Host = cp::Host;
+  using Insn = cp::Insn;
   using Tile = std::vector<std::vector<uint32_t>>;
   using Elements = std::vector<uint32_t>;
   using Column = std::vector<std::optional<uint32_t>>;
+  // fold: 0 none, else the fold kind + 1, of fold_bits elements; moves: its first push was a move, its elements take moves_.
   struct Box {
-    uint32_t operation = 0, fold = 0, fold_bits = 0;  // fold: 0 none, else the fold kind + 1, of fold_bits elements
-    bool moves = false;                               // its first push a move: its elements take moves_
+    uint32_t operation = 0, fold = 0, fold_bits = 0;
+    bool moves = false;
     uint64_t elements = 0, before_entries = 0, after_entries = 0;
     Tile before, after;
     std::vector<Elements> tile;
@@ -53,11 +55,20 @@ class Xlu {
   };
 
  public:
-  // `name` is the unit as its statistics report it; the model that holds the unit says it.
-  explicit Xlu(const char *name)
-      : entry_{name, "input", "elements", 1, vcix_uarch::PRIMARY}, issue_{name, "issue", "instructions", 1},
-        exit_{name, "output", "elements", vcix_uarch::UNLIMITED} {}
-  void configure(const vcix_uarch::Config &config) {
+  static constexpr uint32_t FORM = 0xFE00707F;
+  static constexpr cp::Encoding XLU_PUSH{0x2E00305B, FORM, "xlu_push"};
+  static constexpr cp::Encoding XLU_SET_PATTERN{0xAE00305B, FORM, "xlu_set_pattern"};
+  static constexpr cp::Encoding XLU_PUSH_REDUCE{0xAA00305B, FORM, "xlu_push_reduce"};
+  static constexpr cp::Encoding XLU_POP{0x0400305B, FORM, "xlu_pop"};
+
+  // `name` is the component as its statistics report it; the model that holds the component says it.
+  Xlu(cp::Coprocessor &cp, const char *name) : Component(cp, name) {
+    handle(XLU_PUSH, &Xlu::push);
+    handle(XLU_SET_PATTERN, &Xlu::set_pattern);
+    handle(XLU_PUSH_REDUCE, &Xlu::push, 2);
+    handle(XLU_POP, &Xlu::pop);
+  }
+  void configure(const cp::Config &config) override {
     const uint64_t latency = config.uint(LATENCY_KEY, DEFAULT_LATENCY);
     const uint64_t move_latency = config.uint(MOVE_LATENCY_KEY, latency);
     const uint64_t entries = config.uint(QUEUE_KEY, DEFAULT_ENTRIES);
@@ -80,164 +91,149 @@ class Xlu {
       throw vcix_accel::ConfigError(ISSUE_KEY, config.get(ISSUE_KEY), "is not an issue rate");
     entry_.set_capacity(width), issue_.set_capacity(issue);
     width_ = width;
-    stages_.configure(latency, vcix_uarch::UNLIMITED, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
-    moves_.configure(move_latency, vcix_uarch::UNLIMITED, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
-    out_.configure(1, vcix_uarch::UNLIMITED, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
-    pops_.configure(1, vcix_uarch::Free::WHEN_DONE, 0);
+    stages_.configure(latency, cp::UNLIMITED, cp::Stall::WHEN_OUTPUT_FULL);
+    moves_.configure(move_latency, cp::UNLIMITED, cp::Stall::WHEN_OUTPUT_FULL);
+    out_.configure(1, cp::UNLIMITED, cp::Stall::WHEN_OUTPUT_FULL);
+    pops_.configure(1, cp::Free::WHEN_DONE, 0);
     lanes_ = lanes, entries_ = entries;
   }
-  template <class H>
-  void hardware(H &&h) {
-    h.port(entry_), h.port(issue_), h.port(exit_);
-    h.pipeline(stages_, entry_), h.pipeline(moves_, entry_), h.pipeline(out_, exit_);
-    h.queue(pops_);
-    h.reg(box_), h.reg(left_), h.reg(keep_), h.reg(pattern_), h.reg(pattern_width_);
-  }
-
-  // Field 19:15: [4:3] shuffle before, [2] exchange, [1:0] shuffle after; [4:3] 3 only loads the after's pattern from
-  // rs2. Elements (32 raw bits each) wait for the pop before them and for room in the input queue, and take vl slots;
-  // the box holds at most MAX_SLOTS between pops. A push takes the before's pattern xlu_set_pattern left, element i
-  // entry i mod its width, as it issues. arg() 2: xlu_push_reduce, a tile folded across the lanes, the field the fold:
-  // 0 max, 1 sum, 2 min, 3 argmax, 4 argmin, as the v6e's v{max,add,min}.xlane.f32, v{max,min}.index.xlane.f32 and v{max,min}.xlane.bf16 -- f32
-  // (e32) for every fold, bf16 (e16) for max and min. A tile is one kind and one width, and a fold pushed into a
-  // move, or a move into a fold, stops the run. A tile's elements pass the stages in tpu_xlu_move_latency_cycles
-  // when its first push is a move, else (a fold, an exchange) in tpu_xlu_latency_cycles.
-  void push(Route &r) {
-    const uint32_t field = vcix_accel::rs1(r.insn()), bits = r.insn().sew_bits;
-    const bool load = !r.arg() && field >> 3 == LOAD, fold = r.arg() == 2;
+  // Field 19:15: [4:3] shuffle before, [2] exchange, [1:0] shuffle after; [4:3] 3 loads the after's pattern from rs2. vl
+  // elements wait for the pop before and for queue room, at most MAX_SLOTS a tile, element i taking set pattern entry i mod
+  // its width. arg() 2: xlu_push_reduce, a fold of the field (0 max, 1 sum, 2 min, 3 argmax, 4 argmin; f32, or bf16 for max and min).
+  void push(cp::Instr &in) {
+    const uint32_t field = in.rs1(), bits = in.sew_bits();
+    const bool load = !in.arg() && field >> 3 == LOAD, fold = in.arg() == 2;
     if (fold && field > FOLD_ARGMIN)
-      r.require(false, [field] {
+      in.require(false, [field] {
         fail("xlu push_reduce: fold %u, which is none of max (0), sum (1), min (2), argmax (3), argmin (4)", field);
       });
     if (fold && bits != 32 && !(bits == 16 && (field == FOLD_MAX || field == FOLD_MIN)))
-      r.require(false, [field, bits] {
+      in.require(false, [field, bits] {
         fail("xlu push_reduce: fold %u of %u-bit elements; every fold takes f32, max and min also bf16", field, bits);
       });
     if (!load) {
       const Box &box = box_.get();
       const bool open = box.elements;
       const uint32_t kind = fold ? field + 1 : 0;
-      r.require(!open || (box.fold == kind && (!fold || box.fold_bits == bits)), [kind] {
+      in.require(!open || (box.fold == kind && (!fold || box.fold_bits == bits)), [kind] {
         fail("xlu push: a tile of one kind takes a push of another (fold %u, or another width)", kind);
       });
     }
-    if (!load) r.require(pops_.idle() && stages_.input_rows() + moves_.input_rows() + r.vl() <= entries_);
+    if (!load) in.require(pops_.idle() && stages_.input_rows() + moves_.input_rows() + in.vl() <= entries_);
     const bool through_moves = box_.get().elements ? box_.get().moves : !fold && !(field & EXCHANGE);
     if (!load) {
       const uint64_t held = box_.get().elements;
-      r.require(held + r.vl() <= MAX_SLOTS, [held] {
+      in.require(held + in.vl() <= MAX_SLOTS, [held] {
         fail("xlu push: %llu elements held, and a result holds at most 65535; a pop must take them first",
              static_cast<unsigned long long>(held));
       });
     }
-    r.use(issue_).at_issue([&] {
+    in.use(issue_);
+    in.on_issue([&] {
       Box &box = box_.write();
       if (load) {
-        box.after_entries += r.vl();
+        box.after_entries += in.vl();
         return;
       }
       if (left_.get() && !keep_.get()) stages_.flush(), moves_.flush(), out_.flush(), left_.write() = 0;
       if (!box.elements) box.moves = through_moves;
       if (fold)
-        box.fold = field + 1, box.fold_bits = r.insn().sew_bits;
+        box.fold = field + 1, box.fold_bits = in.sew_bits();
       else
         box.operation = field, box.fold = 0;
-      box.elements += r.vl();
-      if (!fold && pattern_width_.get()) box.before_entries += r.vl();
+      box.elements += in.vl();
+      if (!fold && pattern_width_.get()) box.before_entries += in.vl();
     });
-    r.at_issue([&](const Host &host) {
+    in.on_issue([&](const Host &host) {
       if (fold) return;
       if (!load) {
         const Tile &set = pattern_.get();
         if (set.empty() || set[0].empty()) return;
         Tile &before = sized(box_.write().before, host);
         for (uint32_t lane = 0; lane < host.lanes(); lane++)
-          for (uint32_t i = 0; i < r.vl(); i++) before[lane].push_back(set[lane][i % set[lane].size()]);
+          for (uint32_t i = 0; i < in.vl(); i++) before[lane].push_back(set[lane][i % set[lane].size()]);
         return;
       }
       Tile &pattern = sized(box_.write().after, host);
-      const uint32_t from = vcix_accel::rs2(r.insn());
+      const uint32_t from = in.rs2();
       for (uint32_t lane = 0; lane < host.lanes(); lane++)
-        for (uint32_t i = 0; i < r.vl(); i++) pattern[lane].push_back(get<uint32_t>(host, lane, from, i));
+        for (uint32_t i = 0; i < in.vl(); i++) pattern[lane].push_back(get<uint32_t>(host, lane, from, i));
     });
-    // as many elements an entry as divides vl and the unit takes a cycle: tpu_xlu_elements_per_cycle when it divides vl
-    const uint32_t weight = static_cast<uint32_t>(std::gcd<uint64_t>(r.vl(), width_));
+    const uint32_t weight = static_cast<uint32_t>(std::gcd<uint64_t>(in.vl(), width_));
     if (!load)
-      r.send(through_moves ? moves_ : stages_, r.vl() / weight, weight,
-             [&r](const Host &host, uint64_t i) { return element(host, r.insn(), i); });
+      in.send(through_moves ? moves_ : stages_, in.vl() / weight, weight,
+              [&in](const Host &host, uint64_t i) { return element(host, in.insn(), i); });
   }
   // The before's pattern, as the v6e's vset.pattern.permute: rs2's vl words in each lane, a lane number per element,
   // kept until the next set; each push after it takes it as it issues, so a set between pushes of one tile changes
   // only the pushes after it.
-  void set_pattern(Route &r) {
-    const uint32_t bits = r.insn().sew_bits;
-    r.require(bits == 32, [bits] { fail("xlu set_pattern: lane numbers are words of 32 bits, not of %u", bits); });
-    r.use(issue_).at_issue([&] { pattern_width_.write() = r.vl(); });
-    r.at_issue([&](const Host &host) {
+  void set_pattern(cp::Instr &in) {
+    const uint32_t bits = in.sew_bits();
+    in.require(bits == 32, [bits] { fail("xlu set_pattern: lane numbers are words of 32 bits, not of %u", bits); });
+    in.use(issue_);
+    in.on_issue([&] { pattern_width_.write() = in.vl(); });
+    in.on_issue([&](const Host &host) {
       Tile &set = pattern_.write();
       set.assign(host.lanes(), {});
-      const uint32_t from = vcix_accel::rs2(r.insn());
+      const uint32_t from = in.rs2();
       for (uint32_t lane = 0; lane < host.lanes(); lane++)
-        for (uint32_t i = 0; i < r.vl(); i++) set[lane].push_back(get<uint32_t>(host, lane, from, i));
+        for (uint32_t i = 0; i < in.vl(); i++) set[lane].push_back(get<uint32_t>(host, lane, from, i));
     });
   }
-  // vl slots of the output queue, slot i to element i of vd in the lanes it holds; one asking more than is left never
-  // ends. A pop with no result slots left takes the pushes since as one tile and makes its result's slots, one an
-  // element or vpu_num_lanes for an exchange, which leave the box together as one entry of that many rows. A push
-  // among the pops of a move's slots starts the next tile behind them; one after a fold's or an exchange's drops them.
-  void pop(Route &r) {
+  // vl slots of the output queue, slot i to element i of vd in its lanes; asking more than is left never ends. A pop with
+  // no slots left makes the pushes since one tile, its result's slots (an element each, vpu_num_lanes for an exchange) one
+  // entry. A push among a move's pops starts the next tile behind them; one after a fold's or an exchange's drops them.
+  void pop(cp::Instr &in) {
     const bool first = !left_.get();
-    const uint64_t in = first ? box_.get().elements : 0;
-    const uint64_t out = !in ? 0 : !box_.get().fold && box_.get().operation & EXCHANGE ? lanes_ : in;
-    if (in && !box_.get().fold) patterned(r, in, out);
-    r.use(issue_).at_issue([&] {
+    const uint64_t pushed = first ? box_.get().elements : 0;
+    const uint64_t out = !pushed ? 0 : !box_.get().fold && box_.get().operation & EXCHANGE ? lanes_ : pushed;
+    if (pushed && !box_.get().fold) patterned(in, pushed, out);
+    in.use(issue_);
+    in.on_issue([&] {
       const uint64_t left = first ? out : left_.get();
-      left_.write() = left > r.vl() ? left - r.vl() : 0;
+      left_.write() = left > in.vl() ? left - in.vl() : 0;
       if (!first) return;
       keep_.write() = !box_.get().fold && !(box_.get().operation & EXCHANGE);
       Box &box = box_.write();
       box.elements = 0;
-      if (in) box.before_entries = box.after_entries = 0;
+      if (pushed) box.before_entries = box.after_entries = 0;
     });
-    r.enqueue(pops_);
+    in.enqueue(pops_);
     if (first) {
       auto &line = box_.get().moves ? moves_ : stages_;
-      r.wait_until_empty(line).receive(line, in, [&](const Host &, uint64_t, Elements &&slot) { box_.write().tile.push_back(std::move(slot)); })
-          .when_received([&, out](const Host &host) { transform(host, out); });
-      r.send(out_, out ? 1 : 0, out ? out : 1, [&](const Host &, uint64_t) {
+      in.wait_empty(line);
+      in.receive(line, pushed, [&](const Host &, uint64_t, Elements &&slot) {
+        box_.write().tile.push_back(std::move(slot));
+      });
+      in.on_received([&, out](const Host &host) { transform(host, out); });
+      in.send(out_, out ? 1 : 0, out ? out : 1, [&](const Host &, uint64_t) {
         Box &box = box_.write();
         Column slot = std::move(box.result.front());
         box.result.pop_front();
         return slot;
       });
     }
-    const uint32_t vl = r.vl();
-    r.receive(out_, vl, [&r](const Host &host, uint64_t i, Column &&slot) {
-      const uint32_t vd = vcix_accel::rd(r.insn()), at = static_cast<uint32_t>(i);
+    const uint32_t vl = in.vl();
+    in.receive(out_, vl, [&in](const Host &host, uint64_t i, Column &&slot) {
+      const uint32_t vd = in.rd(), at = static_cast<uint32_t>(i);
       for (uint32_t lane = 0; lane < slot.size() && lane < host.lanes(); lane++) {
         if (!slot[lane]) continue;
-        switch (r.insn().sew_bits) {
+        switch (in.sew_bits()) {
           case 8: put<uint8_t>(host, lane, vd, at, static_cast<uint8_t>(*slot[lane])); break;
           case 16: put<uint16_t>(host, lane, vd, at, static_cast<uint16_t>(*slot[lane])); break;
           default: put<uint32_t>(host, lane, vd, at, *slot[lane]); break;
         }
       }
     });
-    r.when_stuck([vl](uint64_t got) {
+    in.on_stuck([vl](uint64_t got) {
       fail("xlu pop: %u elements asked, %llu left", vl, static_cast<unsigned long long>(got));
     });
   }
   // What the [tpu] trace adds to an issue: the stages' input queue and the buffer they leave into.
-  void trace_queues(const Insn &) const {
+  void trace_queues(const Insn &) const override {
     std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(stages_.input_rows() + moves_.input_rows()),
                 static_cast<uint32_t>(stages_.output_rows() + moves_.output_rows()));
   }
-
-  static constexpr uint32_t FORM = 0xFE00707F;
-  static constexpr vcix_uarch::Instruction<Xlu> INSTRUCTIONS[] = {{0x2E00305B, FORM, "xlu_push", &Xlu::push, 0},
-                                                                  {0xAE00305B, FORM, "xlu_set_pattern", &Xlu::set_pattern},
-                                                                  {0xAA00305B, FORM, "xlu_push_reduce", &Xlu::push, 2},
-                                                                  {0x0400305B, FORM, "xlu_pop", &Xlu::pop}};
 
  private:
   enum Shuffle : uint32_t { BYPASS = 0, REPLICATE = 1, ARBITRARY = 2, LOAD = 3 };
@@ -260,8 +256,9 @@ class Xlu {
       }
     return slot;
   }
-  // The box's tile shuffled, exchanged and shuffled by the last push's operation, as the `out` slots of the result;
-  // both patterns are taken whether or not the operation reads them. With no element, nothing, and the patterns stay.
+  // The box's tile shuffled, exchanged and shuffled by the last push's operation (both patterns taken), or folded over the
+  // lanes in order (argmax / argmin: the first lane holding it, NaN above and below all), as the result's `out` slots.
+  // With no element, nothing, and the patterns stay.
   void transform(const Host &host, uint64_t out) {
     Box &box = box_.write();
     if (box.tile.empty()) return;
@@ -271,8 +268,6 @@ class Xlu {
       for (uint32_t lane = 0; lane < lanes; lane++) tile[lane].push_back(slot[lane]);
     box.tile.clear();
     if (box.fold) {
-      // each column's fold over the lanes in lane order, the same in every lane: the value, of the pushed width, or
-      // for argmax / argmin the first lane that holds it (a NaN is above and below every number, as torch's)
       const uint32_t kind = box.fold - 1;
       const bool bf16 = box.fold_bits == 16;
       for (uint64_t k = 0; k < out; k++) {
@@ -311,18 +306,18 @@ class Xlu {
         if (k < got[lane].size()) slot[lane] = got[lane][k];
     }
   }
-  // A first pop of `in` elements whose shuffle is ARBITRARY needs a lane number per column of the tile it walks, `in`
-  // before (each push took the set pattern) and `out` after; it is never accepted otherwise, and on Spike exits
+  // A first pop of `pushed` elements whose shuffle is ARBITRARY needs a lane number per column of the tile it walks,
+  // `pushed` before (each push took the set pattern) and `out` after; it is never accepted otherwise, and on Spike exits
   // INVALID_XLU_PATTERN.
-  void patterned(Route &r, uint64_t in, uint64_t out) const {
+  void patterned(cp::Instr &in, uint64_t pushed, uint64_t out) const {
     const Box &box = box_.get();
     const uint32_t operation = box.operation;
-    const uint64_t walks[2] = {in, out}, entries[2] = {box.before_entries, box.after_entries};
+    const uint64_t walks[2] = {pushed, out}, entries[2] = {box.before_entries, box.after_entries};
     const uint32_t shuffles[2] = {operation >> 3, operation & 3};
     for (int k = 0; k < 2; k++) {
       const char *stage = k ? "post" : "pre";
       const size_t width = walks[k], carried = entries[k];
-      r.require(shuffles[k] != ARBITRARY || carried == width, [stage, width, carried, operation] {
+      in.require(shuffles[k] != ARBITRARY || carried == width, [stage, width, carried, operation] {
         std::fprintf(stderr, "XLU ERROR: the %s stage walks %zu columns but lane 0 carries %zu pattern entries (SIMM5 %u)\n",
                      stage, width, carried, operation);
         std::exit(INVALID_XLU_PATTERN);
@@ -364,19 +359,21 @@ class Xlu {
   static constexpr const char *WIDTH_KEY = "tpu_xlu_elements_per_cycle";
   static constexpr const char *ISSUE_KEY = "tpu_xlu_issue_per_cycle";
 
-  vcix_uarch::Port entry_, issue_, exit_;
-  vcix_uarch::Pipeline<Elements> stages_;  // a fold's or an exchange's elements: tpu_xlu_latency_cycles
-  vcix_uarch::Pipeline<Elements> moves_;   // a move's: tpu_xlu_move_latency_cycles
-  vcix_uarch::Pipeline<Column> out_;
-  vcix_uarch::CommandQueue pops_;
-  vcix_uarch::Register<Box> box_;
-  vcix_uarch::Register<uint64_t> left_;  // result slots the pops have not taken
-  vcix_uarch::Register<bool> keep_;      // whether a push keeps them: a move's are, a fold's or an exchange's are not
-  vcix_uarch::Register<Tile> pattern_;  // the set pattern, kept across pops (values: Spike only)
-  vcix_uarch::Register<uint64_t> pattern_width_;  // its width, on both simulators
+  cp::Port entry_{*this, "input", "elements", 1, cp::Port::PRIMARY};
+  cp::Port issue_{*this, "issue", "instructions", 1};
+  cp::Port exit_{*this, "output", "elements", cp::UNLIMITED};
+  cp::Pipeline<Elements> stages_{*this, entry_};
+  cp::Pipeline<Elements> moves_{*this, entry_};
+  cp::Pipeline<Column> out_{*this, exit_};
+  cp::CmdQueue pops_{*this};
+  cp::Register<Box> box_{*this};
+  cp::Register<uint64_t> left_{*this};
+  cp::Register<bool> keep_{*this};
+  cp::Register<Tile> pattern_{*this};
+  cp::Register<uint64_t> pattern_width_{*this};
   uint64_t lanes_ = 128, entries_ = DEFAULT_ENTRIES, width_ = 1;
 };
 
-}  // namespace tpu
+}
 
 #endif

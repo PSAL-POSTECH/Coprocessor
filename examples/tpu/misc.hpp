@@ -7,24 +7,51 @@
 #include <cstring>
 #include <vector>
 
-#include "vcix_uarch.hpp"
+#include "vcix_cp.hpp"
 
 #include "dma.hpp"
 #include "values.hpp"
 
 namespace tpu {
 
-class Misc {
-  using Host = vcix_uarch::Host;
-  using Insn = vcix_uarch::Insn;
-  using Route = vcix_uarch::Route;
+class Misc : public cp::Component {
+  using Host = cp::Host;
+  using Insn = cp::Insn;
   using Values = void (*)(const Host &, const Insn &);
   using DmaValues = void (Dma::*)(const Host &, const Insn &);
 
  public:
-  // `name` is the unit as its statistics report it; the model that holds the unit says it.
-  explicit Misc(const char *name) : issue_{name, "issue", "instructions", 2, vcix_uarch::PRIMARY} {}
-  void configure(const vcix_uarch::Config &config) {
+  // custom-2: lane number, compute. custom-1: DMA. pack is custom-2 sf.vc.v.vv funct6 10 (vd's vl words from vs2's vl
+  // elements then vs1's, each rounded to bf16, two to a word); unpack_lo / unpack_hi sf.vc.v.iv funct6 10 with the
+  // field at 19:15 8 / 9 (vd's vl f32 from the first or the last vl of vs2's 2 * vl bf16).
+  static constexpr uint32_t FUNCTION = 0xFE00707F, FIELD = 0xFE0FF07F;
+  static constexpr cp::Encoding VLANE_IDX{0x0000305B, FUNCTION, "vlane_idx"};
+  static constexpr cp::Encoding COMPUTE{0x0600305B, FUNCTION, "compute"};
+  static constexpr cp::Encoding MVIN2{0x0200302B, FUNCTION, "mvin2"};
+  static constexpr cp::Encoding MVIN{0x0400302B, FUNCTION, "mvin"};
+  static constexpr cp::Encoding MVOUT{0x0600302B, FUNCTION, "mvout"};
+  static constexpr cp::Encoding DMA_CONFIG_DESC{0x0E00302B, FUNCTION, "dma_config_desc"};
+  static constexpr cp::Encoding DMA_INDEX_KEY{0x1000302B, FUNCTION, "dma_index_key"};
+  static constexpr cp::Encoding MVIN3{0x1C00302B, FUNCTION, "mvin3"};
+  static constexpr cp::Encoding PACK{0x2800005B, FUNCTION, "pack"};
+  static constexpr cp::Encoding UNPACK_LO{0x2804305B, FIELD, "unpack_lo"};
+  static constexpr cp::Encoding UNPACK_HI{0x2804B05B, FIELD, "unpack_hi"};
+
+  // `name` is the component as its statistics report it; the model that holds the component says it.
+  Misc(cp::Coprocessor &cp, const char *name) : Component(cp, name) {
+    handle(VLANE_IDX, &Misc::one<&Misc::vlane_idx>);
+    handle(COMPUTE, &Misc::one<&Misc::nothing>);
+    handle(MVIN2, &Misc::transfer<&Dma::mvin, MVIN>);
+    handle(MVIN, &Misc::transfer<&Dma::mvin, MVIN>);
+    handle(MVOUT, &Misc::transfer<&Dma::mvout, MVOUT>);
+    handle(DMA_CONFIG_DESC, &Misc::dma<&Dma::dma_config_desc>);
+    handle(DMA_INDEX_KEY, &Misc::dma<&Dma::dma_index_key>);
+    handle(MVIN3, &Misc::transfer<&Dma::mvin, MVIN>);
+    handle(PACK, &Misc::one<&Misc::pack>);
+    handle(UNPACK_LO, &Misc::one<&Misc::unpack_lo>);
+    handle(UNPACK_HI, &Misc::one<&Misc::unpack_hi>);
+  }
+  void configure(const cp::Config &config) override {
     const uint64_t width = config.uint(WIDTH_KEY, 2);
     if (width == 0) throw vcix_accel::ConfigError(WIDTH_KEY, "0", "is not an issue width: at least 1");
     issue_.set_capacity(width);
@@ -32,31 +59,28 @@ class Misc {
     configured.configure(config);
     dma_.configure(configured);
   }
-  template <class H>
-  void hardware(H &&h) {
-    h.port(issue_);
-    h.reg(dma_);
-  }
 
+ private:
   // A slot of the issue width, done the next cycle, when V writes its values.
   template <Values V>
-  void one(Route &r) {
-    r.use(issue_).when_done([&r](const Host &host) { V(host, r.insn()); });
+  void one(cp::Instr &in) {
+    in.use(issue_);
+    in.on_done([&in](const Host &host) { V(host, in.insn()); });
   }
   // The same slot; the DMA's V on its descriptor and counts, as it issues.
   template <DmaValues V>
-  void dma(Route &r) {
-    r.use(issue_).at_issue([&](const Host &host) { (dma_.write().*V)(host, r.insn()); });
+  void dma(cp::Instr &in) {
+    in.use(issue_);
+    in.on_issue([&](const Host &host) { (dma_.write().*V)(host, in.insn()); });
   }
-  // The same, for a transfer, NAME: never accepted on a machine with no scratchpad.
-  template <DmaValues V, const char *NAME>
-  void transfer(Route &r) {
-    r.require(dma_.get().scratchpad(), [] { fail("%s: the machine description has no %s", NAME, Dma::SPAD_LANE_KEY); });
-    dma<V>(r);
+  // The same, for a transfer, E's: never accepted on a machine with no scratchpad.
+  template <DmaValues V, const cp::Encoding &E>
+  void transfer(cp::Instr &in) {
+    in.require(dma_.get().scratchpad(),
+               [] { fail("%s: the machine description has no %s", E.name, Dma::SPAD_LANE_KEY); });
+    dma<V>(in);
   }
-  static constexpr char MVIN[] = "mvin", MVOUT[] = "mvout";
 
- private:
   static void nothing(const Host &, const Insn &) {}
 
   // pack: f32 registers packed into bf16, two to a 32-bit word, as the v6e's VPU packs. vd's vl words are
@@ -107,29 +131,10 @@ class Misc {
 
   static constexpr const char *WIDTH_KEY = "tpu_misc_issue_width";
 
-  vcix_uarch::Port issue_;
-  vcix_uarch::Register<Dma> dma_;
-
- public:
-  // custom-2: lane number, compute. custom-1: DMA. pack is custom-2 sf.vc.v.vv funct6 10 (vd's vl words from vs2's vl
-  // elements then vs1's, each rounded to bf16, two to a word); unpack_lo / unpack_hi sf.vc.v.iv funct6 10 with the
-  // field at 19:15 8 / 9 (vd's vl f32 from the first or the last vl of vs2's 2 * vl bf16).
-  static constexpr uint32_t FUNCTION = 0xFE00707F, FIELD = 0xFE0FF07F;
-  static constexpr vcix_uarch::Instruction<Misc> INSTRUCTIONS[] = {
-      {0x0000305B, FUNCTION, "vlane_idx", &Misc::one<&Misc::vlane_idx>},
-      {0x0600305B, FUNCTION, "compute", &Misc::one<&Misc::nothing>},
-      {0x0200302B, FUNCTION, "mvin2", &Misc::transfer<&Dma::mvin, MVIN>},
-      {0x0400302B, FUNCTION, "mvin", &Misc::transfer<&Dma::mvin, MVIN>},
-      {0x0600302B, FUNCTION, "mvout", &Misc::transfer<&Dma::mvout, MVOUT>},
-      {0x0E00302B, FUNCTION, "dma_config_desc", &Misc::dma<&Dma::dma_config_desc>},
-      {0x1000302B, FUNCTION, "dma_index_key", &Misc::dma<&Dma::dma_index_key>},
-      {0x1C00302B, FUNCTION, "mvin3", &Misc::transfer<&Dma::mvin, MVIN>},
-      {0x2800005B, FUNCTION, "pack", &Misc::one<&Misc::pack>},
-      {0x2804305B, FIELD, "unpack_lo", &Misc::one<&Misc::unpack_lo>},
-      {0x2804B05B, FIELD, "unpack_hi", &Misc::one<&Misc::unpack_hi>},
-  };
+  cp::Port issue_{*this, "issue", "instructions", 2, cp::Port::PRIMARY};
+  cp::Register<Dma> dma_{*this};
 };
 
-}  // namespace tpu
+}
 
 #endif

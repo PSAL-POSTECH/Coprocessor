@@ -1,15 +1,15 @@
 # tpu
 
 `libtpu.so` (model name `tpu`) is a TPU's vector-side units on the two custom
-opcodes. It is five `vcix_uarch` units in one `tpu::Machine`. Each unit says,
-per instruction, which blocks it uses and what it computes. gem5 runs that
-description for the timing; Spike runs the same description for the values.
-How `vcix_uarch` works (ports, pipelines, routes, `require`, `when_stuck`) is
-in the [root README](../../README.md). This page is about the tpu units.
+opcodes. It is five `vcix_cp` components in one `tpu::Coprocessor`. Each
+component says, per instruction, which blocks it uses and what it computes.
+gem5 runs that description for the timing; Spike runs the same description for
+the values. How `vcix_cp` works (blocks, handlers, `require`, `on_stuck`) is
+in the [root README](../../README.md). This page is about the tpu components.
 
 ```mermaid
 flowchart LR
-  I["custom-2 / custom-1<br>instruction"] --> M{"tpu::Machine<br>tpu.cc:13"}
+  I["custom-2 / custom-1<br>instruction"] --> M{"tpu::Coprocessor<br>tpu.cc:13"}
   M -->|"verf ... vexp, sfu_push, sfu_pop"| S["tpu::Sfu<br>SFU"]
   M -->|"vlane_idx, compute, pack, unpack,<br>dma_config_desc, mvin, mvout ..."| C["tpu::Misc<br>MISC"]
   M -->|"input push, weight push, pop"| Y["tpu::Systolic<br>SYSTOLIC"]
@@ -17,16 +17,16 @@ flowchart LR
   M -->|"msa push, msa pop"| A["tpu::Msa<br>MSA"]
 ```
 
-- [tpu.cc:13-15](tpu.cc#L13-L15) lists the units and the names their
+- [tpu.cc:18-22](tpu.cc#L18-L22) holds the components and the names their
   statistics use: `SFU`, `MISC`, `SYSTOLIC`, `XLU`, `MSA`. An instruction goes
-  to the first unit whose encoding matches it. Nothing on custom-3 is owned.
-- [machine.hpp](machine.hpp) is `vcix_uarch::Machine` plus one key,
-  `tpu_trace` ([below](#reading-tpu_trace)).
+  to the first component whose encoding matches it. Nothing on custom-3 is owned.
+- [machine.hpp](machine.hpp) is `tpu::Coprocessor`: `cp::Coprocessor` plus
+  one key, `tpu_trace` ([below](#reading-tpu_trace)).
 - [mxu.hpp](mxu.hpp) is in this directory, but `libtpu.so` does not hold it.
   It is the matrix unit of [tpuv6e](../tpuv6e/README.md) and
-  [tpuv3](../tpuv3/README.md) (`tpuv6e.cc:21`, `tpuv3.cc:22`), which also use
+  [tpuv3](../tpuv3/README.md) (`tpuv6e.cc:29`, `tpuv3.cc:30`), which also use
   `Sfu`, `Misc` and `Xlu` from here.
-- [values.hpp](values.hpp) holds the number formats every unit uses.
+- [values.hpp](values.hpp) holds the number formats every component uses.
   [dma.hpp](dma.hpp) is the DMA that `tpu::Misc` carries out.
 
 Contents: [Encodings](#encodings) · [Sfu](#sfu-special-functions-and-the-eup) ·
@@ -40,9 +40,9 @@ Contents: [Encodings](#encodings) · [Sfu](#sfu-special-functions-and-the-eup) �
 ## Encodings
 
 Each line is an instruction as a test program writes it, the word the
-assembler made of it (`objdump` of the built program), and the unit that owns
-it. In `sf.vc.*`, the first operand is the 2-bit opcode field (bits 27:26) and
-the last immediate is the field at bits 19:15.
+assembler made of it (`objdump` of the built program), and the component that
+owns it. In `sf.vc.*`, the first operand is the 2-bit opcode field (bits
+27:26) and the last immediate is the field at bits 19:15.
 
 ```
 custom-2 (opcode 0x5B)
@@ -79,10 +79,10 @@ custom-1 (opcode 0x2B): .insn r 0x2b, 3, <funct7>, x0, a0, a1
   funct7 3                        0x06b5302b   mvout                  Misc
 ```
 
-The match words and masks are each unit's `INSTRUCTIONS` table:
-[sfu.hpp:96](sfu.hpp#L96), [misc.hpp:118](misc.hpp#L118),
-[systolic.hpp:103](systolic.hpp#L103), [msa.hpp:96](msa.hpp#L96),
-[xlu.hpp:224](xlu.hpp#L224). Most masks are `0xFE00707F`: funct6, vm, funct3
+The match words and masks are each component's `cp::Encoding` constants:
+[sfu.hpp:26-34](sfu.hpp#L26-L34), [misc.hpp:28-38](misc.hpp#L28-L38),
+[systolic.hpp:65-67](systolic.hpp#L65-L67), [msa.hpp:24-25](msa.hpp#L24-L25),
+[xlu.hpp:59-62](xlu.hpp#L59-L62). Most masks are `0xFE00707F`: funct6, vm, funct3
 and the opcode. vsin, vcos, vlog, vatan, unpack_lo and unpack_hi also match the
 field (`0xFE0FF07F`). sfu_push and xlu_push differ only in funct3
 (`0x2E00005B` and `0x2E00305B`).
@@ -144,19 +144,20 @@ Asserted by `tests/tpu/run.sh:43-67`. `tests/tpu/run.sh build` leaves the
 traces in `build/tpu-sfu.gem5.log` and `build/tpu-latency-4.gem5.log`.
 </details>
 
-The route is three lines ([sfu.hpp:68-82](sfu.hpp#L68-L82)):
+The handler is four steps ([sfu.hpp:94-109](sfu.hpp#L94-L109)):
 
 ```cpp
-void special_function(Route &r) {
+void special_function(cp::Instr &in) {
   ...
-  r.require(!r.vl() || sew == 16 || sew == 32 || (sew == 64 && WIDE[f]), ...);     // which widths it has
-  r.use(entry_).done_after(latency_);                 // one slot of the entry port, done latency_ later
-  r.when_done([&r](const Host &host) { ... });        // Spike only: vd[i] = f(vs2[i]) in every lane
+  in.require(!in.vl() || sew == 16 || sew == 32 || (sew == 64 && WIDE[f]), ...);  // which widths it has
+  in.use(entry_);                                    // one slot of the entry port
+  in.done_after(latency_);                           // done latency_ later
+  in.on_done([&in](const Host &host) { ... });       // Spike only: vd[i] = f(vs2[i]) in every lane
 }
 ```
 
 - gem5 uses only `require`, `use` and `done_after`: a slot a cycle, a fixed latency.
-- Spike also runs `when_done`, which writes `vd` the cycle the instruction is done.
+- Spike also runs `on_done`, which writes `vd` the cycle the instruction is done.
 - Widths: halves and singles for all seven; doubles only for `vlog` and
   `vatan`. A `vexp` on doubles ends the run ([below](#when-the-model-ends-a-run)).
 
@@ -174,7 +175,7 @@ pop cycle by cycle. The EUP's keys are [below](#keys-read-from-the-machine-descr
 `tpu::Misc` owns every instruction with no timing of its own: `vlane_idx`,
 `compute`, `pack`, `unpack_lo`, `unpack_hi`, and the DMA's six. Each takes one
 slot of a port `tpu_misc_issue_width` (default 2) wide, and is done one cycle
-later ([misc.hpp:43-56](misc.hpp#L43-L56)).
+later ([misc.hpp:66-82](misc.hpp#L66-L82)).
 
 `tests/tpu/one_cycle.S` runs a `vexp`, a weight push that reads it, then the
 eight Misc instructions. On gem5 (`examples/gem5_se.py`, `tests/tpu/trace.yml`)
@@ -212,14 +213,14 @@ are asserted by `tests/tpu/run.sh:190-216`.
 ### What the Misc instructions compute
 
 - `vlane_idx`: every element of `vd` is its lane's number, written as 64 bits
-  whatever the element width ([misc.hpp:103](misc.hpp#L103)).
+  whatever the element width ([misc.hpp:127](misc.hpp#L127)).
 - `compute`: nothing.
 - `pack` (the v6e's `vpack.c.bf16`): `vd` gets `vl` 32-bit words. Their bf16
   halves are `vs2`'s `vl` singles, then `vs1`'s, rounded to nearest even;
-  element `2w` goes in the low half of word `w` ([misc.hpp:64-78](misc.hpp#L64-L78)).
+  element `2w` goes in the low half of word `w` ([misc.hpp:88-102](misc.hpp#L88-L102)).
 - `unpack_lo` / `unpack_hi` (the v6e's `vunpack.c.l/h.bf16`): the other way.
   `vs2`'s `vl` words hold `2 vl` bf16; `vd` gets elements `0 .. vl-1` (lo) or
-  `vl .. 2vl-1` (hi) as singles, widened exactly ([misc.hpp:89-98](misc.hpp#L89-L98)).
+  `vl .. 2vl-1` (hi) as singles, widened exactly ([misc.hpp:113-122](misc.hpp#L113-L122)).
 
 A pack of four singles, `vl` = 2:
 
@@ -264,7 +265,7 @@ issues.
   file of the indices it read. TOGSim takes those offsets from the runtime
   attributes the compiler records.
 - A transfer needs `vpu_spad_size_kb_per_lane`. Without it the transfer is
-  never accepted, on both simulators ([misc.hpp:53-56](misc.hpp#L53-L56)).
+  never accepted, on both simulators ([misc.hpp:78-82](misc.hpp#L78-L82)).
   Spike ends with `tpu: mvin: the machine description has no vpu_spad_size_kb_per_lane`;
   gem5 runs into its limit (`simulate() limit reached`).
 
@@ -301,14 +302,14 @@ anti-diagonal work in the same step.
 
 The model does not keep a register per PE. It keeps:
 
-- **One pipeline of `2 x lanes - 1` stages** ([systolic.hpp:55-56](systolic.hpp#L55-L56)).
+- **One pipeline of `2 x lanes - 1` stages** ([systolic.hpp:53-54](systolic.hpp#L53-L54)).
   Stage k is anti-diagonal k. With 4 lanes that is 7 stages.
 - **A `Row` per input vector**, riding the pipeline's slots
-  ([systolic.hpp:36-39](systolic.hpp#L36-L39)): its `input` (x), its `sums`
+  ([systolic.hpp:35-38](systolic.hpp#L35-L38)): its `input` (x), its `sums`
   (one partial sum per output lane), and the weights it computes with.
-- **The weights in a `Register`** ([systolic.hpp:198](systolic.hpp#L198)): per
+- **The weights in a `Register`** ([systolic.hpp:194](systolic.hpp#L194)): per
   lane, its last `lanes` weights.
-- **A `stage` function** ([systolic.hpp:128-137](systolic.hpp#L128-L137)): at
+- **A `stage` function** ([systolic.hpp:120-129](systolic.hpp#L120-L129)): at
   stage k, lane L adds `input[k-L] * W[L][k-L]` to its sum. Only Spike calls
   it; gem5's slots carry no values.
 
@@ -441,7 +442,7 @@ the 361 (the program's `nop`s) is from that log, not asserted.
 
 ### Every pop takes exactly vl
 
-A pop is a `receive` of exactly `vl` rows ([systolic.hpp:90-99](systolic.hpp#L90-L99)).
+A pop is a `receive` of exactly `vl` rows ([systolic.hpp:91-101](systolic.hpp#L91-L101)).
 Two mistakes a program can make, and what happens:
 
 - **Pop more than was pushed.** The pop is never accepted. gem5 runs into its
@@ -463,7 +464,7 @@ is the `pop` case of `tests/tpu/functional/run.sh:153`.
 
 By default (`tpu_systolic_command_queue: 0`) every step of an instruction
 happens at its issue, and a row carries the weights that are in the register
-when it is pushed ([systolic.hpp:139-145](systolic.hpp#L139-L145),
+when it is pushed ([systolic.hpp:131-137](systolic.hpp#L131-L137),
 `weights_.share()`). A later weight push travels down the array behind the
 rows already in it.
 
@@ -512,7 +513,7 @@ tpu: machine description: tpu_systolic_command_queue: '0' is no queue: what move
 ### Element formats
 
 What an element is rides the push or the pop in its rs1 field, one table at
-every width ([systolic.hpp:113-119](systolic.hpp#L113-L119)):
+every width ([systolic.hpp:105-111](systolic.hpp#L105-L111)):
 
 - e8: 0 an int8, 1 an E4M3 float, 2 an E5M2 float. 3 is refused.
 - e16: 0 a half, 3 a bfloat16. 1 and 2 are refused.
@@ -522,7 +523,7 @@ every width ([systolic.hpp:113-119](systolic.hpp#L113-L119)):
 
 A pop reads the same table and also refuses 3: a bfloat16 result is not
 modeled. A pop to halves or 8-bit floats rounds by `frm`, read through the host
-([systolic.hpp:157-171](systolic.hpp#L157-L171)).
+([systolic.hpp:149-163](systolic.hpp#L149-L163)).
 `tests/tpu/functional/systolic.c` covers every width, both 8-bit floats and
 every value of `frm`.
 
@@ -551,11 +552,11 @@ which:
 ```
 
 - A weight push takes its own slot and writes the matrix as it issues; no row
-  enters the stages ([msa.hpp:49-75](msa.hpp#L49-L75)). A weight push of
+  enters the stages ([msa.hpp:47-73](msa.hpp#L47-L73)). A weight push of
   another format or shift empties the matrix.
 - An input push sends `vl` rows. Each row's result is computed as it enters
   (with the matrix as it is then) and rides the slots to the output queue
-  ([msa.hpp:107-122](msa.hpp#L107-L122)).
+  ([msa.hpp:100-115](msa.hpp#L100-L115)).
 - A pop takes `vl` rows, as singles, halves, or 8-bit floats (E5M2 when its
   field's [1:0] is 3, E4M3 otherwise), rounded to nearest even.
 - There are `2 x lanes - 1` stages whatever the shift and the format. No
@@ -582,7 +583,7 @@ Refused (Spike's message; gem5 never accepts the instruction):
 The trace is asserted by `tests/tpu/run.sh:97-104`, the `words` and `msa-pop`
 messages by `tests/tpu/functional/run.sh:161-162`. The shift message is
 `show msa-shift` ([show.c](#running-the-examples-on-this-page)), exit 1. The
-packing message is the format string at [msa.hpp:55](msa.hpp#L55).
+packing message is the format string at [msa.hpp:53](msa.hpp#L53).
 </details>
 
 ## Xlu: the cross-lane unit
@@ -602,22 +603,22 @@ xlu_push ─► input queue ─► [ stages ] ─► buffer ══ first pop ═
 ```
 
 - A push of `vl` elements, of any kind, waits for the pop before it and for
-  room in the input queue ([xlu.hpp:118](xlu.hpp#L118)).
+  room in the input queue ([xlu.hpp:122](xlu.hpp#L122)).
 - The first pop after pushes waits until the whole tile is in the buffer,
   takes it at once, and computes the result. The result has one slot per
   element, or `vpu_num_lanes` slots for an exchange
-  ([xlu.hpp:178-200](xlu.hpp#L178-L200)).
+  ([xlu.hpp:186-215](xlu.hpp#L186-L215)).
 - The whole result leaves together, as one entry of that many slots. Each pop
   takes exactly `vl` of them.
 - The first element push after a pop forgets what is left of the tile
-  ([xlu.hpp:132](xlu.hpp#L132)). A pop is never served from the tile before.
+  ([xlu.hpp:138](xlu.hpp#L138)). A pop is never served from the tile before.
 - A pop is issued at once and waits in a queue of one for what it takes. So a
   pop of more than is left issues and never ends, and the pop after it is never
   accepted (`ports.cc` `fewer_pushed`: the first pop issues after 1 cycle, the
   second waits 100 of 100). Spike ends with `tpu: xlu pop: 8 elements asked, 3 left`.
 
 How long the stages are on hardware is not known to this model: the 10 of
-`tpu_xlu_latency_cycles` is a placeholder ([xlu.hpp:343](xlu.hpp#L343)).
+`tpu_xlu_latency_cycles` is a placeholder ([xlu.hpp:351-352](xlu.hpp#L351-L352)).
 [tpuv6e](../tpuv6e/README.md) gives what was measured on a v6e.
 
 ### One tile, cycle by cycle
@@ -716,7 +717,7 @@ Each push takes it as it issues, its element i reading entry i mod the
 pattern's width, so a set between two pushes of one tile changes only the pushes
 after it. This is the v6e's `vset.pattern.permute` before its `vperm`s: one set
 serves every register a pattern moves, and no register holds the pattern while
-they push ([xlu.hpp:92-177](xlu.hpp#L92-L177)). Elements are raw 8, 16 or 32 bits.
+they push ([xlu.hpp:100-182](xlu.hpp#L100-L182)). Elements are raw 8, 16 or 32 bits.
 
 A 4-lane tile, pushed and popped with four different fields, on Spike:
 
@@ -780,7 +781,7 @@ xlu_push_reduce field 2 (min)            field 3 (argmax)     field 4 (argmin)
   lane 3: 0 1 2 3                          lane 3: 3 3 3 3      lane 3: 0 0 0 0
 ```
 
-- Max and min are the v6e's `vmax.f32` / `vmin.f32` ([xlu.hpp:27-38](xlu.hpp#L27-L38)):
+- Max and min are the v6e's `vmax.f32` / `vmin.f32` ([xlu.hpp:26-37](xlu.hpp#L26-L37)):
   a NaN in any lane is the column's answer, and -0 is below +0. For argmax and
   argmin a NaN's lane wins over any number.
 - A tile is one kind and one width. A move pushed into a fold, or a fold of
@@ -803,7 +804,7 @@ in `run.sh`. The kind message is
 ### The 65535 limits
 
 The result leaves as one entry, and an entry holds at most 65535 slots
-([vcix_uarch.hpp:102](../../include/vcix_uarch.hpp#L102)). So:
+([vcix_cp.hpp:184](../../include/vcix_cp.hpp#L184)). So:
 
 - The box holds at most 65535 elements between two pops; a push past that is
   refused. Pushing 64 elements at a time, the 1024th push finds 65472 held:
@@ -855,8 +856,8 @@ The sections above show the other four: `msa push` with no column left, the
 XLU's mixed kinds and its 65535 elements, and a transfer with no scratchpad.
 
 Other reasons in the code: `sfu_push` or `sfu_pop` on elements of other than 32
-bits ([sfu.hpp:44](sfu.hpp#L44), [57](sfu.hpp#L57)); an `xlu_push_reduce`
-fold above 4 ([xlu.hpp:102](xlu.hpp#L102)); a descriptor that splits axis 4 or
+bits ([sfu.hpp:69](sfu.hpp#L69), [83](sfu.hpp#L83)); an `xlu_push_reduce`
+fold above 4 ([xlu.hpp:106-109](xlu.hpp#L106-L109)); a descriptor that splits axis 4 or
 more, has an element size or a lane stride of 0, has a dimension of 0, or
 reaches past its tensor; an index of other than 1, 2, 4 or 8 bytes
 ([dma.hpp:83-86](dma.hpp#L83-L86), [156](dma.hpp#L156), [255](dma.hpp#L255)).
@@ -913,30 +914,30 @@ Xlu
 All
 - `tpu_trace` (0): not 0, a line at every issue and every commit.
 
-Each unit reads its keys in `configure`: [sfu.hpp:27](sfu.hpp#L27),
-[misc.hpp:27](misc.hpp#L27), [systolic.hpp:49](systolic.hpp#L49),
-[msa.hpp:29](msa.hpp#L29), [xlu.hpp:59](xlu.hpp#L59),
-[dma.hpp:23](dma.hpp#L23), [machine.hpp:23](machine.hpp#L23).
+Each component reads its keys in `configure`: [sfu.hpp:48](sfu.hpp#L48),
+[misc.hpp:54](misc.hpp#L54), [systolic.hpp:47](systolic.hpp#L47),
+[msa.hpp:32](msa.hpp#L32), [xlu.hpp:71](xlu.hpp#L71),
+[dma.hpp:23](dma.hpp#L23), [machine.hpp:28](machine.hpp#L28).
 
 ## Reading tpu_trace
 
 With `tpu_trace: 1` the model prints a line at every issue and every commit
-([machine.hpp:65-84](machine.hpp#L65-L84)):
+([machine.hpp:66-85](machine.hpp#L66-L85)):
 
 ```
 [tpu] issue systolic pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4
             └────┬─────┘  └─────────────┬──────────────┘  └────┬────┘  └─────────────┬─────────────┘
-          the encoding's    cycles since the previous     issued and       the unit's queues as
-               name            issue, of any unit        not committed  this instruction finds them
+          the encoding's    cycles since the previous     issued and   the component's queues as
+               name         issue, of any component     not committed  this instruction finds them
 [tpu] commit systolic pop: 1 cycles after its issue
 ```
 
 - The queues are counted before this instruction acts.
-- Which units add the queue fields: `Systolic` and `Msa` (their one pipeline);
+- Which components add the queue fields: `Systolic` and `Msa` (their one pipeline);
   `Xlu` (its input queue, and its buffer as "output queue"); `Sfu` only for
   `sfu_push` and `sfu_pop`. `Misc` and the special functions add nothing.
 - The lines do not change what the model answers. `tests/tpu/run.sh` checks the
-  timing of all five units with them.
+  timing of all five components with them.
 
 ## Where the values come from
 

@@ -100,7 +100,7 @@ log="$BUILD/route_once.log"
 "$BUILD/route_once" > "$log" 2>&1; rc=$?
 grep -E '^(PASS|FAIL)  ' "$log"
 ended 0
-verdict "route_once: a vcix_uarch route function runs once per issue, its queued steps replayed"
+verdict "route_once: a vcix_cp handler runs once per issue, its queued steps replayed, a copy ticking its own blocks"
 
 probe() { log="$BUILD/probe-$1.log"; "$BUILD/timing_probe" "$BUILD/lib$1.so" $OWNED 2 > "$log" 2>&1; rc=$?; }
 probe no_optional

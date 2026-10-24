@@ -42,7 +42,7 @@ Nothing keeps the two descriptions in step.
 4. [The timing rules](#the-timing-rules)
 5. [The machine description](#the-machine-description)
 6. [Build with hidden visibility](#build-with-hidden-visibility)
-7. [vcix_uarch: a unit as hardware blocks](#vcix_uarch-a-unit-as-hardware-blocks)
+7. [vcix_cp: a coprocessor of components](#vcix_cp-a-coprocessor-of-components)
 8. [A unit that is RTL](#a-unit-that-is-rtl)
 9. [What you do not implement, and what you configure](#what-you-do-not-implement-and-what-you-configure)
 10. [Constraints and non-goals](#constraints-and-non-goals)
@@ -626,183 +626,187 @@ done
 
 </details>
 
-## vcix_uarch: a unit as hardware blocks
+## vcix_cp: a coprocessor of components
 
 With a `Model` written by hand, `execute` and the timing methods are two
 descriptions. Both are yours to keep in step.
-[`include/vcix_uarch.hpp`](include/vcix_uarch.hpp) derives both faces from one.
-You list the unit's hardware blocks, and for each instruction you write a
-*route*: what it needs and what it moves. A route function does not run the
-instruction. It declares steps on `r`. `vcix_uarch::Machine` reads the steps:
+[`include/vcix_cp.hpp`](include/vcix_cp.hpp) derives both faces from one. A
+model is a `cp::Coprocessor` whose members are its *components*. A
+component's members are its hardware blocks, and for each encoding it owns it
+has a *handler*: what the instruction needs and what it moves. A handler does
+not run the instruction. It declares steps on `in`, one a statement.
+`cp::Coprocessor` reads the steps:
 
 ```
-             void pop(Route &r) { r.use(entry_).receive(eup_, n, take); }
+       void pop(cp::Instr &in) { in.use(entry_); in.receive(eup_, n, take); }
                                     │
              ┌──────────────────────┴───────────────────────┐
            gem5                                           Spike
   can_accept: do the steps fit now?               execute: issue the same steps,
   issue: take them; latency or Unknown            tick the same blocks until done,
   tick: move the blocks, count the ports          and run the functions that carry
-  only counts: no value is ever made              the values (take, at_issue(host), ...)
+  only counts: no value is ever made              the values (take, on_issue(host), ...)
 ```
 
-Every tpu unit and [`examples/copier`](examples/copier/copier.cc) are written
-this way. The tpu units are described in
+Every tpu component and [`examples/copier`](examples/copier/copier.cc) are
+written this way. The tpu components are described in
 [`examples/tpu/README.md`](examples/tpu/README.md).
 
 ### The four blocks
 
-A unit lists its blocks in `hardware(h)`. Names given to blocks become gem5
-statistics.
+A block is a member of its component, made with `*this`; it registers itself,
+so blocks are in declaration order. It is kept as its byte offset from the
+component, as the component is from its coprocessor
+([`vcix_cp.hpp:46-48`](include/vcix_cp.hpp)): the copy of the model that the
+wrapper makes before every issue, and assigns back on a squash, ticks its own
+blocks ([`route_once.cc`](tests/contract/route_once.cc)). Names given to blocks
+become gem5 statistics.
 
 ```
 Port              N per cycle pass; what passes is counted (admitted, utilized)
-   ──►|N|──►        Port issue_{name, "issue", "instructions", 1, PRIMARY};
+   ──►|N|──►        cp::Port issue_{*this, "issue", "instructions", 1, cp::Port::PRIMARY};
 
 Pipeline<T>       input queue ──► S stages ──► output queue (1 or 2)
   [in]─►[s0][s1]..[sS-1]─►[out]      each queue `depth` rows deep
                     one entry enters the stages per cycle, through its entry port;
                     on Spike each row carries a value of type T
-                    pipe.configure(stages, depth, Stall::WHEN_OUTPUT_FULL);
+                    cp::Pipeline<Row> array_{*this, entry_};
 
-CommandQueue      issued instructions in program order; only the head works
+CmdQueue          issued instructions in program order; only the head works
   head─►[c0][c1][c2][c3]             depth 0: no queue, every step at issue
-                    commands_.configure(4, Free::WHEN_STARTED);
+                    cp::CmdQueue commands_{*this};
 
-Register<S>       unit state, read and written the same way on both simulators
+Register<S>       component state, read and written the same way on both simulators
+                    cp::Register<uint64_t> source_{*this};
                     source_.get();  source_.write() = x;
 ```
 
-- **Port** ([`vcix_accel.hpp:107-170`](include/vcix_accel.hpp)): a capacity
-  per cycle. A unit has one `PRIMARY` port; its counts are the unit's
-  statistics.
-- **`Pipeline<T>`** ([`vcix_uarch.hpp:268-350`](include/vcix_uarch.hpp)): rows
+- **Port** ([`vcix_cp.hpp:106-113`](include/vcix_cp.hpp)): a capacity per
+  cycle, a `vcix_accel::Port` under its component's name. A component has one
+  `PRIMARY` port; its counts are the component's statistics.
+- **`Pipeline<T>`** ([`vcix_cp.hpp:350-441`](include/vcix_cp.hpp)): rows
   that arrive in a cycle are seen in the next. An entry of `weight` rows
   leaves the stages as that many rows, into every output queue. Two stall
-  modes: `Stall::WHEN_OUTPUT_FULL` (stop as soon as an output queue is full)
-  and `Stall::WHEN_HEAD_BLOCKED` (stop only when the entry leaving does not
-  fit). `h.pipeline(p, entry, &Unit::stage)` adds a function the unit runs on
-  each row in each stage, on Spike, where rows carry values.
-- **CommandQueue** ([`vcix_uarch.hpp:352-420`](include/vcix_uarch.hpp)): a
-  command arrives `arrival_cycles` (1) after its issue and works from the cycle
-  after. `Free::WHEN_DONE` gives the slot back when its work is done;
+  modes for `configure(stages, depth, stall)`: `Stall::WHEN_OUTPUT_FULL` (stop
+  as soon as an output queue is full) and `Stall::WHEN_HEAD_BLOCKED` (stop
+  only when the entry leaving does not fit).
+  `cp::Pipeline<Row> array_{*this, entry_, &Systolic::stage}` adds a function
+  the component runs on each row in each stage, on Spike, where rows carry
+  values.
+- **`CmdQueue`** ([`vcix_cp.hpp:443-497`](include/vcix_cp.hpp)): a command
+  arrives `arrival_cycles` (1) after its issue and works from the cycle after.
+  `Free::WHEN_DONE` gives the slot back when its work is done;
   `Free::WHEN_STARTED` gives it back as the head starts, in a cycle of its own.
-- **`Register<S>`** ([`vcix_uarch.hpp:38-60`](include/vcix_uarch.hpp)): `get()`
+- **`Register<S>`** ([`vcix_cp.hpp:124-147`](include/vcix_cp.hpp)): `get()`
   reads, `write()` changes, `reset` puts back what `configure` gave. Copies
   share the value until one writes, so the copy gem5 saves at each issue is
   cheap.
 
-### The route verbs
+### The steps of a handler
 
 Steps run in the order you write them. **Steps before `enqueue` happen in the
 issue cycle, all or nothing. Steps after it happen at the queue head, in
 order, as much a cycle as the ports allow**
-([`vcix_uarch.hpp:422-423`](include/vcix_uarch.hpp)).
+([`vcix_cp.hpp:517-519`](include/vcix_cp.hpp)).
 
 - What must hold
-  - `require(holds)` and `require(holds, never)`: never accepted while `holds`
-    is false. `never()` is the reason Spike prints.
-  - `use(port, n = 1)`: `n` of the port's room this cycle.
+  - `in.require(holds)` and `in.require(holds, never)`: never accepted while
+    `holds` is false. `never()` is the reason Spike prints.
+  - `in.use(port, n = 1)`: `n` of the port's room this cycle.
 - Moving entries
-  - `send(pipe, n)`: `n` entries into the pipeline's input queue.
-    `send(pipe, n, weight)`: each entry is `weight` rows (at most 65535).
-  - `receive(pipe, n)`: **exactly** `n` rows from an output queue. Before
-    `enqueue` it waits until `n` are out. `.from_output(1)` picks the second
+  - `in.send(pipe, n)`: `n` entries into the pipeline's input queue.
+    `in.send(pipe, n, weight)`: each entry is `weight` rows (at most 65535).
+  - `in.receive(pipe, n)`: **exactly** `n` rows from an output queue. Before
+    `enqueue` it waits until `n` are out. `cp::Output(1)` reads the second
     output queue.
-  - `transfer(n)`: `n` beats that go through no pipeline, into the unit's own
-    registers or through a port.
-  - `.through(port)`: the last step's `n` pass this port, at most its width a
-    cycle. At issue the whole `n` must fit in this cycle.
-  - `.through_received(port)`: as `through`, but counts only what is out. A
-    receive of more than the port's width that is stuck still gets its
-    `when_stuck` reason on Spike.
-  - `wait_until_empty(pipe)`: the next step moves nothing until the
-    pipeline's input queue and stages are empty.
-- Queueing
-  - `enqueue(queue)`: the steps after this run at the queue head.
-- When it is done
-  - `done_after(cycles)`: for a route that has no queue (default 1).
-  - `done_when_enqueued()`: as soon as the queue takes it; its work goes on.
-  - `done_when_idle()`: once no command that reached the queue is left
-    unfinished.
-  - A queued route without either is done when its last step is.
+  - `in.transfer(n)`: `n` beats that go through no pipeline, into the
+    component's own registers or through a port.
+  - `cp::Through(port)`, last in a send, receive or transfer: its `n` pass
+    this port, at most its width a cycle; at issue the whole `n` must fit.
+    `cp::ThroughReceived(port)` counts only what is out, so a stuck receive
+    of more than the port's width still gets its `on_stuck` reason on Spike.
+  - `in.wait_empty(pipe)`: the next step moves nothing until the pipeline's
+    input queue and stages are empty.
+- Queueing, and when it is done
+  - `in.enqueue(queue)`: the steps after this run at the queue head. It is
+    done when its last step is; with `cp::Done::WhenEnqueued` as soon as the
+    queue takes it, its work going on; with `cp::Done::WhenIdle` once no
+    command that reached the queue is left unfinished.
+  - `in.done_after(cycles)`: for an instruction that has no queue (default 1).
 - State and values
-  - `at_issue([&] { ... })`: changes unit state. Runs on gem5 **and** Spike.
-  - `at_issue([&](const Host &h) { ... })`: changes values. **Spike only.**
-  - the value functions given to `send(pipe, n, [weight,] value_of)`,
-    `receive(pipe, n, take)` and `transfer(n, beat)`: **Spike only**.
-  - `when_received(fn(host))`: as the last receive ends. **Spike only.**
-  - `when_done(fn(host))`: as the instruction is done. **Spike only.**
-  - `when_stuck(fn(got))`: the reason Spike prints when the instruction waits
-    and nothing in its unit moves any more. `got` is the rows its waiting
-    receive has.
+  - `in.on_issue([&] { ... })` changes component state, on gem5 **and**
+    Spike; `in.on_issue([&](const cp::Host &h) { ... })` changes values,
+    **Spike only**.
+  - **Spike only**: the value functions given to `send(pipe, n, [weight,]
+    value_of)`, `receive(pipe, n, take)` and `transfer(n, beat)`;
+    `in.on_received(fn(host))`, as the last receive ends; `in.on_done(fn(host))`,
+    as the instruction is done.
+  - `in.on_stuck(fn(got))`: the reason Spike prints when the instruction waits
+    and nothing in its component moves any more. `got` is the rows its
+    waiting receive has.
 
-A route has at most 12 steps. The functions given to a route outlive its
-declaration: capture the route and the unit by reference, the rest by value.
+`in.insn()`, `in.vl()`, `in.arg()`, `in.name()` (its encoding's), `in.rd()`,
+`in.rs1()`, `in.rs2()` and `in.sew_bits()` read the instruction. It has at most 12 steps. The functions
+given to it outlive its handler: capture the `Instr` and the component by
+reference, the rest by value.
 
-### Machine
+### The smallest coprocessor: copier
+
+[`examples/copier/copier.cc`](examples/copier/copier.cc) is a whole
+coprocessor in 68 lines: the timing of the RTL copier in
+[`examples/rtl/copier`](examples/rtl/copier). Copy it to start a new one.
 
 ```cpp
-class Model final : public vcix_uarch::Machine<Copier> {          // Machine<Unit, Unit, ...>
+// examples/copier/copier.cc:13-22: three encodings on custom-2, funct3 4, each with its handler
+static constexpr cp::Encoding COPY_SOURCE{0x0600405B, FORM, "copy source"};
+static constexpr cp::Encoding COPY{0x0A00405B, FORM, "copy"};
+static constexpr cp::Encoding COPY_WAIT{0x0E00405B, FORM, "copy wait"};
+
+explicit Copier(cp::Coprocessor &cp) : Component(cp, "COPIER") {
+  handle(COPY_SOURCE, &Copier::set_source);
+  handle(COPY, &Copier::copy);
+  handle(COPY_WAIT, &Copier::wait);
+}
+void configure(const cp::Config &) override { commands_.configure(4, cp::Free::WHEN_STARTED); }
+
+// :26-30: x[rs1] is the source of the copies after it
+void set_source(cp::Instr &in) {
+  in.use(issue_);
+  in.on_issue([&](const cp::Host &host) { source_.write() = host.xreg(in.rs1()); });
+  in.enqueue(commands_, cp::Done::WhenEnqueued);
+}
+// :32-46: 256 bytes; 2 * 256 / 8 = 64 requests at the head, one a cycle through memory_
+void copy(cp::Instr &in) {
+  in.use(issue_);
+  in.on_issue([&](const cp::Host &host) { /* :35-42: read and write BYTES, 8 at a time, through host */ });
+  in.enqueue(commands_, cp::Done::WhenEnqueued);
+  in.transfer(2 * BYTES / 8, cp::Through(memory_));
+}
+// :47-50: wait, the same with cp::Done::WhenIdle: done once the queue has finished everything
+
+// :58-64: the model, a coprocessor of one component
+class CopierCP final : public cp::Coprocessor {
  public:
-  Model() : Machine("COPIER") {}                                  // each unit's name in the statistics
   const char *name() const override { return "copier"; }
+
+ private:
+  Copier copier_{*this};
 };
-VCIX_ACCEL_REGISTER(Model)
 ```
 
-`Machine<Units...>` is the `Model`
-([`vcix_uarch.hpp:772-1087`](include/vcix_uarch.hpp)). `owns()` is every
-unit's `INSTRUCTIONS`, in unit order. An instruction goes to the first unit
-that owns it. `configure`, `tick`, `reset` and `ports` go to every unit in
+`cp::Coprocessor` is the `Model`
+([`vcix_cp.hpp:835-1085`](include/vcix_cp.hpp)). `owns()` is every
+component's encodings, in declaration order and then in the order its
+constructor handled them. An instruction goes to the first component that
+owns it. `configure`, `tick`, `reset` and `ports` go to every component in
 order. `can_accept`, `issue`, `ready` and Spike's `execute` come from the
-routes. Squash and the commit counts come from the wrapper, as for any model.
+handlers. Squash and the commit counts come from the wrapper, as for any
+model. `can_accept` runs the handler each time gem5 asks, and `issue` runs it
+once more. So a handler must change nothing itself: state changes go in
+`on_issue`.
 
-`can_accept` runs the route function each time gem5 asks, and `issue` runs it
-once more. So a route function must change nothing itself: state changes go
-in `at_issue`.
-
-### The smallest unit: copier
-
-[`examples/copier/copier.cc`](examples/copier/copier.cc) is a whole unit in 67
-lines: the timing of the RTL copier in [`examples/rtl/copier`](examples/rtl/copier).
-Copy it to start a new unit.
-
-```cpp
-// examples/copier/copier.cc:14-22: two ports, a queue of four, one register
-explicit Copier(const char *name)
-    : issue_{name, "issue", "instructions", 1, vcix_uarch::PRIMARY}, memory_{name, "memory", "requests", 1} {}
-void configure(const vcix_uarch::Config &) { commands_.configure(4, vcix_uarch::Free::WHEN_STARTED); }
-template <class H>
-void hardware(H &&h) {
-  h.port(issue_), h.port(memory_);
-  h.queue(commands_);
-  h.reg(source_);
-}
-
-// :25-28: x[rs1] is the source of the copies after it
-void set_source(Route &r) {
-  r.use(issue_).enqueue(commands_).done_when_enqueued();
-  r.at_issue([&](const Host &host) { source_.write() = host.xreg(vcix_accel::rs1(r.insn())); });
-}
-// :30-42: 256 bytes; 2 * 256 / 8 = 64 requests at the head, one a cycle through memory_
-void copy(Route &r) {
-  r.use(issue_).enqueue(commands_).done_when_enqueued().transfer(2 * BYTES / 8).through(memory_);
-  r.at_issue([&](const Host &host) { /* read and write BYTES, 8 at a time, through host */ });
-}
-// :43: done once the queue has finished everything
-void wait(Route &r) { r.use(issue_).enqueue(commands_).done_when_idle(); }
-
-// :46-51: three encodings on custom-2, funct3 4
-static constexpr vcix_uarch::Instruction<Copier> INSTRUCTIONS[] = {
-    {0x0600405B, FORM, "copy source", &Copier::set_source},
-    {0x0A00405B, FORM, "copy", &Copier::copy},
-    {0x0E00405B, FORM, "copy wait", &Copier::wait},
-};
-```
-
-What the routes give, with no simulator (`timing_probe` ticks the model until
-each instruction is ready, then issues the next):
+What the handlers give, with no simulator (`timing_probe` ticks the model
+until each instruction is ready, then issues the next):
 
 ```
 $ build/timing_probe build/libcopier.so 0a00405b 6        six copies
@@ -818,8 +822,8 @@ insn 0: issued at 0, committed at 2
 insn 1: issued at 2, committed at 4
 ```
 
-- A copy is done as soon as the queue takes it (`done_when_enqueued`), one a
-  cycle.
+- A copy is done as soon as the queue takes it (`cp::Done::WhenEnqueued`),
+  one a cycle.
 - The queue has four slots, but five copies get in: the head gave its slot
   back as it started (`Free::WHEN_STARTED`).
 - The sixth waits for a free slot. That comes at 67, after the head's 64
@@ -840,7 +844,7 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy             1   # ins
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy_wait        1   # instructions counted (Count)
 ```
 
-The unit is `COPIER` (the name `Machine` gave it), counted at its `PRIMARY`
+The component is `COPIER` (the name its constructor gives), counted at its `PRIMARY`
 port `issue`. An encoding's name becomes a statistic with every character
 outside `[A-Za-z0-9_]` turned into `_` ("copy source" is `copy_source`).
 `cycles` is the ticks: here the whole run, which exited at cycle 149776.
@@ -853,12 +857,12 @@ is the entry of; the copier has none.
 
 The EUP of the tpu model's special-function unit is one pipeline of
 `tpu_sfu_latency_cycles` (10) stages
-([`examples/tpu/sfu.hpp:33,42-65`](examples/tpu/sfu.hpp)). `sfu_push` sends
+([`examples/tpu/sfu.hpp:54,67-92`](examples/tpu/sfu.hpp)). `sfu_push` sends
 its register in; `sfu_pop` receives one register back:
 
 ```cpp
-r.use(entry_).send(eup_, registers(r), value_of);   // push: done once sent
-r.use(entry_).receive(eup_, registers(r), take);    // pop: exactly that many rows out
+in.send(eup_, registers(in), ...);      // push: done once sent
+in.receive(eup_, registers(in), ...);   // pop: exactly that many rows out
 ```
 
 A push, then the pop that takes it, on gem5 with `tpu_trace: 1`:
@@ -886,22 +890,23 @@ are in [tpu: keys](examples/tpu/README.md#keys-read-from-the-machine-description
 
 ### Spike runs one instruction at a time
 
-Spike has no clock of its own for the unit. `Machine::execute` keeps one per
-instance and moves it only inside `execute`
-([`vcix_uarch.hpp:787-1033`](include/vcix_uarch.hpp)):
+Spike has no clock of its own for the coprocessor. `Coprocessor::execute`
+keeps one per instance and moves it only inside `execute`
+([`vcix_cp.hpp:850-1037`](include/vcix_cp.hpp)):
 
-1. While the route does not fit, tick the unit one cycle.
-2. Issue the route, with the functions that carry its values.
+1. While the instruction does not fit, tick the coprocessor one cycle.
+2. Issue the instruction, with the functions that carry its values.
 3. Tick until it is done: its latency, or until it is ready and out of the
    queue.
-4. Run its `when_done` functions and commit it.
+4. Run its `on_done` functions and commit it.
 
-Between instructions the unit stands still. So on Spike an instruction that
-waits for something no instruction before it will ever make can never end.
-Spike sees this: a cycle in which nothing in the unit moves, no command is
-still on its way and the instruction is still waiting looks the same as every
-cycle after it. Then the run ends, with the route's `when_stuck` or `require`
-reason first, if it gave one. gem5 runs the same program into its limit.
+Between instructions the coprocessor stands still. So on Spike an instruction
+that waits for something no instruction before it will ever make can never
+end. Spike sees this: a cycle in which nothing in the component moves, no
+command is still on its way and the instruction is still waiting looks the
+same as every cycle after it. Then the run ends, with the handler's
+`on_stuck` or `require` reason first, if it gave one. gem5 runs the same
+program into its limit.
 
 An `sfu_pop` with nothing pushed (`sf.vc.v.x 0x3, 0x0, v3, a0`, `0x0c0541db`):
 
@@ -912,8 +917,8 @@ gem5:            gem5_se.py: the simulation did not end with the program exiting
 ```
 
 An `sfu_push` of 16-bit elements (`sf.vc.vv 0x3, 0x0, v2, v1` under `e16`,
-`0x2e20805b`), which its route refuses with
-`r.require(sew == 32, [sew] { fail("sfu_push: an element of %u bits is not supported", sew); })`:
+`0x2e20805b`), which its handler refuses with
+`in.require(sew == 32, [sew] { fail("sfu_push: an element of %u bits is not supported", sew); })`:
 
 ```
 Spike (exit 1):  tpu: sfu_push: an element of 16 bits is not supported
@@ -923,9 +928,9 @@ gem5:            gem5_se.py: the simulation did not end with the program exiting
 
 On gem5 neither instruction is ever issued: there is no `[tpu] issue` line.
 `tpu::fail` prints `tpu: ` and the reason and exits 1
-([`examples/tpu/values.hpp:17-26`](examples/tpu/values.hpp)). A route with no
-reason ends with `vcix_uarch`'s own message,
-`vcix_uarch: <name> waits, and nothing in its unit moves any more: on Spike,
+([`examples/tpu/values.hpp:17-26`](examples/tpu/values.hpp)). A handler with no
+reason ends with `vcix_cp`'s own message,
+`vcix_cp: <name> waits, and nothing in its unit moves any more: on Spike,
 which runs each instruction to its end before the next, it never ends`
 (asserted for `vmatprep` in
 [`tests/tpuv6e/functional/run.sh:58-59`](tests/tpuv6e/functional/run.sh)).
@@ -936,10 +941,10 @@ which runs each instruction to its end before the next, it never ends`
    stuck may depend on the instruction, the ports' room, the queues and
    pipelines, and `Register`s. Never on register or memory values: gem5 has
    none. When a decision needs a fact, keep the fact in a `Register` and set
-   it in `at_issue([&] { ... })`.
-2. **Touch values only in functions that take a `Host`.** `at_issue(host)`,
-   the `send`/`receive`/`transfer` value functions, `when_received` and
-   `when_done`. gem5 never calls them.
+   it in `on_issue([&] { ... })`.
+2. **Touch values only in functions that take a `Host`.** `on_issue(host)`,
+   the `send`/`receive`/`transfer` value functions, `on_received` and
+   `on_done`. gem5 never calls them.
 3. **Refuse a bad program with `require(holds, never)`.** gem5 then never
    accepts the instruction, and Spike ends the run at the same instruction with
    the reason, as the `sfu_push` above shows.
@@ -981,7 +986,7 @@ gem5_run build/m5-pp build/libtpu.so build/tpu-trace.yml build/push_pop --max-ti
 
 ## A unit that is RTL
 
-A unit that exists as RTL needs no route. `examples/rtl/rtl_model.hpp` wraps one
+A unit that exists as RTL needs no handlers. `examples/rtl/rtl_model.hpp` wraps one
 Verilated module with standard ports (command, in and out beats, memory,
 `busy`), and the model is a table of the encodings it owns. gem5 clocks the
 module once a cycle for the timing. Spike clocks it only while an instruction
@@ -1076,14 +1081,14 @@ Not goals:
 include/vcix_accel.h      the C ABI: vcix_model, vcix_insn, vcix_config, vcix_host,
                           vcix_encoding, vcix_stat
 include/vcix_accel.hpp    the C++ wrapper: Model, Config, Host, Port, VCIX_ACCEL_REGISTER
-include/vcix_uarch.hpp    units as hardware blocks (Port, Pipeline, CommandQueue, Register)
-                          and a route per instruction; Machine derives the Model
+include/vcix_cp.hpp       cp::Coprocessor, a Model of components: their blocks (Port,
+                          Pipeline, CmdQueue, Register) and a handler per encoding
 adapters/spike/           what the Spike branch does; its code is in the Spike repository
 adapters/gem5/            what the gem5 branch does; its code is in the gem5 repository
 examples/print_args/      the first example: a model, a program, a machine description,
                           and a script that runs both simulators
-examples/copier/          the RTL copier's timing as one vcix_uarch unit (libcopier.so)
-examples/tpu/             libtpu.so: five vcix_uarch units (special functions, one-cycle
+examples/copier/          the RTL copier's timing as one vcix_cp component (libcopier.so)
+examples/tpu/             libtpu.so: five vcix_cp components (special functions, one-cycle
                           and DMA instructions, systolic array, cross-lane unit,
                           multi-precision array); also the matrix unit the next two use
 examples/tpu/gem5/        the gem5 machine the tpu example is measured on: PyTorchSim's

@@ -361,8 +361,8 @@ spike_run build/libprint_args.so examples/print_args/machine.yml build/lanes --k
 ## 7. Timing on Spike
 
 The Spike adapter never calls the timing face. A model built from
-`vcix_uarch` still has a clock: its `execute` runs the instruction through its
-own units and ticks until the instruction is done. That is the model's code,
+`vcix_cp` still has a clock: its `execute` runs the instruction through its
+own components and ticks until the instruction is done. That is the model's code,
 not the adapter's; the [root README](../../README.md) shows it, and what
 happens when an instruction can never finish.
 

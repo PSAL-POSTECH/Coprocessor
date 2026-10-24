@@ -1,24 +1,24 @@
-// vcix_uarch: a unit lists its hardware blocks (ports, pipelines, a command queue, registers) and, per instruction,
-// the route it takes through them. Machine reads one route as gem5's can_accept and issue; Spike issues it the same way
-// and ticks the same cycles, the same state carrying values where gem5's carries none. Moves are seen next cycle.
-#ifndef VCIX_UARCH_HPP
-#define VCIX_UARCH_HPP
+// vcix_cp: a model derives from cp::Coprocessor and holds its components as members; a component holds its blocks
+// (ports, pipelines, a command queue, registers) and, per encoding, a handler that declares the instruction's steps.
+// gem5's can_accept and issue read those steps; Spike issues them the same way and ticks the same cycles.
+#ifndef VCIX_CP_HPP
+#define VCIX_CP_HPP
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <functional>
 #include <memory>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "vcix_accel.hpp"
 
-namespace vcix_uarch {
+namespace cp {
 
 using vcix_accel::Config;
 using vcix_accel::Cycle;
@@ -26,20 +26,107 @@ using vcix_accel::Encoding;
 using vcix_accel::Host;
 using vcix_accel::Id;
 using vcix_accel::Insn;
-using Port = vcix_accel::Port;
-constexpr Port::Role PRIMARY = Port::PRIMARY;
 constexpr uint64_t UNLIMITED = UINT64_MAX;
+constexpr uint32_t MAX_STEPS = 12;
 
 // When a pipeline holds still: as soon as an output queue is full, or only when the entry leaving does not fit.
 enum class Stall { WHEN_OUTPUT_FULL, WHEN_HEAD_BLOCKED };
 // When a command gives back its queue slot: once its work is done, or as the head starts it (a cycle of its own).
 enum class Free { WHEN_DONE, WHEN_STARTED };
+// When an enqueued instruction is done: once its work is, as soon as the queue takes it, or once no command is left.
+enum class Done { WhenFinished, WhenEnqueued, WhenIdle };
 
-// Unit state: get() reads it, write() changes it, reset puts back what configure gave. Spike's values keep theirs in
-// program order; gem5's copies share it until one writes.
-template <class S>
-class Register {
+class Coprocessor;
+class Instr;
+class Port;
+class AnyPipeline;
+class CmdQueue;
+class AnyRegister;
+
+// A coprocessor's part, registered with it as it is made, as its blocks are with it: each by its byte offset, so a
+// copy reaches its own. A component lies inside its coprocessor object, a block inside its component's (a member, or
+// in-object storage such as std::optional); the offsets, copied as they are, are shared by copies.
+class Component {
  public:
+  Component(Coprocessor &cp, const char *name);
+  virtual ~Component() = default;
+  virtual void configure(const Config &) {}
+  const char *name() const { return name_; }
+
+ protected:
+  // In the constructor: `fn` declares the steps of an instruction of `encoding`; `arg` tells a family's members apart.
+  template <class D>
+  void handle(const Encoding &encoding, void (D::*fn)(Instr &), uint32_t arg = 0) {
+    layout().handlers.push_back({encoding, static_cast<void (Component::*)(Instr &)>(fn), arg});
+  }
+
+ private:
+  friend class Coprocessor;
+  friend class Instr;
+  friend class Port;
+  friend class AnyPipeline;
+  friend class CmdQueue;
+  friend class AnyRegister;
+  struct Handler {
+    Encoding encoding;
+    void (Component::*fn)(Instr &);
+    uint32_t arg;
+  };
+  struct Layout {
+    std::vector<Handler> handlers;
+    std::vector<ptrdiff_t> ports, pipelines, queues, registers;
+  };
+  Layout &layout() {
+    if (layout_.use_count() > 1) layout_ = std::make_shared<Layout>(*layout_);
+    return *layout_;
+  }
+  ptrdiff_t offset_of(const void *block) const {
+    return static_cast<const char *>(block) - reinterpret_cast<const char *>(this);
+  }
+  template <class B>
+  B &block(ptrdiff_t offset) const {
+    return *reinterpret_cast<B *>(const_cast<char *>(reinterpret_cast<const char *>(this)) + offset);
+  }
+  template <class B, class F>
+  void each(const std::vector<ptrdiff_t> &blocks, F &&f) const {
+    for (ptrdiff_t at : blocks) f(block<B>(at));
+  }
+  Port &port(int32_t i) const { return block<Port>(layout_->ports[i]); }
+  AnyPipeline &pipeline(int32_t i) const { return block<AnyPipeline>(layout_->pipelines[i]); }
+  const Handler *owner(const Insn &insn) const {
+    for (const Handler &h : layout_->handlers)
+      if ((insn.bits & h.encoding.mask) == h.encoding.match) return &h;
+    return nullptr;
+  }
+
+  const char *name_;
+  std::shared_ptr<Layout> layout_ = std::make_shared<Layout>();
+};
+
+// A vcix_accel::Port of its component, which reports it under the component's name.
+class Port : public vcix_accel::Port {
+ public:
+  Port(Component &c, const char *name, const char *unit_of_work, uint64_t capacity_per_cycle, Role role = REPORTING)
+      : vcix_accel::Port(c.name(), name, unit_of_work, capacity_per_cycle, role) {
+    c.layout().ports.push_back(c.offset_of(this));
+  }
+};
+
+// What reset() needs of a register, whatever it holds.
+class AnyRegister {
+ public:
+  virtual void reset() = 0;
+
+ protected:
+  explicit AnyRegister(Component &c) { c.layout().registers.push_back(c.offset_of(this)); }
+};
+
+// Component state: get() reads it, write() changes it, reset puts back what configure gave. Spike's values keep theirs
+// in program order; gem5's copies share it until one writes.
+template <class S>
+class Register : public AnyRegister {
+ public:
+  explicit Register(Component &c) : AnyRegister(c) {}
   void configure(S at_reset) { p_ = reset_ = std::make_shared<S>(std::move(at_reset)); }
   const S &get() const { return p_ ? *p_ : none(); }
   // What get() reads now, kept as it is when the register is written later.
@@ -49,7 +136,7 @@ class Register {
     else if (p_.use_count() > 1) p_ = std::make_shared<S>(*p_);
     return *p_;
   }
-  void reset() { p_ = reset_; }
+  void reset() override { p_ = reset_; }
 
  private:
   static const S &none() {
@@ -58,11 +145,6 @@ class Register {
   }
   std::shared_ptr<S> p_, reset_;
 };
-
-class Route;
-template <class... U>
-class Machine;
-constexpr uint32_t MAX_STEPS = 12;
 
 // Entries in order, held as runs: a run is `count` entries of `weight` rows, the i-th tagged tag + i if it steps, else
 // tag. On Spike each row of an entry also has its value; gem5's never do. The first runs sit inline; the rest and the
@@ -170,7 +252,7 @@ class Slots {
  private:
   static constexpr uint32_t FEW = 3;
   [[noreturn]] static void too_many(uint64_t count, uint32_t weight) {
-    std::fprintf(stderr, "vcix_uarch: %llu entries of %u rows: a pipeline holds at most 2^32 - 1 entries of 65535\n",
+    std::fprintf(stderr, "vcix_cp: %llu entries of %u rows: a pipeline holds at most 2^32 - 1 entries of 65535\n",
                  static_cast<unsigned long long>(count), weight);
     std::abort();
   }
@@ -272,7 +354,7 @@ class AnyPipeline {
  public:
   void configure(uint64_t stages, uint64_t depth, Stall stall, uint32_t outputs = 1) {
     if (!stages || stages > UINT32_MAX || !depth || outputs < 1 || outputs > 2) {
-      std::fprintf(stderr, "vcix_uarch: a pipeline of %llu stages, %llu deep, %u outputs\n",
+      std::fprintf(stderr, "vcix_cp: a pipeline of %llu stages, %llu deep, %u outputs\n",
                    static_cast<unsigned long long>(stages), static_cast<unsigned long long>(depth), outputs);
       std::abort();
     }
@@ -288,19 +370,23 @@ class AnyPipeline {
   }
 
  protected:
-  friend class Route;
-  template <class...>
-  friend class Machine;
-  AnyPipeline() = default;
+  friend class Instr;
+  friend class Coprocessor;
+  // `entry` admits the entries that enter the stages; it is kept, as the pipeline is, as an offset.
+  AnyPipeline(Component &c, Port &entry) : entry_(reinterpret_cast<char *>(&entry) - reinterpret_cast<char *>(this)) {
+    c.layout().pipelines.push_back(c.offset_of(this));
+  }
+  virtual void stages(Component &) {}
+  Port &entry() { return *reinterpret_cast<Port *>(reinterpret_cast<char *>(this) + entry_); }
   uint64_t input_room() const { return depth_ - input_.rows(); }
-  // The tag of an input queue's run (seen, or arrived this cycle) and of an output queue's (seen, or taken this cycle).
   static constexpr uint32_t SEEN = 0, ARRIVED = 1, TAKEN = 1;
   uint64_t out(uint32_t output) const { return out_[output].rows(SEEN); }
   void arrive(uint64_t entries, uint32_t weight) { input_.push(entries, weight, ARRIVED); }
   void take_rows(uint64_t rows, uint32_t output) { out_[output].tag_front(rows, TAKEN); }
   // One cycle of the stages; false when they hold still. An entry in the stages is tagged with the move it entered at
   // (mod 2^32); it leaves `stages` moves later.
-  bool advance(Cycle now, Port &entry) {
+  bool advance(Cycle now) {
+    Port &entry = this->entry();
     const uint32_t leaving = !line_.empty() && moves_ - line_.front().tag == stages_ ? line_.front().weight : 0;
     for (uint32_t q = 0; q < outputs_; q++)
       if (stall_ == Stall::WHEN_OUTPUT_FULL ? out_[q].rows() == depth_ : leaving > depth_ - out_[q].rows())
@@ -323,36 +409,42 @@ class AnyPipeline {
     for (uint32_t q = 0; q < outputs_; q++)
       if (!out_[q].empty() && out_[q].front().tag == TAKEN) out_[q].pop(out_[q].rows(TAKEN));
   }
+  ptrdiff_t entry_;
   uint64_t depth_ = 1;
   uint32_t stages_ = 1, outputs_ = 1, moves_ = 0;
   Stall stall_ = Stall::WHEN_OUTPUT_FULL;
   Slots input_, line_, out_[2];
 };
 
-// A pipeline whose rows carry values of type T on Spike.
+// A pipeline whose rows carry values of type T on Spike; with `stage`, the component's stage(value, k) works on each
+// row in each stage k it reaches, stage 0 the one it entered this cycle.
 template <class T = char>
 class Pipeline : public AnyPipeline {
+ public:
+  Pipeline(Component &c, Port &entry) : AnyPipeline(c, entry) {}
+  template <class D>
+  Pipeline(Component &c, Port &entry, void (D::*stage)(T &, uint32_t))
+      : AnyPipeline(c, entry), stage_(static_cast<void (Component::*)(T &, uint32_t)>(stage)) {}
+
  private:
-  friend class Route;
-  template <class...>
-  friend class Machine;
-  // Row `row` of the input queue, as it arrives; row `row` of an output queue, as it is taken.
+  friend class Instr;
+  friend class Coprocessor;
   void arrived(uint64_t row, T value) { input_.value<T>(row) = std::move(value); }
   T taken(uint32_t output, uint64_t row) { return std::move(out_[output].value<T>(row)); }
-  // f(value, stage) for each row in the stages, stage 0 the one it entered this cycle.
-  template <class F>
-  void each_stage(F &&f) {
-    if (line_.valued())
+  void stages(Component &c) override {
+    if (stage_ && line_.valued())
       line_.each([&](uint64_t row, uint32_t rows, uint32_t tag) {
-        for (uint32_t k = 0; k < rows; k++) f(line_.value<T>(row + k), moves_ - 1 - tag);
+        for (uint32_t k = 0; k < rows; k++) (c.*stage_)(line_.value<T>(row + k), moves_ - 1 - tag);
       });
   }
+  void (Component::*stage_)(T &, uint32_t) = nullptr;
 };
 
 // Issued instructions in program order; only the head works. Depth 0: no queue, every step at issue. A command
 // arrives `arrival_cycles` after its issue and works from the cycle after; `free` says when its slot is given back.
-class CommandQueue {
+class CmdQueue {
  public:
+  explicit CmdQueue(Component &c) { c.layout().queues.push_back(c.offset_of(this)); }
   void configure(uint32_t depth, Free free = Free::WHEN_DONE, uint32_t arrival_cycles = 1) {
     depth_ = depth, free_ = free, arrival_ = arrival_cycles;
     reset();
@@ -361,10 +453,9 @@ class CommandQueue {
   bool idle() const { return list_.empty(); }
 
  private:
-  friend class Route;
-  template <class...>
-  friend class Machine;
-  // A step after enqueue() as issue recorded it, its blocks named by their place in the unit's hardware() (-1: none).
+  friend class Instr;
+  friend class Coprocessor;
+  // A step after enqueue() as issue recorded it, its blocks named by their place in the component's (-1: none).
   struct Move {
     uint32_t kind;
     uint64_t n;
@@ -372,28 +463,15 @@ class CommandQueue {
     bool received;
     int32_t through, pipe, guard;
   };
-  // `values`: the route Spike issued it from, alive until the command is done, which gives its moves their values.
+  // `values`: the instruction Spike issued it from, alive until the command is done, which gives its moves their values.
   struct Command {
     Id id;
     Cycle arrives;
     uint32_t step = 0, count = 0;
     uint64_t done = 0;
     bool when_enqueued = false, when_idle = false, holds_slot = true, started = false;
-    Route *values = nullptr;
+    Instr *values = nullptr;
     Move moves[MAX_STEPS];
-  };
-  // The ports and pipelines of the unit the queue belongs to, in hardware() order. A copy lists none until asked, so
-  // a copy never reaches into the blocks of the unit it was copied from.
-  struct Blocks {
-    Blocks() = default;
-    Blocks(const Blocks &) {}
-    Blocks &operator=(const Blocks &) {
-      ports.clear(), pipelines.clear(), listed = false;
-      return *this;
-    }
-    bool listed = false;
-    std::vector<Port *> ports;
-    std::vector<AnyPipeline *> pipelines;
   };
   void reset() {
     list_.clear();
@@ -416,161 +494,157 @@ class CommandQueue {
   Free free_ = Free::WHEN_DONE;
   std::deque<Command> list_;
   std::vector<Id> waiters_;
-  Blocks blocks_;
 };
 
-// The route one instruction takes, which its unit's function declares step by step. Steps before enqueue() happen in
-// the issue cycle, all or nothing; steps after it at the queue head, in order, as much a cycle as the ports allow.
-class Route {
+// The step before: its n (sent, received or transferred) pass this port, at most its width a cycle; at issue the
+// whole n must fit this cycle.
+struct Through {
+  explicit Through(Port &p) : port(p) {}
+  Port &port;
+};
+// As Through, counting at most what is out: the same once the receive can issue, but a stuck receive of more than
+// the port's width still gets its on_stuck() reason on Spike.
+struct ThroughReceived {
+  explicit ThroughReceived(Port &p) : port(p) {}
+  Port &port;
+};
+// Which output queue a receive reads: 0 or 1.
+struct Output {
+  explicit Output(uint32_t k) : output(k) {}
+  uint32_t output;
+};
+
+// The steps one instruction takes, which its handler declares one a statement. Steps before enqueue() happen in the
+// issue cycle, all or nothing; steps after it at the queue head, in order, as much a cycle as the ports allow. The
+// handler runs to check and to issue, maybe more than once: only what on_issue() is given changes state.
+class Instr {
+  template <class M>
+  static constexpr bool modifier = std::is_same_v<M, Through> || std::is_same_v<M, ThroughReceived> || std::is_same_v<M, Output>;
+  template <class... M>
+  using Modifiers = std::enable_if_t<(modifier<M> && ...), int>;
+  template <class T, class F>
+  using Sent = std::enable_if_t<std::is_invocable_r_v<T, F &, const Host &, uint64_t>, int>;
+
  public:
   const Insn &insn() const { return insn_; }
   uint32_t vl() const { return insn_.vl; }
-  uint32_t arg() const { return arg_; }
+  uint32_t arg() const { return handler_.arg; }
+  const char *name() const { return handler_.encoding.name; }
+  uint32_t rd() const { return vcix_accel::rd(insn_); }
+  uint32_t rs1() const { return vcix_accel::rs1(insn_); }
+  uint32_t rs2() const { return vcix_accel::rs2(insn_); }
+  uint32_t sew_bits() const { return insn_.sew_bits; }
 
-  // The unit never takes the instruction while `holds` is false; returns it.
+  // The component never takes the instruction while `holds` is false; returns it.
   bool require(bool holds) {
     add(REQUIRE).holds = holds;
-    if (!holds) when_stuck([](uint64_t) {});
+    if (!holds) on_stuck([](uint64_t) {});
     return holds;
   }
-  // As require(holds), with never() as the reason when_stuck() gives.
+  // As require(holds), with never() as the reason on_stuck() gives.
   template <class F>
   bool require(bool holds, F never) {
-    if (!holds) when_stuck([never](uint64_t) { never(); });
+    if (!holds) on_stuck([never](uint64_t) { never(); });
     return require(holds);
   }
-  // On Spike, once the instruction waits and nothing in its unit moves, never(got) may say why and end the run; got:
-  // the rows its waiting receive has. The first reason, or failing require(), decides; capture by value.
+  // On Spike, once the instruction waits and nothing in its component moves, never(got) may say why and end the run;
+  // got: the rows its waiting receive has. The first reason, or failing require(), decides; capture by value.
   template <class F>
-  Route &when_stuck(F never) {
+  void on_stuck(F never) {
     if (host_ && !stuck_) stuck_ = std::move(never);
-    return *this;
   }
   // n of the port's room this cycle.
-  Route &use(Port &port, uint64_t n = 1) {
+  void use(Port &port, uint64_t n = 1) {
     Step &s = add(USE);
     s.port = &port, s.n = n;
-    return *this;
   }
-  Route &enqueue(CommandQueue &q) {
+  void enqueue(CmdQueue &q, Done done = Done::WhenFinished) {
     add(ENQUEUE).queue = &q;
-    return *this;
+    when_enqueued_ = done == Done::WhenEnqueued, when_idle_ = done == Done::WhenIdle;
   }
   // n entries of `weight` elements into the pipeline's input queue.
-  template <class T>
-  Route &send(Pipeline<T> &p, uint64_t n, uint32_t weight = 1) {
+  template <class T, class... M, Modifiers<M...> = 0>
+  void send(Pipeline<T> &p, uint64_t n, M... m) {
+    send(p, n, 1, m...);
+  }
+  template <class T, class... M, Modifiers<M...> = 0>
+  void send(Pipeline<T> &p, uint64_t n, uint32_t weight, M... m) {
     Step &s = add(SEND);
     s.pipe = &p, s.n = n, s.weight = weight;
-    return *this;
-  }
-  // Exactly n of an output queue.
-  template <class T>
-  Route &receive(Pipeline<T> &p, uint64_t n) {
-    Step &s = add(RECEIVE);
-    s.pipe = &p, s.n = n;
-    return *this;
-  }
-  // n beats into the unit's own registers or through a port, not into a pipeline.
-  Route &transfer(uint64_t n) {
-    add(TRANSFER).n = n;
-    return *this;
+    (modify(m), ...);
   }
   // As send, with values (Spike): value_of(host, j) -> T is row j's, the entries' rows in order, made as its entry
-  // enters the input queue. The functions given to a route outlive its declaration: capture the route and the unit by
-  // reference, the rest by value.
-  template <class T, class F, std::enable_if_t<std::is_invocable_r_v<T, F &, const Host &, uint64_t>, int> = 0>
-  Route &send(Pipeline<T> &p, uint64_t n, uint32_t weight, F value_of) {
-    send(p, n, weight);
-    return on_moves([&p, weight, value_of](const Host &host, uint64_t i, uint64_t row, uint32_t) mutable {
+  // enters the input queue. The functions given to an instruction outlive its handler: capture the Instr and the
+  // component by reference, the rest by value.
+  template <class T, class F, class... M, Sent<T, F> = 0, Modifiers<M...> = 0>
+  void send(Pipeline<T> &p, uint64_t n, uint32_t weight, F value_of, M... m) {
+    send(p, n, weight, m...);
+    on_moves([&p, weight, value_of](const Host &host, uint64_t i, uint64_t row, uint32_t) mutable {
       for (uint32_t k = 0; k < weight; k++) p.arrived(row + k, value_of(host, i * weight + k));
     });
   }
-  template <class T, class F, std::enable_if_t<std::is_invocable_r_v<T, F &, const Host &, uint64_t>, int> = 0>
-  Route &send(Pipeline<T> &p, uint64_t n, F value_of) {
-    return send(p, n, 1, std::move(value_of));
+  template <class T, class F, class... M, Sent<T, F> = 0, Modifiers<M...> = 0>
+  void send(Pipeline<T> &p, uint64_t n, F value_of, M... m) {
+    send(p, n, 1, std::move(value_of), m...);
+  }
+  // Exactly n of an output queue.
+  template <class T, class... M, Modifiers<M...> = 0>
+  void receive(Pipeline<T> &p, uint64_t n, M... m) {
+    Step &s = add(RECEIVE);
+    s.pipe = &p, s.n = n;
+    (modify(m), ...);
   }
   // As receive, with values (Spike): take(host, i, T &&) gets the i-th row as it is taken.
-  template <class T, class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t, T &&>, int> = 0>
-  Route &receive(Pipeline<T> &p, uint64_t n, F take) {
-    receive(p, n);
-    return on_moves([&p, take](const Host &host, uint64_t i, uint64_t row, uint32_t output) mutable {
+  template <class T, class F, class... M, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t, T &&>, int> = 0,
+            Modifiers<M...> = 0>
+  void receive(Pipeline<T> &p, uint64_t n, F take, M... m) {
+    receive(p, n, m...);
+    on_moves([&p, take](const Host &host, uint64_t i, uint64_t row, uint32_t output) mutable {
       take(host, i, p.taken(output, row));
     });
   }
+  // n beats into the component's own registers or through a port, not into a pipeline.
+  template <class... M, Modifiers<M...> = 0>
+  void transfer(uint64_t n, M... m) {
+    add(TRANSFER).n = n;
+    (modify(m), ...);
+  }
   // As transfer, with values (Spike): beat(host, i) as the i-th beat moves.
-  template <class F, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t>, int> = 0>
-  Route &transfer(uint64_t n, F beat) {
-    transfer(n);
-    return on_moves([beat](const Host &host, uint64_t i, uint64_t, uint32_t) mutable { beat(host, i); });
+  template <class F, class... M, std::enable_if_t<std::is_invocable_v<F &, const Host &, uint64_t>, int> = 0,
+            Modifiers<M...> = 0>
+  void transfer(uint64_t n, F beat, M... m) {
+    transfer(n, m...);
+    on_moves([beat](const Host &host, uint64_t i, uint64_t, uint32_t) mutable { beat(host, i); });
   }
   // received(host) as the last receive ends (Spike).
   template <class F>
-  Route &when_received(F received) {
+  void on_received(F received) {
     if (keeps_values() && count_) hooks_->received.push_back({count_ - 1, std::move(received)});
-    return *this;
-  }
-  // The last step's n (sent, received or transferred) pass this port, at most its width a cycle; at issue the whole n
-  // must fit this cycle.
-  Route &through(Port &port) {
-    last().through = &port;
-    return *this;
-  }
-  // As through(), counting at most what is out: the same once the receive can issue, but a stuck receive of more than
-  // the port's width still gets its when_stuck() reason on Spike.
-  Route &through_received(Port &port) {
-    through(port);
-    last().received = true;
-    return *this;
-  }
-  // Which output queue the last receive reads: 0 or 1.
-  Route &from_output(uint32_t output) {
-    last().output = output;
-    return *this;
   }
   // The next step moves nothing until the pipeline's input queue and stages are empty.
-  template <class T>
-  Route &wait_until_empty(Pipeline<T> &p) {
-    guard_ = &p;
-    return *this;
-  }
-  Route &done_after(Cycle cycles) {
-    latency_ = cycles;
-    return *this;
-  }
-  // Done once no command that reached the queue is left unfinished.
-  Route &done_when_idle() {
-    when_idle_ = true;
-    return *this;
-  }
-  // Done as soon as the queue takes it; its work goes on.
-  Route &done_when_enqueued() {
-    when_enqueued_ = true;
-    return *this;
-  }
-  // What the instruction changes as it is issued, before any of its moves: change() unit state, on gem5 and Spike;
-  // change(host) values, on Spike only.
+  void wait_empty(AnyPipeline &p) { guard_ = &p; }
+  void done_after(Cycle cycles) { latency_ = cycles; }
+  // What the instruction changes as it is issued, before any of its moves: change() component state, on gem5 and
+  // Spike; change(host) values, on Spike only.
   template <class F>
-  Route &at_issue(F &&change) {
+  void on_issue(F &&change) {
     if constexpr (std::is_invocable_v<F &, const Host &>) {
       if (keeps_values()) change(*host_);
     } else if (mode_ == ISSUE) {
       change();
     }
-    return *this;
   }
   // done(host) as the instruction is done (Spike).
   template <class F>
-  Route &when_done(F done) {
+  void on_done(F done) {
     if (keeps_values()) hooks_->done.push_back(std::move(done));
-    return *this;
   }
 
  private:
-  template <class...>
-  friend class Machine;
+  friend class Coprocessor;
   enum Mode { CHECK, ISSUE };
   enum Kind { REQUIRE, USE, ENQUEUE, SEND, RECEIVE, TRANSFER };
-  // Trivial, so the steps a route does not declare cost nothing; made() is a declared one.
+  // Trivial, so the steps an instruction does not declare cost nothing; made() is a declared one.
   struct Step {
     Kind kind;
     uint64_t n;
@@ -578,7 +652,7 @@ class Route {
     bool holds, received;
     Port *port, *through;
     AnyPipeline *pipe, *guard;
-    CommandQueue *queue;
+    CmdQueue *queue;
     static Step made(Kind k) {
       Step s{k, 0, 1, 0, true, false, nullptr, nullptr, nullptr, nullptr, nullptr};
       return s;
@@ -593,16 +667,17 @@ class Route {
     uint32_t at;
     std::function<void(const Host &)> done;
   };
-  // The functions Spike's issue of the route keeps for its values until it is done.
+  // The functions Spike's issue of the instruction keeps for its values until it is done.
   struct Hooks {
     std::vector<Move> moves;
     std::vector<Received> received;
     std::vector<std::function<void(const Host &)>> done;
   };
-  Route(Mode mode, const Insn &insn, uint32_t arg, const Host *host) : mode_(mode), insn_(insn), arg_(arg), host_(host) {}
+  Instr(Mode mode, const Insn &insn, const Component::Handler &handler, const Host *host, const Component &owner)
+      : mode_(mode), insn_(insn), handler_(handler), host_(host), owner_(owner) {}
   Step &add(Kind k) {
     if (count_ == MAX_STEPS) {
-      std::fprintf(stderr, "vcix_uarch: a route of more than %u steps\n", MAX_STEPS);
+      std::fprintf(stderr, "vcix_cp: an instruction of more than %u steps\n", MAX_STEPS);
       std::abort();
     }
     Step &s = steps_[count_++] = Step::made(k);
@@ -611,26 +686,23 @@ class Route {
     return s;
   }
   Step &last() { return steps_[count_ - 1]; }
-  CommandQueue *queue() const {
-    for (uint32_t i = 0; i < count_; i++)
-      if (steps_[i].kind == ENQUEUE && steps_[i].queue->depth_) return steps_[i].queue;
-    return nullptr;
-  }
-  template <class B>
-  static int32_t place(const std::vector<B *> &listed, const B *block) {
+  void modify(const Through &t) { last().through = &t.port; }
+  void modify(const ThroughReceived &t) { last().through = &t.port, last().received = true; }
+  void modify(const Output &o) { last().output = o.output; }
+  int32_t place(const std::vector<ptrdiff_t> &held, const void *block) const {
     if (!block) return -1;
-    for (size_t i = 0; i < listed.size(); i++)
-      if (listed[i] == block) return static_cast<int32_t>(i);
-    std::fprintf(stderr, "vcix_uarch: a step after enqueue() names a block its unit's hardware() does not list\n");
+    const auto at = std::find(held.begin(), held.end(), owner_.offset_of(block));
+    if (at != held.end()) return static_cast<int32_t>(at - held.begin());
+    std::fprintf(stderr, "vcix_cp: a step after enqueue() names a block its component does not hold\n");
     std::abort();
   }
-  static CommandQueue::Move record(const Step &s, const CommandQueue::Blocks &b) {
+  CmdQueue::Move record(const Step &s) const {
     if (s.kind == USE || s.kind == REQUIRE || s.kind == ENQUEUE) {
-      std::fprintf(stderr, "vcix_uarch: use(), require() and enqueue() come before enqueue()\n");
+      std::fprintf(stderr, "vcix_cp: use(), require() and enqueue() come before enqueue()\n");
       std::abort();
     }
-    return {s.kind, s.n, s.weight, s.output, s.received, place(b.ports, s.through), place(b.pipelines, s.pipe),
-            place(b.pipelines, s.guard)};
+    return {s.kind, s.n, s.weight, s.output, s.received, place(owner_.layout_->ports, s.through),
+            place(owner_.layout_->pipelines, s.pipe), place(owner_.layout_->pipelines, s.guard)};
   }
   uint32_t queued_from() const {
     for (uint32_t i = 0; i < count_; i++)
@@ -638,7 +710,7 @@ class Route {
     return count_;
   }
   static bool open(const Step &s) { return !s.guard || s.guard->drained(); }
-  // What a step's through() port counts: n, or for through_received() at most what is out.
+  // What a step's Through port counts: n, or for ThroughReceived at most what is out.
   static uint64_t moved_at_issue(const Step &s) {
     return s.kind == RECEIVE && s.received ? std::min(s.n, s.pipe->out(s.output)) : s.n;
   }
@@ -650,7 +722,7 @@ class Route {
   }
 
   // can_accept: every step before the queue holds now, and the queue has a slot. `settled`: requires aside, and a
-  // receive from a drained pipeline taken as holding, so that a reason when_stuck() gave is the one that applies.
+  // receive from a drained pipeline taken as holding, so that a reason on_stuck() gave is the one that applies.
   bool check(Cycle now, bool settled = false) const {
     for (uint32_t i = 0; i < count_; i++) {
       const Step &s = steps_[i];
@@ -686,7 +758,7 @@ class Route {
           break;
         case TRANSFER: move(values(), i, 0, s.n, TRANSFER, nullptr, 0, 0); break;
         case ENQUEUE: {
-          CommandQueue &q = *s.queue;
+          CmdQueue &q = *s.queue;
           if (!q.depth_) break;
           uint64_t work = q.free_ == Free::WHEN_STARTED;
           for (uint32_t j = i + 1; j < count_; j++) work += steps_[j].n;
@@ -696,10 +768,10 @@ class Route {
             ready.push_back(id);
             return vcix_accel::Unknown;
           }
-          CommandQueue::Command c{id, now + q.arrival_};
+          CmdQueue::Command c{id, now + q.arrival_};
           c.when_enqueued = when_enqueued_, c.when_idle = when_idle_;
           if (keeps_values()) c.values = this;
-          for (uint32_t j = i + 1; j < count_; j++) c.moves[c.count++] = record(steps_[j], q.blocks_);
+          for (uint32_t j = i + 1; j < count_; j++) c.moves[c.count++] = record(steps_[j]);
           q.list_.push_back(c);
           return vcix_accel::Unknown;
         }
@@ -709,17 +781,16 @@ class Route {
     return latency_;
   }
 
-  // The values ride the moves: Spike issues the route with its host, and the functions it was given are kept.
+  // The values ride the moves: Spike issues the instruction with its host, and the functions it was given are kept.
   bool keeps_values() const { return hooks_ != nullptr; }
-  Route *values() { return keeps_values() ? this : nullptr; }
+  Instr *values() { return keeps_values() ? this : nullptr; }
   template <class F>
-  Route &on_moves(F &&each) {
+  void on_moves(F &&each) {
     if (keeps_values() && count_) hooks_->moves.push_back({count_ - 1, std::forward<F>(each)});
-    return *this;
   }
-  // n entries or beats of step `at` move, from its from-th on: the same entries on gem5 and Spike, and on Spike, of route
-  // `values`, the function it was given puts or takes their values.
-  static void move(Route *values, uint32_t at, uint64_t from, uint64_t n, uint32_t kind, AnyPipeline *pipe,
+  // n entries or beats of step `at` move, from its from-th on: the same entries on gem5 and Spike, and on Spike, of
+  // instruction `values`, the function it was given puts or takes their values.
+  static void move(Instr *values, uint32_t at, uint64_t from, uint64_t n, uint32_t kind, AnyPipeline *pipe,
                    uint32_t weight, uint32_t output) {
     if (!n) return;
     const Move *hook = nullptr;
@@ -737,7 +808,7 @@ class Route {
     if (hook)
       for (uint64_t i = 0; i < n; i++) hook->each(*values->host_, from + i, row + i * (kind == SEND ? weight : 1), output);
   }
-  static void received(Route *values, uint32_t at) {
+  static void received(Instr *values, uint32_t at) {
     if (values)
       for (Received &r : values->hooks_->received)
         if (r.at == at) r.done(*values->host_);
@@ -749,8 +820,9 @@ class Route {
 
   Mode mode_;
   const Insn &insn_;
-  uint32_t arg_;
+  const Component::Handler &handler_;
   const Host *host_;
+  const Component &owner_;
   Step steps_[MAX_STEPS];
   uint32_t count_ = 0;
   AnyPipeline *guard_ = nullptr;
@@ -760,53 +832,37 @@ class Route {
   bool when_idle_ = false, when_enqueued_ = false;
 };
 
-// An encoding, its name, and the unit's function that declares its route; `arg` tells a family's members apart.
-template <class U>
-struct Instruction {
-  uint32_t match, mask;
-  const char *name;
-  void (U::*route)(Route &);
-  uint32_t arg = 0;
-};
-
-// A model of units in order. A unit is constructed with its name, reads its keys in configure(Config), lists its blocks
-// in hardware(h) and its encodings in INSTRUCTIONS; Machine derives tick, reset, the ports (the statistics), readiness,
-// and Spike's execute, which clocks the machine. Squash and the commit counts are vcix_accel::Instance's.
-template <class... U>
-class Machine : public vcix_accel::Model {
+// A model of components in their order. Each reads its keys in configure(Config) and declares its encodings with
+// handle(); Coprocessor derives tick, reset, the ports (the statistics), readiness, and Spike's execute, which clocks
+// it. Squash and the commit counts are vcix_accel::Instance's, from copies of the whole model.
+class Coprocessor : public vcix_accel::Model {
  public:
   std::vector<Encoding> owns() const override {
     std::vector<Encoding> all;
-    (add<U>(all), ...);
+    for (size_t i = 0; i < components_->size(); i++)
+      for (const Component::Handler &h : component(i).layout_->handlers) all.push_back(h.encoding);
     return all;
   }
   void configure(const Config &c) override {
-    std::apply([&](U &...u) { (u.configure(c), ...); }, units_);
+    for (size_t i = 0; i < components_->size(); i++) component(i).configure(c);
     reset();
   }
-  // Spike: the route is issued as gem5 issues it, the machine ticked as gem5 ticks it while it is not taken and until it
-  // is done, the route's functions giving the values; it stands still between instructions.
+  // Spike: the instruction is issued as gem5 issues it, the coprocessor ticked as gem5 ticks it while it is not taken
+  // and until it is done, the instruction's functions giving the values; it stands still between instructions.
   void execute(const Host &host, const Insn &insn) override {
-    if (!std::apply([&](U &...u) { return (execute_on(u, insn, host) || ...); }, units_)) {
-      std::fprintf(stderr, "vcix_uarch: instruction %08x has no unit\n", insn.bits);
-      std::abort();
-    }
+    for (size_t i = 0; i < components_->size(); i++)
+      if (const Component::Handler *h = component(i).owner(insn)) return clocked(component(i), *h, insn, host);
+    std::fprintf(stderr, "vcix_cp: instruction %08x has no unit\n", insn.bits);
+    std::abort();
   }
   bool can_accept(const Insn &insn, Cycle now) const override {
     bool ok = false;
-    auto &self = const_cast<Machine &>(*this);
-    std::apply([&](U &...u) { (run(Route::CHECK, u, insn, nullptr, [&](Route &r) { ok = r.check(now); }) || ...); },
-               self.units_);
+    run(Instr::CHECK, insn, [&](Component &, Instr &in) { ok = in.check(now); });
     return ok;
   }
   Cycle issue(const Insn &insn, Id id, Cycle now) override {
     Cycle latency = 1;
-    std::apply([&](U &...u) {
-      (run(Route::ISSUE, u, insn, nullptr, [&](Route &r) {
-         if (CommandQueue *q = r.queue()) list_blocks(u, *q);
-         latency = r.issue(now, id, ready_);
-       }) || ...);
-    }, units_);
+    run(Instr::ISSUE, insn, [&](Component &, Instr &in) { latency = in.issue(now, id, ready_); });
     return latency;
   }
   void commit(const Insn &, Id id, Cycle) override {
@@ -815,164 +871,120 @@ class Machine : public vcix_accel::Model {
   }
   bool ready(Id id, Cycle) const override { return std::find(ready_.begin(), ready_.end(), id) != ready_.end(); }
   void tick(Cycle now) override {
-    std::apply([&](U &...u) { (tick_unit(u, now), ...); }, units_);
+    for (size_t i = 0; i < components_->size(); i++) tick_component(component(i), now);
   }
   void reset() override {
-    std::apply([&](U &...u) {
-      (u.hardware(blocks([](Port &p) { p.reset(); },
-                         [](auto &p, Port &) { p.flush(); },
-                         [](CommandQueue &q) { q.reset(); }, [](auto &r) { r.reset(); })),
-       ...);
-    }, units_);
+    for (size_t i = 0; i < components_->size(); i++) {
+      const Component &comp = component(i);
+      comp.each<Port>(comp.layout_->ports, [](Port &p) { p.reset(); });
+      comp.each<AnyPipeline>(comp.layout_->pipelines, [](AnyPipeline &p) { p.flush(); });
+      comp.each<CmdQueue>(comp.layout_->queues, [](CmdQueue &q) { q.reset(); });
+      comp.each<AnyRegister>(comp.layout_->registers, [](AnyRegister &r) { r.reset(); });
+    }
     ready_.clear();
     beats_.clear();
     clock_ = spike_id_ = 0;
   }
-  std::vector<const Port *> ports() const override {
-    std::vector<const Port *> all;
-    auto &self = const_cast<Machine &>(*this);
-    std::apply([&](U &...u) { (u.hardware(blocks([&](Port &p) { all.push_back(&p); })), ...); }, self.units_);
+  std::vector<const vcix_accel::Port *> ports() const override {
+    std::vector<const vcix_accel::Port *> all;
+    for (size_t i = 0; i < components_->size(); i++)
+      component(i).each<Port>(component(i).layout_->ports, [&](Port &p) { all.push_back(&p); });
     return all;
   }
 
  protected:
-  template <class... Name>
-  explicit Machine(Name... names) : units_(names...) {
-    static_assert(sizeof...(Name) == sizeof...(U), "a machine names each of its units");
-  }
-  // `what` on the first unit that owns the instruction; false when none does.
+  Coprocessor() = default;
+  // `what` on the first component that owns the instruction; false when none does.
   template <class Do>
   bool with_owner(const Insn &insn, Do &&what) const {
-    return std::apply([&](const U &...u) { return (owned(u, insn, what) || ...); }, units_);
+    for (size_t i = 0; i < components_->size(); i++)
+      if (component(i).owner(insn)) return what(static_cast<const Component &>(component(i))), true;
+    return false;
   }
-  // `what` on each pipeline the unit lists.
-  template <class V, class Do>
-  static void each_pipeline(const V &unit, Do &&what) {
-    const_cast<V &>(unit).hardware(blocks(Ignore{}, [&](const AnyPipeline &p, const Port &) { what(p); }));
+  // `what` on each pipeline the component holds.
+  template <class Do>
+  static void each_pipeline(const Component &c, Do &&what) {
+    c.each<AnyPipeline>(c.layout_->pipelines, [&](const AnyPipeline &p) { what(p); });
   }
 
  private:
+  friend class Component;
   // A head's transfer of values in this cycle, given its values at the cycle's end.
   struct Beats {
-    Route *route;
+    Instr *instr;
     uint32_t at;
     uint64_t from, n;
   };
-  struct Ignore {
-    template <class... A>
-    void operator()(A &&...) const {}
-  };
-  // One pass over a unit's hardware(): what to do with each kind of block.
-  template <class P, class L, class Q, class R>
-  struct Blocks {
-    P on_port;
-    L on_pipeline;
-    Q on_queue;
-    R on_register;
-    void port(Port &p) { on_port(p); }
-    template <class T>
-    void pipeline(Pipeline<T> &p, Port &entry) { on_pipeline(p, entry); }
-    // A pipeline whose rows the unit's `stage(value, k)` works on in each stage k they reach, when they carry values.
-    template <class T, class V>
-    void pipeline(Pipeline<T> &p, Port &entry, void (V::*stage)(T &, uint32_t)) {
-      if constexpr (std::is_invocable_v<L &, Pipeline<T> &, Port &, decltype(stage)>) on_pipeline(p, entry, stage);
-      else on_pipeline(p, entry);
-    }
-    void queue(CommandQueue &q) { on_queue(q); }
-    template <class S>
-    void reg(Register<S> &r) { on_register(r); }
-  };
-  template <class P = Ignore, class L = Ignore, class Q = Ignore, class R = Ignore>
-  static Blocks<P, L, Q, R> blocks(P p = {}, L l = {}, Q q = {}, R r = {}) {
-    return {p, l, q, r};
+  Component &component(size_t i) const {
+    return *reinterpret_cast<Component *>(const_cast<char *>(reinterpret_cast<const char *>(this)) + (*components_)[i]);
   }
-
-  template <class V>
-  static void add(std::vector<Encoding> &all) {
-    for (const auto &i : V::INSTRUCTIONS) all.push_back({i.match, i.mask, i.name});
-  }
-  template <class V, class Do>
-  static bool owned(const V &u, const Insn &insn, Do &&what) {
-    for (const auto &i : V::INSTRUCTIONS)
-      if ((insn.bits & i.mask) == i.match) return what(u), true;
-    return false;
-  }
-  // The route of the unit's first instruction that matches, declared in `mode`, then `after` on it.
-  template <class V, class After>
-  static bool run(typename Route::Mode mode, V &u, const Insn &insn, const Host *host, After &&after) {
-    for (const auto &i : V::INSTRUCTIONS) {
-      if ((insn.bits & i.mask) != i.match) continue;
-      Route r(mode, insn, i.arg, host);
-      (u.*i.route)(r);
-      after(r);
+  // The steps of the first component's first handler that matches, declared in `mode`, then `after` on them.
+  template <class After>
+  bool run(Instr::Mode mode, const Insn &insn, After &&after) const {
+    for (size_t i = 0; i < components_->size(); i++) {
+      Component &comp = component(i);
+      const Component::Handler *h = comp.owner(insn);
+      if (!h) continue;
+      Instr in(mode, insn, *h, nullptr, comp);
+      (comp.*h->fn)(in);
+      after(comp, in);
       return true;
     }
     return false;
   }
-  // A cycle of one unit: commands done when enqueued that arrive are done; each queue's head works; the pipelines with
-  // anything in them move, their stages reading the registers as the cycle began; then the head's beats land, what
-  // everything moved becomes visible, and a command waiting for an idle queue may be done.
-  template <class V>
-  void tick_unit(V &u, Cycle now) {
-    u.hardware(blocks(Ignore{}, Ignore{}, [&](CommandQueue &q) { q.arrivals(now, ready_); }));
-    u.hardware(blocks(Ignore{}, Ignore{}, [&](CommandQueue &q) { head(u, q, now); }));
-    u.hardware(blocks(Ignore{}, [&](auto &p, Port &entry, auto... stage) {
+  // A cycle of one component: commands done when enqueued that arrive are done; each queue's head works; the pipelines
+  // with anything in them move, their stages reading the registers as the cycle began; then the head's beats land,
+  // what everything moved becomes visible, and a command waiting for an idle queue may be done.
+  void tick_component(Component &comp, Cycle now) {
+    const Component::Layout &l = *comp.layout_;
+    comp.each<CmdQueue>(l.queues, [&](CmdQueue &q) { q.arrivals(now, ready_); });
+    comp.each<CmdQueue>(l.queues, [&](CmdQueue &q) { head(comp, q, now); });
+    comp.each<AnyPipeline>(l.pipelines, [&](AnyPipeline &p) {
       if (p.drained()) return;
-      const bool moved = p.advance(now, entry);
-      entry.hold(p.line_.rows());
-      if constexpr (sizeof...(stage) == 1)
-        if (moved) p.each_stage([&](auto &value, uint32_t k) { ((u.*stage)(value, k), ...); });
-    }));
-    for (const Beats &b : beats_) Route::move(b.route, b.at, b.from, b.n, Route::TRANSFER, nullptr, 0, 0);
+      const bool moved = p.advance(now);
+      p.entry().hold(p.line_.rows());
+      if (moved) p.stages(comp);
+    });
+    for (const Beats &b : beats_) Instr::move(b.instr, b.at, b.from, b.n, Instr::TRANSFER, nullptr, 0, 0);
     beats_.clear();
-    u.hardware(blocks(Ignore{}, [](auto &p, Port &, auto...) { p.end_cycle(); },
-                      [&](CommandQueue &q) { q.release_waiters(now, ready_); }));
+    comp.each<AnyPipeline>(l.pipelines, [](AnyPipeline &p) { p.end_cycle(); });
+    comp.each<CmdQueue>(l.queues, [&](CmdQueue &q) { q.release_waiters(now, ready_); });
   }
-  template <class V>
-  void head(V &u, CommandQueue &q, Cycle now) {
+  void head(const Component &comp, CmdQueue &q, Cycle now) {
     if (q.list_.empty()) return;
-    CommandQueue::Command &c = q.list_.front();
+    CmdQueue::Command &c = q.list_.front();
     if (c.arrives >= now) return;
-    list_blocks(u, q);
-    if (!advance(c, q, now, beats_)) return;
+    if (!advance(comp, c, q, now, beats_)) return;
     if (c.when_idle) q.waiters_.push_back(c.id);
     else if (!c.when_enqueued) ready_.push_back(c.id);
     q.list_.pop_front();
   }
-
-  template <class V>
-  static void list_blocks(V &u, CommandQueue &q) {
-    if (q.blocks_.listed) return;
-    q.blocks_.listed = true;
-    u.hardware(blocks([&](Port &p) { q.blocks_.ports.push_back(&p); },
-                      [&](AnyPipeline &p, Port &) { q.blocks_.pipelines.push_back(&p); }));
-  }
   // One cycle of the head command: its recorded step moves what the registered state allows. True when it is done.
-  static bool advance(CommandQueue::Command &c, CommandQueue &q, Cycle now, std::vector<Beats> &beats) {
+  static bool advance(const Component &comp, CmdQueue::Command &c, CmdQueue &q, Cycle now, std::vector<Beats> &beats) {
     if (q.free_ == Free::WHEN_STARTED && !c.started) {
       c.started = true, c.holds_slot = false;
       return c.count == 0;
     }
     while (c.step < c.count) {
-      const CommandQueue::Move &s = c.moves[c.step];
-      Port *through = s.through < 0 ? nullptr : q.blocks_.ports[s.through];
-      AnyPipeline *pipe = s.pipe < 0 ? nullptr : q.blocks_.pipelines[s.pipe];
-      const bool open = s.guard < 0 || q.blocks_.pipelines[s.guard]->drained();
+      const CmdQueue::Move &s = c.moves[c.step];
+      Port *through = s.through < 0 ? nullptr : &comp.port(s.through);
+      AnyPipeline *pipe = s.pipe < 0 ? nullptr : &comp.pipeline(s.pipe);
+      const bool open = s.guard < 0 || comp.pipeline(s.guard).drained();
       const uint64_t left = s.n - c.done, width = through ? through->room(now) : UNLIMITED;
       uint64_t moved = 0;
-      if (s.kind == Route::SEND) {
+      if (s.kind == Instr::SEND) {
         if (open) moved = std::min({left, pipe->input_room() / s.weight, width});
-      } else if (s.kind == Route::RECEIVE) {
+      } else if (s.kind == Instr::RECEIVE) {
         if (open) moved = std::min({left, pipe->out(s.output), width});
       } else if (open) {
         moved = std::min(left, width);
       }
       const uint32_t at = c.values ? c.values->queued_from() + c.step : 0;
-      if (s.kind == Route::TRANSFER && c.values && moved) beats.push_back({c.values, at, c.done, moved});
-      else Route::move(c.values, at, c.done, moved, s.kind, pipe, s.weight, s.output);
+      if (s.kind == Instr::TRANSFER && c.values && moved) beats.push_back({c.values, at, c.done, moved});
+      else Instr::move(c.values, at, c.done, moved, s.kind, pipe, s.weight, s.output);
       if (through && moved) through->admit(moved, now);
       c.done += moved;
-      if (c.done == s.n && s.kind == Route::RECEIVE) Route::received(c.values, at);
+      if (c.done == s.n && s.kind == Instr::RECEIVE) Instr::received(c.values, at);
       if (c.done == s.n) c.step++, c.done = 0;
       else if (!moved) break;
       if (moved) break;
@@ -980,105 +992,91 @@ class Machine : public vcix_accel::Model {
     return c.step == c.count;
   }
 
-  // Spike's execute on unit u, when it owns the instruction.
-  template <class V>
-  bool execute_on(V &u, const Insn &insn, const Host &host) {
-    for (const auto &i : V::INSTRUCTIONS)
-      if ((insn.bits & i.mask) == i.match) return clocked(u, i, insn, host), true;
-    return false;
-  }
-  template <class V, class I>
-  void clocked(V &u, const I &instruction, const Insn &insn, const Host &host) {
+  // Spike's execute of handler h of component comp.
+  void clocked(Component &comp, const Component::Handler &h, const Insn &insn, const Host &host) {
     std::function<void(uint64_t)> why;
     uint64_t got = 0;
     const auto accepts = [&] {
-      Route r(Route::CHECK, insn, instruction.arg, &host);
-      (u.*instruction.route)(r);
-      why = r.check(clock_, true) ? r.stuck_ : nullptr, got = r.got();
-      return r.check(clock_);
+      Instr in(Instr::CHECK, insn, h, &host, comp);
+      (comp.*h.fn)(in);
+      why = in.check(clock_, true) ? in.stuck_ : nullptr, got = in.got();
+      return in.check(clock_);
     };
-    while (!accepts()) spike_cycle(u, instruction.name, accepts, [&] { if (why) why(got); });
-    Route::Hooks hooks;
-    Route r(Route::ISSUE, insn, instruction.arg, &host);
-    r.hooks_ = &hooks;
-    (u.*instruction.route)(r);
-    if (CommandQueue *q = r.queue()) list_blocks(u, *q);
+    while (!accepts()) spike_cycle(comp, h.encoding.name, accepts, [&] { if (why) why(got); });
+    Instr::Hooks hooks;
+    Instr in(Instr::ISSUE, insn, h, &host, comp);
+    in.hooks_ = &hooks;
+    (comp.*h.fn)(in);
     const Id id = ++spike_id_;
-    const Cycle issued = clock_, latency = r.issue(clock_, id, ready_);
+    const Cycle issued = clock_, latency = in.issue(clock_, id, ready_);
     if (latency != vcix_accel::Unknown)
       while (clock_ < issued + latency) tick(++clock_);
     const auto done = [&] {
-      return (latency != vcix_accel::Unknown || Machine::ready(id, clock_)) && !queued(u, id);
+      return (latency != vcix_accel::Unknown || Coprocessor::ready(id, clock_)) && !queued(comp, id);
     };
-    while (!done()) spike_cycle(u, instruction.name, done, [&] {
+    while (!done()) spike_cycle(comp, h.encoding.name, done, [&] {
       uint64_t got = 0;
-      if (r.stuck_ && drained_receive(u, id, got)) r.stuck_(got);
+      if (in.stuck_ && drained_receive(comp, id, got)) in.stuck_(got);
     });
-    r.done();
-    Machine::commit(insn, id, clock_);
+    in.done();
+    Coprocessor::commit(insn, id, clock_);
   }
   // One cycle Spike waits for `until`; a cycle in which nothing moves, no command still on its way and `until` not
   // yet true, is the same every cycle after: the run ends there, with the reason `stuck` gives if it gives one.
-  template <class V, class Until, class Stuck>
-  void spike_cycle(V &u, const char *name, Until &&until, Stuck &&stuck) {
-    motion(u, before_);
+  template <class Until, class Stuck>
+  void spike_cycle(const Component &comp, const char *name, Until &&until, Stuck &&stuck) {
+    motion(comp, before_);
     tick(++clock_);
     if (until()) return;
-    motion(u, after_);
-    if (after_ != before_ || arriving(u)) return;
+    motion(comp, after_);
+    if (after_ != before_ || arriving(comp)) return;
     stuck();
-    std::fprintf(stderr, "vcix_uarch: %s waits, and nothing in its unit moves any more: on Spike, which runs each "
+    std::fprintf(stderr, "vcix_cp: %s waits, and nothing in its unit moves any more: on Spike, which runs each "
                  "instruction to its end before the next, it never ends\n", name);
     std::exit(1);
   }
-  // What a cycle of unit u can change in its pipelines and queues, into m.
-  template <class V>
-  void motion(V &u, std::vector<uint64_t> &m) const {
+  // What a cycle of component comp can change in its pipelines and queues, into m.
+  void motion(const Component &comp, std::vector<uint64_t> &m) const {
     m.assign(1, ready_.size());
     const auto add = [&m](auto... v) { (m.push_back(static_cast<uint64_t>(v)), ...); };
-    u.hardware(blocks(Ignore{},
-                      [&](auto &p, Port &, auto...) {
-                        add(p.input_.rows(), p.line_.rows(), p.out_[0].rows(), p.out_[1].rows(),
-                            p.line_.empty() ? 0 : p.moves_);
-                      },
-                      [&](CommandQueue &q) {
-                        add(q.list_.size(), q.waiters_.size());
-                        if (!q.list_.empty()) add(q.list_.front().step, q.list_.front().done, q.list_.front().started);
-                      }));
+    comp.each<AnyPipeline>(comp.layout_->pipelines, [&](AnyPipeline &p) {
+      add(p.input_.rows(), p.line_.rows(), p.out_[0].rows(), p.out_[1].rows(), p.line_.empty() ? 0 : p.moves_);
+    });
+    comp.each<CmdQueue>(comp.layout_->queues, [&](CmdQueue &q) {
+      add(q.list_.size(), q.waiters_.size());
+      if (!q.list_.empty()) add(q.list_.front().step, q.list_.front().done, q.list_.front().started);
+    });
   }
-  template <class V>
-  bool arriving(V &u) const {
+  bool arriving(const Component &comp) const {
     bool any = false;
-    u.hardware(blocks(Ignore{}, Ignore{}, [&](CommandQueue &q) {
-      for (const CommandQueue::Command &c : q.list_) any |= c.arrives >= clock_;
-    }));
+    comp.each<CmdQueue>(comp.layout_->queues, [&](CmdQueue &q) {
+      for (const CmdQueue::Command &c : q.list_) any |= c.arrives >= clock_;
+    });
     return any;
   }
   // Whether command `id` is at its queue's head in a receive from a drained pipeline; got, the rows it has taken.
-  template <class V>
-  static bool drained_receive(V &u, Id id, uint64_t &got) {
+  static bool drained_receive(const Component &comp, Id id, uint64_t &got) {
     bool at = false;
-    u.hardware(blocks(Ignore{}, Ignore{}, [&](CommandQueue &q) {
+    comp.each<CmdQueue>(comp.layout_->queues, [&](CmdQueue &q) {
       if (q.list_.empty() || q.list_.front().id != id) return;
-      const CommandQueue::Command &c = q.list_.front();
-      if (c.step == c.count || c.moves[c.step].kind != Route::RECEIVE) return;
-      const CommandQueue::Move &m = c.moves[c.step];
-      const AnyPipeline &p = *q.blocks_.pipelines[m.pipe];
+      const CmdQueue::Command &c = q.list_.front();
+      if (c.step == c.count || c.moves[c.step].kind != Instr::RECEIVE) return;
+      const CmdQueue::Move &m = c.moves[c.step];
+      const AnyPipeline &p = comp.pipeline(m.pipe);
       at = p.drained(), got = c.done + p.out(m.output);
-    }));
+    });
     return at;
   }
-  template <class V>
-  static bool queued(V &u, Id id) {
+  static bool queued(const Component &comp, Id id) {
     bool any = false;
-    u.hardware(blocks(Ignore{}, Ignore{}, [&](CommandQueue &q) {
-      for (const CommandQueue::Command &c : q.list_) any |= c.id == id;
+    comp.each<CmdQueue>(comp.layout_->queues, [&](CmdQueue &q) {
+      for (const CmdQueue::Command &c : q.list_) any |= c.id == id;
       any |= std::find(q.waiters_.begin(), q.waiters_.end(), id) != q.waiters_.end();
-    }));
+    });
     return any;
   }
 
-  std::tuple<U...> units_;
+  std::shared_ptr<std::vector<ptrdiff_t>> components_ = std::make_shared<std::vector<ptrdiff_t>>();
   std::vector<Id> ready_;
   std::vector<Beats> beats_;
   std::vector<uint64_t> before_, after_;
@@ -1086,6 +1084,10 @@ class Machine : public vcix_accel::Model {
   Id spike_id_ = 0;
 };
 
-}  // namespace vcix_uarch
+inline Component::Component(Coprocessor &cp, const char *name) : name_(name) {
+  cp.components_->push_back(reinterpret_cast<char *>(this) - reinterpret_cast<char *>(&cp));
+}
+
+}
 
 #endif

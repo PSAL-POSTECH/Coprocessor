@@ -9,8 +9,8 @@ is timed on.
 
 Read first:
 
-- [README.md](../../README.md): the C ABI, the timing rules, `vcix_uarch`.
-- [examples/tpu/README.md](../tpu/README.md): the units `Sfu`, `Misc`, `Xlu`,
+- [README.md](../../README.md): the C ABI, the timing rules, `vcix_cp`.
+- [examples/tpu/README.md](../tpu/README.md): the components `Sfu`, `Misc`, `Xlu`,
   the `[tpu]` trace, and the generic gem5 machine.
 - [examples/tpuv6e/README.md](../tpuv6e/README.md): what `vmatprep`,
   `vmatpush`, `vmatmul` and `vpop` do.
@@ -18,13 +18,13 @@ Read first:
 ```
                   libtpuv3.so  (tpuv3.cc)
   ┌────────────────────────────────────────────────────────────┐
-  │ tpu::Machine                                               │
+  │ tpu::Coprocessor                                           │
   │  ┌───────────┐ ┌────────────┐ ┌───────────┐ ┌────────────┐ │
   │  │ tpu::Sfu  │ │ tpu::Misc  │ │ tpu::Xlu  │ │ tpu::Mxu   │ │
   │  │ TPUV3_SFU │ │ TPUV3_MISC │ │ TPUV3_XLU │ │ <Shape>    │ │
   │  │           │ │            │ │           │ │ TPUV3_MXU  │ │
   │  └───────────┘ └────────────┘ └───────────┘ └────────────┘ │
-  │   the same three units as tpuv6e      the v3's Shape:      │
+  │   tpuv6e's three components           the v3's Shape:      │
   │   (examples/tpu/*.hpp)                REGISTERS    1       │
   │                                       SLOTS        1       │
   │                                       WORD_A_CYCLE false   │
@@ -53,7 +53,7 @@ other Reproduce blocks use.
 
 ## The model's source
 
-`tpuv3.cc:16-24`:
+`tpuv3.cc:16-31`:
 
 ```cpp
 struct Shape {
@@ -62,14 +62,19 @@ struct Shape {
   static constexpr bool WORD_A_CYCLE = false;
 };
 
-class Tpuv3 final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<Shape>> {
+class Tpuv3 final : public tpu::Coprocessor {
  public:
-  Tpuv3() : Machine("TPUV3_SFU", "TPUV3_MISC", "TPUV3_XLU", "TPUV3_MXU") {}
   const char *name() const override { return "tpuv3"; }
+
+ private:
+  tpu::Sfu sfu_{*this, "TPUV3_SFU"};
+  tpu::Misc misc_{*this, "TPUV3_MISC"};
+  tpu::Xlu xlu_{*this, "TPUV3_XLU"};
+  tpu::Mxu<Shape> mxu_{*this, "TPUV3_MXU"};
 };
 ```
 
-`tpuv6e.cc` has the same lines with `2`, `2`, `true`, the unit names
+`tpuv6e.cc` has the same lines with `2`, `2`, `true`, the component names
 `TPUV6E_*` and the name `tpuv6e`. What each constant does:
 
 - `REGISTERS`: how many vector registers one operand spans. The array is
@@ -80,7 +85,7 @@ class Tpuv3 final : public tpu::Machine<tpu::Sfu, tpu::Misc, tpu::Xlu, tpu::Mxu<
 - `WORD_A_CYCLE`: whether a 32-bit word that holds two 16-bit rows enters the
   array in one cycle (v6e), or one row enters a cycle (v3).
 
-The units, as `tests/tpuv3/ports.cc` reads them through the C table with no
+The components, as `tests/tpuv3/ports.cc` reads them through the C table with no
 simulator:
 
 ```
@@ -88,9 +93,9 @@ $ build/tpuv3_ports build/libtpuv3.so
 PASS  model tpuv3: 4 units at their primary ports (TPUV3_SFU.entry, TPUV3_MISC.issue, TPUV3_XLU/TPUV3_MXU.input), no other port, then one commit count per encoding
 ```
 
-The model lists its units in the order of `tpuv3.cc`: SFU, MISC, XLU, MXU.
+The model lists its components in the order of `tpuv3.cc`: SFU, MISC, XLU, MXU.
 gem5's `stats.txt` sorts them by name: `TPUV3_MISC TPUV3_MXU TPUV3_SFU
-TPUV3_XLU` (`tests/tpuv3/run.sh`, asserted). The unit classes and their
+TPUV3_XLU` (`tests/tpuv3/run.sh`, asserted). The component classes and their
 instructions are described once, in [examples/tpu/README.md](../tpu/README.md).
 The DMA's instructions are `Misc`'s, as in the tpu model. This model has no
 systolic or multi-precision array.
@@ -120,8 +125,8 @@ draw.
 ```
 
 The delay line's default length is `2 x REGISTERS x lanes - 1`
-(`examples/tpu/mxu.hpp:56`). A trace line shows the line's queues: one output
-queue on the v3, two on the v6e (`mxu.hpp:171-176`):
+(`examples/tpu/mxu.hpp:57`). A trace line shows the line's queues: one output
+queue on the v3, two on the v6e (`mxu.hpp:75-80`):
 
 ```
 [tpu] issue vpop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4          <- tpuv3
@@ -237,12 +242,12 @@ stays the v6e's: two slots, a word a cycle (below).
 A `vmatmul` operand is `vl` words of 32 bits. A word holds one single, or two
 16-bit rows ([tpuv6e: words and rows](../tpuv6e/README.md#words-and-rows)).
 
-`vmatmul` sends the rows into the array's line (`mxu.hpp:125-133`):
+`vmatmul` sends the rows into the array's line (`mxu.hpp:146-155`):
 
 ```cpp
-const uint32_t in_word = rows_in_word(vcix_accel::rs1(r.insn())), weight = Shape::WORD_A_CYCLE ? in_word : 1;
+const uint32_t in_word = rows_in_word(in.rs1()), weight = Shape::WORD_A_CYCLE ? in_word : 1;
 ...
-r.send(array->line, uint64_t{r.vl()} * in_word / weight, weight, ...);
+in.send(array->line, uint64_t{in.vl()} * in_word / weight, weight, ...);
 ```
 
 So for `vl` = 4 words of bfloat16 (8 rows):
@@ -253,11 +258,11 @@ So for `vl` = 4 words of bfloat16 (8 rows):
 ```
 
 The input port's width is `PER_CYCLE` rows: 1 on the v3, 2 on the v6e
-(`mxu.hpp:59`, `:278`). gem5 reports it as the unit's `capacity`.
+(`mxu.hpp:60`, `:282`). gem5 reports it as the component's `capacity`.
 
 The v3 still needs a queue of at least 2 rows. A `vmatmul` with `vl` = 1 of
 bfloat16 sends two rows, and both must fit the input queue when it issues. A queue of 1 is refused when the model is made
-(`mxu.hpp:47-48`; `tests/tpuv3/run.sh`, asserted):
+(`mxu.hpp:48-49`; `tests/tpuv3/run.sh`, asserted):
 
 ```
 src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libtpuv3.so: tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2

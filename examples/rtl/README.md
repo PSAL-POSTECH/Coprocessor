@@ -572,18 +572,18 @@ gem5_run /tmp/m5-lanes8 build/librtl_systolic.so /tmp/lanes8.yml /tmp/timing
 
 ## `rtl_copier` and `libcopier.so`
 
-`examples/copier/copier.cc` is the same copier written with `vcix_uarch`
-instead of RTL: `libcopier.so`, a `vcix_uarch::Machine<Copier>` with a
+`examples/copier/copier.cc` is the same copier written with `vcix_cp`
+instead of RTL: `libcopier.so`, a `cp::Coprocessor` of one component with a
 command queue of 4, an issue port, a memory port and a source register
-(`examples/copier/copier.cc:14-22,54-56`). It owns the same three encodings.
+(`examples/copier/copier.cc:22,52-55,58-64`). It owns the same three encodings.
 Driven as gem5 drives them, the two give the same answers. On Spike they
 differ when a program breaks rule 1.
 
 ```
                        librtl_copier.so                  libcopier.so
-written as             copier.sv, Verilated              vcix_uarch routes
-memory moves           only while Spike clocks the       in at_issue, as the copy
-                       unit                              issues (copier.cc:32-41)
+written as             copier.sv, Verilated              vcix_cp handlers
+memory moves           only while Spike clocks the       in on_issue, as the copy
+                       unit                              issues (copier.cc:34-43)
 Spike, copy, no wait   0 of 256 bytes copied, exit 1     256 of 256 bytes copied, exit 0
 Spike, copy + wait     256 of 256, exit 0                256 of 256, exit 0
 gem5's calls           the same answer to every can_accept, latency, ready and shared statistic
@@ -747,7 +747,7 @@ What the 27 checks of `tests/rtl/run.sh` cover:
   push with the deadlock above. `libtpu.so` under the
   RTL keys refuses it too:
   ```
-  vcix_uarch: systolic input push waits, and nothing in its unit moves any more: on Spike, which runs each instruction to its end before the next, it never ends
+  vcix_cp: systolic input push waits, and nothing in its unit moves any more: on Spike, which runs each instruction to its end before the next, it never ends
   ```
   `libtpu.so` under `tests/tpu/functional/machine.yml` (no command queue)
   takes all 135.
@@ -823,7 +823,7 @@ copier/copier.sv          the copier; copier/copier.cc its table
 copier/copy.c             the copier's program (-DWAIT, -DUNTOUCHED, -DTIMING)
 run.sh                    both models on both simulators
 
-../copier/copier.cc       libcopier.so: the same copier in vcix_uarch
+../copier/copier.cc       libcopier.so: the same copier in vcix_cp
 ../../tests/rtl/run.sh    the 27 checks
 ../../tests/rtl/stall.cc  rtl_stall
 ../../tests/rtl/copier.cc copier_lockstep

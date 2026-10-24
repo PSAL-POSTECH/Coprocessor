@@ -7,16 +7,15 @@
 #include <memory>
 #include <vector>
 
-#include "vcix_uarch.hpp"
+#include "vcix_cp.hpp"
 
 #include "values.hpp"
 
 namespace tpu {
 
-class Systolic {
-  using Host = vcix_uarch::Host;
-  using Insn = vcix_uarch::Insn;
-  using Route = vcix_uarch::Route;
+class Systolic : public cp::Component {
+  using Host = cp::Host;
+  using Insn = cp::Insn;
   // A lane's last `lanes` weights, oldest first, in one block.
   struct LaneWeights {
     std::vector<float> held;
@@ -39,74 +38,67 @@ class Systolic {
   };
 
  public:
-  // `name` is the unit as its statistics report it; the model that holds the unit says it.
-  explicit Systolic(const char *name)
-      : entry_{name, "input", "rows", 1, vcix_uarch::PRIMARY},
-        issue_{name, "issue", "instructions", 1},
-        weight_push_{name, "weight_push", "instructions", 1},
-        pop_{name, "pop", "rows", 256},
-        in_{name, "in", "rows", vcix_uarch::UNLIMITED} {}
-  void configure(const vcix_uarch::Config &config) {
+  // `name` is the component as its statistics report it; the model that holds the component says it.
+  Systolic(cp::Coprocessor &cp, const char *name) : Component(cp, name) {
+    handle(INPUT_PUSH, &Systolic::input_push);
+    handle(WEIGHT_PUSH, &Systolic::weight_push);
+    handle(POP, &Systolic::pop);
+  }
+  void configure(const cp::Config &config) override {
     const uint64_t lanes = config.uint(LANES_KEY, 128), entries = config.uint(QUEUE_KEY, 256);
     if (lanes < 1)
       throw vcix_accel::ConfigError(LANES_KEY, config.get(LANES_KEY), "is not a lane count the array can have");
     if (entries < 1 || entries > UINT32_MAX)
       throw vcix_accel::ConfigError(QUEUE_KEY, config.get(QUEUE_KEY), "is not a queue size");
     stages_ = static_cast<uint32_t>(2 * lanes - 1);
-    array_.configure(stages_, entries, vcix_uarch::Stall::WHEN_OUTPUT_FULL);
+    array_.configure(stages_, entries, cp::Stall::WHEN_OUTPUT_FULL);
     commands_.configure(static_cast<uint32_t>(config.uint(COMMANDS_KEY, 0)));
-    in_.set_capacity(config.uint(IN_KEY, vcix_uarch::UNLIMITED));
+    in_.set_capacity(config.uint(IN_KEY, cp::UNLIMITED));
     pop_.set_capacity(config.uint(POP_KEY, entries));
     weight_waits_ = config.uint(WAITS_KEY, 0) != 0;
     if (!commands_.depth() && (config.get(IN_KEY) || config.get(POP_KEY) || weight_waits_))
       throw vcix_accel::ConfigError(COMMANDS_KEY, "0", "is no queue: what moves at issue moves whole, and waits for nothing");
   }
-  template <class H>
-  void hardware(H &&h) {
-    h.port(entry_), h.port(issue_), h.port(weight_push_), h.port(pop_), h.port(in_);
-    h.pipeline(array_, entry_, &Systolic::stage);
-    h.queue(commands_);
-    h.reg(weights_), h.reg(weighted_);
-  }
-
-  // vl rows into the array, row i element i of every lane; never accepted before a weight push of a beat or more.
-  void input_push(Route &r) {
-    if (r.vl()) named(r);
-    r.require(weighted_.get(), [] { fail("systolic input push: no weight was pushed before it"); });
-    r.use(issue_).enqueue(commands_);
-    r.send(array_, r.vl(), [this, &r](const Host &host, uint64_t i) { return pushed(host, r.insn(), i); }).through(in_);
-  }
-  // vl beats of weights into the registers, beat i element i of every lane; a lane keeps its last `lanes`. Under
-  // tpu_systolic_weight_waits they move only once the array is empty.
-  void weight_push(Route &r) {
-    if (r.vl()) named(r);
-    r.use(issue_).use(weight_push_).enqueue(commands_);
-    if (weight_waits_) r.wait_until_empty(array_);
-    r.transfer(r.vl(), [this, &r](const Host &host, uint64_t i) { latch(host, r.insn(), i); }).through(in_);
-    if (r.vl() && !weighted_.get()) r.at_issue([&] { weighted_.write() = true; });
-  }
-  // vl rows of the output queue, row i to element i of vd in every lane in rs1's format, rounded by frm; one that asks
-  // more than is computed never ends.
-  void pop(Route &r) {
-    const uint32_t vl = r.vl();
-    named(r);
-    r.require(element_format(r.insn()) != Element::BF16, [] { fail("systolic pop: a pop to bfloat16 is not modeled"); });
-    r.use(issue_).enqueue(commands_);
-    r.receive(array_, vl, [&r](const Host &host, uint64_t i, Row &&row) { popped(host, r.insn(), i, row); }).through(pop_);
-    r.when_stuck([vl](uint64_t got) {
-      fail("systolic pop: %u elements asked, %llu computed", vl, static_cast<unsigned long long>(got));
-    });
-  }
 
   // funct6, vm and funct3 of custom-2: sf.vc.iv 0, sf.vc.iv 1 and sf.vc.v.i 2.
   static constexpr uint32_t FORM = 0xFE00707F;
-  static constexpr vcix_uarch::Instruction<Systolic> INSTRUCTIONS[] = {
-      {0x2200305B, FORM, "systolic input push", &Systolic::input_push},
-      {0x2600305B, FORM, "systolic weight push", &Systolic::weight_push},
-      {0x0800305B, FORM, "systolic pop", &Systolic::pop},
-  };
+  static constexpr cp::Encoding INPUT_PUSH{0x2200305B, FORM, "systolic input push"};
+  static constexpr cp::Encoding WEIGHT_PUSH{0x2600305B, FORM, "systolic weight push"};
+  static constexpr cp::Encoding POP{0x0800305B, FORM, "systolic pop"};
 
  private:
+  // vl rows into the array, row i element i of every lane; never accepted before a weight push of a beat or more.
+  void input_push(cp::Instr &in) {
+    if (in.vl()) named(in);
+    in.require(weighted_.get(), [] { fail("systolic input push: no weight was pushed before it"); });
+    in.use(issue_);
+    in.enqueue(commands_);
+    in.send(array_, in.vl(), [this, &in](const Host &host, uint64_t i) { return pushed(host, in.insn(), i); }, cp::Through(in_));
+  }
+  // vl beats of weights into the registers, beat i element i of every lane; a lane keeps its last `lanes`. Under
+  // tpu_systolic_weight_waits they move only once the array is empty.
+  void weight_push(cp::Instr &in) {
+    if (in.vl()) named(in);
+    in.use(issue_);
+    in.use(weight_push_);
+    in.enqueue(commands_);
+    if (weight_waits_) in.wait_empty(array_);
+    in.transfer(in.vl(), [this, &in](const Host &host, uint64_t i) { latch(host, in.insn(), i); }, cp::Through(in_));
+    if (in.vl() && !weighted_.get()) in.on_issue([&] { weighted_.write() = true; });
+  }
+  // vl rows of the output queue, row i to element i of vd in every lane in rs1's format, rounded by frm; one that asks
+  // more than is computed never ends.
+  void pop(cp::Instr &in) {
+    const uint32_t vl = in.vl();
+    named(in);
+    in.require(element_format(in.insn()) != Element::BF16, [] { fail("systolic pop: a pop to bfloat16 is not modeled"); });
+    in.use(issue_);
+    in.enqueue(commands_);
+    in.receive(array_, vl, [&in](const Host &host, uint64_t i, Row &&row) { popped(host, in.insn(), i, row); }, cp::Through(pop_));
+    in.on_stuck([vl](uint64_t got) {
+      fail("systolic pop: %u elements asked, %llu computed", vl, static_cast<unsigned long long>(got));
+    });
+  }
   // What an element is rides the push or the pop in its rs1 field, one table at every width: 0 the width's own (an
   // integer of 8 bits, a half, a single; 64 bits are zeros), 1 an E4M3, 2 an E5M2, 3 a bfloat16; else NONE.
   enum class Element { INTEGER, E4M3, E5M2, HALF, BF16, SINGLE, ZERO, NONE };
@@ -118,9 +110,9 @@ class Systolic {
     return Element::NONE;
   }
   // An instruction whose code names no element of its width is never accepted.
-  static void named(Route &r) {
-    const uint32_t code = vcix_accel::rs1(r.insn()), sew = r.insn().sew_bits;
-    r.require(element_format(r.insn()) != Element::NONE,
+  static void named(cp::Instr &in) {
+    const uint32_t code = in.rs1(), sew = in.sew_bits();
+    in.require(element_format(in.insn()) != Element::NONE,
               [code, sew] { fail("systolic: format %u names no element of %u bits", code, sew); });
   }
   // Stage k: PE (lane, k - lane) adds input k - lane times the weight it holds now to lane's sum, so a lane sums
@@ -192,15 +184,19 @@ class Systolic {
   static constexpr const char *POP_KEY = "tpu_systolic_pop_rows_per_cycle";
   static constexpr const char *WAITS_KEY = "tpu_systolic_weight_waits";
 
-  vcix_uarch::Port entry_, issue_, weight_push_, pop_, in_;
-  vcix_uarch::Pipeline<Row> array_;
-  vcix_uarch::CommandQueue commands_;
-  vcix_uarch::Register<Weights> weights_;
-  vcix_uarch::Register<bool> weighted_;
+  cp::Port entry_{*this, "input", "rows", 1, cp::Port::PRIMARY};
+  cp::Port issue_{*this, "issue", "instructions", 1};
+  cp::Port weight_push_{*this, "weight_push", "instructions", 1};
+  cp::Port pop_{*this, "pop", "rows", 256};
+  cp::Port in_{*this, "in", "rows", cp::UNLIMITED};
+  cp::Pipeline<Row> array_{*this, entry_, &Systolic::stage};
+  cp::CmdQueue commands_{*this};
+  cp::Register<Weights> weights_{*this};
+  cp::Register<bool> weighted_{*this};
   uint32_t stages_ = 1;
   bool weight_waits_ = false;
 };
 
-}  // namespace tpu
+}
 
 #endif
