@@ -92,32 +92,26 @@ struct Shape {
 };
 ```
 
-gem5 reports one unit per block: a component's name is its primary port,
-`<name>_insns` its instruction queue, and `<name>_<block>` each of its queues
-and pipelines (`include/vcix_cp.hpp:375-379`, `vcix_cp_base.hpp:326-363`).
-The order you see them in depends on who lists them:
+gem5 reports one unit per component, counted at its primary port
+(`vcix_cp_base.hpp:326-363`): `TPUV6E_SFU` (`entry`), `TPUV6E_MISC` (`issue`),
+`TPUV6E_XLU` (`input`), `TPUV6E_MXU` (`input`). A component's `insns()`, queues
+and pipelines count inside the model and are no unit. The order you see them in
+depends on who lists them:
 
-- The C statistics table is in the model's order, each component's blocks in
-  their order: SFU (`insns`, `TPUV6E_SFU`, `eup_input`, `eup`, `eup_output`),
-  MISC (`insns`, `TPUV6E_MISC`), XLU (`insns`, `TPUV6E_XLU`, `queue`,
-  `stages`, `moves`, `buffer`, `line`, `out`), MXU (`insns`, `TPUV6E_MXU`,
-  then per array `array<i>_input`, `array<i>_line`, `array<i>_lower`,
-  `array<i>_upper`), then one commit count per encoding. `tests/tpuv6e/ports.cc`
-  reads it with no simulator.
+- The C statistics table is in the model's order: SFU, MISC, XLU, MXU, then one
+  commit count per encoding. `tests/tpuv6e/ports.cc` reads it with no simulator.
 - gem5's `stats.txt` sorts them by name. Lines from the `mxu.S` run
   [below](#a-cycle-walk-teststpuv6emxus):
   ```
   system.cpu.executeFuncUnits.funcUnits8.vcix.TPUV6E_MXU.admitted            8                       # rows admitted at port input (Count)
   system.cpu.executeFuncUnits.funcUnits8.vcix.TPUV6E_MXU.capacity            2                       # rows the unit can admit per cycle ((Count/Cycle))
   system.cpu.executeFuncUnits.funcUnits8.vcix.TPUV6E_MXU.occupancy          120                       # rows held behind the port, summed over cycles (Count)
-  system.cpu.executeFuncUnits.funcUnits8.vcix.TPUV6E_MXU_array0_line.admitted            4
   system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vmatmul            1                       # instructions counted (Count)
   system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vmatpush            1                       # instructions counted (Count)
   system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vmatprep            2                       # instructions counted (Count)
   system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vpop            4                       # instructions counted (Count)
   ```
-  `TPUV6E_MXU` counts rows at the input port, `TPUV6E_MXU_array0_line` the
-  words that entered the line: 8 rows of bfloat16 are 4 words.
+  `TPUV6E_MXU` counts rows at the input port, two a cycle (`capacity 2`).
 
 ## The matrix unit
 
@@ -827,8 +821,7 @@ Timing, on gem5: `tests/tpuv6e/sfu.S` pushes a group of 8 registers
 
 The pop's issue line shows the 8 registers in the input queue; the pop commits
 8 + 10 + 1 cycles after its issue, and 13 with `tpu_sfu_latency_cycles: 4`.
-The statistics: `TPUV6E_SFU_eup` admitted 8, occupancy 80 (8 registers, 10
-cycles each). The EUP's two keys, `tpu_sfu_latency_cycles` and
+The EUP's two keys, `tpu_sfu_latency_cycles` and
 `tpu_sfu_queue_registers`, are the tpu example's
 ([keys](../tpu/README.md#keys-read-from-the-machine-description)). On
 `libtpu.so`, `tests/tpu/functional/run.sh` checks two groups popped in push

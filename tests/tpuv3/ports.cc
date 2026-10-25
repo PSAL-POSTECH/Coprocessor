@@ -1,5 +1,5 @@
-// The tpuv3 model's statistics, read through the C table with no simulator: one unit per block, under the names the
-// model gives them, in the order a reader that indexes the list depends on; then the commits. Usage: tpuv3_ports libtpuv3.so
+// The tpuv3 model's statistics, read through the C table with no simulator: one unit per component, under the names
+// the model gives them, in the order a reader that indexes the list depends on; then the commits. Usage: tpuv3_ports libtpuv3.so
 #include <dlfcn.h>
 
 #include <cstdio>
@@ -9,19 +9,13 @@
 
 #include "vcix_accel.h"
 
-// The units, each at the port its four entries count, in the model's order: component by component, each one's
-// insns() first, then its blocks as it declares them.
+// The units, each a component at the primary port its four entries count, in the model's order; a component's
+// insns(), queues and pipelines are not listed.
 static const char *const expected[][3] = {
-    {"TPUV3_SFU.insns", "insns", "instructions"},       {"TPUV3_SFU", "entry", "instructions"},
-    {"TPUV3_SFU.eup_input", "eup_input", "registers"},  {"TPUV3_SFU.eup", "eup", "registers"},
-    {"TPUV3_SFU.eup_output", "eup_output", "registers"}, {"TPUV3_MISC.insns", "insns", "instructions"},
-    {"TPUV3_MISC", "issue", "instructions"},            {"TPUV3_XLU.insns", "insns", "instructions"},
-    {"TPUV3_XLU", "input", "elements"},                 {"TPUV3_XLU.queue", "queue", "elements"},
-    {"TPUV3_XLU.stages", "stages", "groups"},           {"TPUV3_XLU.moves", "moves", "groups"},
-    {"TPUV3_XLU.buffer", "buffer", "elements"},         {"TPUV3_XLU.line", "line", "results"},
-    {"TPUV3_XLU.out", "out", "slots"},                  {"TPUV3_MXU.insns", "insns", "instructions"},
-    {"TPUV3_MXU", "input", "rows"},                     {"TPUV3_MXU.array0_input", "array0_input", "rows"},
-    {"TPUV3_MXU.array0_line", "array0_line", "words"},  {"TPUV3_MXU.array0_output", "array0_output", "rows"},
+    {"TPUV3_SFU", "entry", "instructions"},
+    {"TPUV3_MISC", "issue", "instructions"},
+    {"TPUV3_XLU", "input", "elements"},
+    {"TPUV3_MXU", "input", "rows"},
 };
 
 int main(int argc, char **argv) {
@@ -66,8 +60,8 @@ int main(int argc, char **argv) {
     const vcix_stat *s = m->stat(self, 4 * units + e);
     ok = !strcmp(s->unit, "committed") && !strcmp(s->name, m->encodings[e].name) && s->kind == VCIX_STAT_COUNT;
   }
-  printf("%s  model tpuv3: %zu units, one per component and per block (<component>.<block>), each at its primary "
-         "port, in the model's order; then one commit count per encoding\n",
+  printf("%s  model tpuv3: %zu units, one per component at its primary port, in the model's order; then one commit "
+         "count per encoding\n",
          ok ? "PASS" : "FAIL", units);
   m->destroy(self);
   return ok ? 0 : 1;

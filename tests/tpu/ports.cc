@@ -108,18 +108,11 @@ class Run {
 
 std::string n(uint64_t v) { return std::to_string(v); }
 
-// The list: four entries per unit, where a unit is a component at its primary port, or one of its queues and
-// pipelines (its insns() first) as "<component>.<block>", in the order the model holds them; then the commits.
+// The list: four entries per unit, a unit being a component at its primary port, in the order the model holds
+// them; no other port, none of a component's queues and pipelines; then the commits.
 void list() {
   Run run;
-  const char *expected[][2] = {
-      {"SFU.insns", "insns"}, {"SFU", "entry"}, {"SFU.eup_input", "eup_input"}, {"SFU.eup", "eup"}, {"SFU.eup_output", "eup_output"},
-      {"MISC.insns", "insns"}, {"MISC", "issue"},
-      {"SYSTOLIC.insns", "insns"}, {"SYSTOLIC", "input"}, {"SYSTOLIC.commands", "commands"}, {"SYSTOLIC.input_queue", "input_queue"},
-      {"SYSTOLIC.array", "array"}, {"SYSTOLIC.output_queue", "output_queue"},
-      {"XLU.insns", "insns"}, {"XLU", "input"}, {"XLU.queue", "queue"}, {"XLU.stages", "stages"}, {"XLU.moves", "moves"},
-      {"XLU.buffer", "buffer"}, {"XLU.line", "line"}, {"XLU.out", "out"},
-      {"MSA.insns", "insns"}, {"MSA", "input"}, {"MSA.input_queue", "input_queue"}, {"MSA.array", "array"}, {"MSA.output_queue", "output_queue"}};
+  const char *expected[][2] = {{"SFU", "entry"}, {"MISC", "issue"}, {"SYSTOLIC", "input"}, {"XLU", "input"}, {"MSA", "input"}};
   const size_t units = sizeof expected / sizeof expected[0];
   const size_t stats = m->num_stats(run.self());
   std::string differs;
@@ -135,8 +128,8 @@ void list() {
     if (strcmp(s->unit, "committed") || strcmp(s->name, m->encodings[e].name) || s->kind != VCIX_STAT_COUNT)
       differs = std::string("commit entry ") + n(e) + " is " + s->unit + "." + s->name;
   }
-  check(differs.empty(), n(units) + " units: each component at its primary port (SFU.entry, MISC.issue, SYSTOLIC/XLU/MSA.input) "
-                         "and each of its queues and pipelines, no other port, then one commit count per encoding" +
+  check(differs.empty(), n(units) + " units: each component at its primary port (SFU.entry, MISC.issue, SYSTOLIC/XLU/MSA.input), "
+                         "no other port and none of its queues and pipelines, then one commit count per encoding" +
                              (differs.empty() ? "" : "; but " + differs));
 }
 

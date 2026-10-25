@@ -7,7 +7,7 @@
 - 컴포넌트(`cp::Component`)는 내 하드웨어 블록 하나입니다.
 - `insns()`는 그 블록의 명령 입력 큐입니다. 프레임워크가 명령을 여기에 넣어 줍니다.
 - `cycle()`는 그 블록이 매 클럭 하는 일입니다. 타이밍은 모두 여기서 정합니다.
-- 블록(`cp::Port`, `cp::Pipeline<T>`, `cp::Queue<T>`)은 컴포넌트 안에 배치하는 부품입니다. 각각이 통계 단위가 됩니다.
+- 블록(`cp::Port`, `cp::Pipeline<T>`, `cp::Queue<T>`)은 컴포넌트 안에 배치하는 부품입니다. 통계 단위는 컴포넌트(PRIMARY 포트) 하나이고, 큐와 파이프라인은 통계에 오르지 않습니다.
 - 값(레지스터·메모리)은 `values()` 안에서만 씁니다. 이 코드는 Spike에서만 돕니다. 명령이 끝나면 `complete(insn)`을 부릅니다.
 
 ## 1. 예제 A: `vexp`만 하는 SFU
@@ -104,21 +104,11 @@ cycle 0: can_accept=1
 cycle 1: can_accept=1
 cycle 4: vexp 0 ready (issued 0)
 cycle 5: vexp 1 ready (issued 1)
-vcix.SFU_insns.admitted                          2  # instructions admitted at port insns
-vcix.SFU_insns.capacity                          1  # instructions per cycle
-vcix.SFU_insns.cycles                            12
-vcix.SFU_insns.occupancy                         2  # instructions held, summed over cycles
-vcix.SFU_insns.utilized_cycles                   2.000000  # admitted / capacity
 vcix.SFU.admitted                                2  # instructions admitted at port entry
 vcix.SFU.capacity                                1  # instructions per cycle
 vcix.SFU.cycles                                  12
 vcix.SFU.occupancy                               0  # instructions held, summed over cycles
 vcix.SFU.utilized_cycles                         2.000000  # admitted / capacity
-vcix.SFU_eup.admitted                            2  # instructions admitted at port eup
-vcix.SFU_eup.capacity                            1  # instructions per cycle
-vcix.SFU_eup.cycles                              12
-vcix.SFU_eup.occupancy                           6  # instructions held, summed over cycles
-vcix.SFU_eup.utilized_cycles                     2.000000  # admitted / capacity
 vcix.committed.vexp                              2
 ```
 
@@ -474,11 +464,10 @@ spike_run build/libexp_sfu.so examples/exp_sfu/machine.yml build/vexp2          
 gem5_run build/m5out-exp build/libexp_sfu.so examples/exp_sfu/machine.yml build/vexp2   # time
 ```
 
-gem5의 `stats.txt` 줄은 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<unit>.<stat>` 모양이고, 블록마다 `<unit>`이 하나입니다(gem5가 `.`을 `_`로 바꿈). §1의 두 `vexp`라면 다음이 나와야 합니다.
+gem5의 `stats.txt` 줄은 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<unit>.<stat>` 모양이고, 컴포넌트마다 `<unit>`이 하나입니다(PRIMARY 포트에서 셈). §1의 두 `vexp`라면 다음이 나와야 합니다.
 
 ```
-system.cpu.executeFuncUnits.funcUnits8.vcix.SFU_eup.admitted           2
-system.cpu.executeFuncUnits.funcUnits8.vcix.SFU_eup.occupancy          6   # L = 3: 1 + 2 + 2 + 1
+system.cpu.executeFuncUnits.funcUnits8.vcix.SFU.admitted               2
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vexp             2
 ```
 

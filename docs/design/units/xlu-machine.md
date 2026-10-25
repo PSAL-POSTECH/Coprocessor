@@ -158,14 +158,7 @@ FACT, `verify/xlu/xlu_check` `Instance::dump_stats`, xlu.S on xlu.yml, 420 ticks
 `system.cpu.executeFuncUnits.funcUnits<N>.`, FACT `README.md:837`):
 
 ```
-vcix.XLU_insns.admitted    13  # instructions admitted at port insns     capacity 1 (per cycle), occupancy 40
 vcix.XLU.admitted          20  # elements admitted at port input         capacity 1, occupancy 60 (20 x 3)
-vcix.XLU_queue.admitted    20  # elements admitted at port queue         capacity 8
-vcix.XLU_stages.admitted   20  # groups admitted at port stages          capacity 1, occupancy 60
-vcix.XLU_moves.admitted     0  # groups admitted at port moves           capacity 1
-vcix.XLU_buffer.admitted   20  # elements admitted at port buffer        capacity 65535
-vcix.XLU_line.admitted      2  # results admitted at port line           capacity 1
-vcix.XLU_out.admitted     146  # slots admitted at port out              capacity 65535 (128 + 18)
 ```
 
 Each unit also prints `.cycles`, `.occupancy` and `.utilized_cycles`.
@@ -174,7 +167,7 @@ Each unit also prints `.cycles`, `.occupancy` and `.utilized_cycles`.
   `entry_.hold`).
 - `issue` is a REPORTING port: listed in `ports()`, not a statistic.
 - Today's REPORTING `output` port (`UNLIMITED`, never limited anything) is deleted.
-- ports() order is `XLU.insns, XLU, (issue), XLU.queue, XLU.stages, XLU.moves, XLU.buffer, XLU.line, XLU.out`.
+- ports() order is `insns, input, issue, queue, stages, moves, buffer, line, out`, all under unit `XLU`; only `input`, the PRIMARY port, is a statistic.
 
 ## 5. Re-baselined tests
 
@@ -199,8 +192,8 @@ lets them share one. Most deltas come from the rows entering `queue_` in `tick(t
 | `tests/tpu/ports.cc:192-199` sfu_and_xlu, XLU part | admitted 5, occupancy 15 | **5, 15** | 3 cycles per element in the stages |
 | `ports.cc:291-302` fewer_pushed(XLU) | 1, 100 | **1, 1**; the first pop faults, and its commit exits 1 (`tpu: xlu pop: 2 elements asked, 1 left`) | a second pop fits behind the faulted first |
 | `ports.cc:325-336` xlu_shallower, per tile (pop, rest, push) | (1, 11, 1) ×100, first 1 | **(1, 1, 10) ×100, first 1** | both pops queue in `insns()` |
-| `ports.cc:108-123` list(), `tests/tpuv3/ports.cc:37-49`, `tests/tpuv6e/ports.cc:37-49` | XLU = 1 unit | **XLU = 8 units**: `XLU.insns, XLU, XLU.queue, XLU.stages, XLU.moves, XLU.buffer, XLU.line, XLU.out` (FACT `verify/mm/liststats`) | every Queue and Pipeline is a unit; rewrite the expected lists |
-| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `units …` | `… TPUV3_XLU` | adds `TPUV3_XLU_buffer _insns _line _moves _out _queue _stages` (TPUV6E_ likewise) | same |
+| `ports.cc:108-123` list(), `tests/tpuv3/ports.cc:37-49`, `tests/tpuv6e/ports.cc:37-49` | XLU = 1 unit | **XLU = 1 unit**, its PRIMARY port `input` | queues and pipelines are REPORTING, no unit |
+| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `units …` | `… TPUV3_XLU` | unchanged | same |
 | `tests/stats/run.sh` consistent / beyond_units | 5 of 5, 0 | **5 of 5, 0** | `vcix.XLU.*` is still the PRIMARY port |
 | `tests/tpu/functional/run.sh:141-146,162-164` | pass; exit 201 / 1 / 1 | **unchanged** (FACT `verify/xlu`: values of fields 0/4/8/16 and fold sum, exits 201, 1, 1) | same values and messages |
 

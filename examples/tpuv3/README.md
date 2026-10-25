@@ -93,17 +93,14 @@ file holds the shape the compiler and the model both read. `libtpuv6e.so` with
 `1`, `1` and `0` runs `mxu.S` and `mxu_rate.S` as `libtpuv3.so` does
 (`tests/tpuv3/run.sh`, asserted, with the values each key refuses).
 
-gem5 reports one unit per block ([tpu: statistics](../tpu/README.md#statistics-one-unit-per-block)):
-a component's name is its primary port, `<name>_insns` its instruction queue,
-`<name>_<block>` each queue and pipeline. The model lists them in the order of
-`tpuv3.cc`: SFU, MISC, XLU, MXU, each component's blocks in their order
+gem5 reports one unit per component ([tpu: statistics](../tpu/README.md#statistics-one-unit-per-component)),
+counted at its primary port; a component's `insns()`, queues and pipelines are
+no unit. The model lists them in the order of `tpuv3.cc`: SFU, MISC, XLU, MXU
 (`tests/tpuv3/ports.cc` reads the C table with no simulator); gem5's
 `stats.txt` sorts them by name:
 
 ```
-TPUV3_MISC TPUV3_MISC_insns TPUV3_MXU TPUV3_MXU_array0_input TPUV3_MXU_array0_line TPUV3_MXU_array0_output TPUV3_MXU_insns
-TPUV3_SFU TPUV3_SFU_eup TPUV3_SFU_eup_input TPUV3_SFU_eup_output TPUV3_SFU_insns
-TPUV3_XLU TPUV3_XLU_buffer TPUV3_XLU_insns TPUV3_XLU_line TPUV3_XLU_moves TPUV3_XLU_out TPUV3_XLU_queue TPUV3_XLU_stages
+TPUV3_MISC TPUV3_MXU TPUV3_SFU TPUV3_XLU
 ```
 
 The unit classes and their instructions are described once, in
@@ -339,9 +336,6 @@ capacity          1    rows a cycle the port admits
 occupancy        56    = 8 rows x 7 cycles each in the line
 utilized_cycles   8    = admitted / capacity
 ```
-
-`TPUV3_MXU_array0_line` reads the same (8 words of a row each);
-`TPUV3_MXU_insns` admitted 4, capacity 2.
 
 ### The same program with the v6e's SLOTS and WORD_A_CYCLE
 

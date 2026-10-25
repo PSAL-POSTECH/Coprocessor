@@ -179,29 +179,16 @@ The config key's meaning, "W a cycle", is a decision-8 keep.
 
 ## 5. Statistics: gem5 `stats.txt` lines
 
-Each block is its own unit (design §6); `.` becomes `_`. Today SFU and MISC had one line group each. The new lines for
-the tpu model are:
+Only a component's PRIMARY port is a unit (design §6); `.` becomes `_`. SFU and MISC keep one line group each:
 
 ```
 # prefix system.cpu.executeFuncUnits.funcUnits<N>. (FACT README.md:837)
 vcix.SFU.{admitted,capacity,cycles,occupancy,utilized_cycles}  # entry: instructions, capacity 1
-vcix.SFU_insns.*        # instructions issued, capacity 1 (per cycle), occupancy = instructions held as cycle() began
-vcix.SFU_function.*     # instructions issued, capacity 1, occupancy = instructions in its L stages
-vcix.SFU_eup_input.*    # registers pushed, capacity tpu_sfu_queue_registers
-vcix.SFU_eup.*          # registers into the EUP, capacity 1, occupancy = registers in its stages
-vcix.SFU_eup_output.*   # registers out, capacity tpu_sfu_queue_registers
 vcix.MISC.*             # issue: instructions, capacity W
-vcix.MISC_insns.*       # instructions issued, capacity W (per cycle)
 ```
 
 Example, tpuv6e `sfu.S` (push m8, then pop m8, L=10) (FACT check):
 - `SFU.admitted 2`
-- `SFU_eup.admitted 8`, occupancy 80 (8 × 10, no stall)
-- `SFU_eup_input` occupancy 36
-- `SFU_eup_output` occupancy 8
-- `SFU_insns` occupancy 20
-
-With L=4, `SFU_eup` occupancy is 32 and `SFU_insns` is 14.
 
 `tests/stats/run.sh:47` `consistent` still finds `vcix.SFU.*` and `vcix.MISC.*`, each with one primary (DERIVED).
 
@@ -223,11 +210,11 @@ producer's `ready()` turns true. Today's fixed-latency path did the same.
 | `tests/tpu/run.sh:211` MISC capacity / admitted | 2 / 8 of 8 | **2 / 8 of 8** | `issue` is spent once per instruction |
 | `tests/tpu/run.sh:223` W=3 | capacity 3, 3, 8 | **3, 3, 8** | §4 |
 | `tests/tpu/run.sh:172,225` config errors (`'0' is not a pipeline depth` / `is not an issue width`) | exit 1 | **exit 1**, same text | `ConfigError` is thrown before `Pipeline::configure` |
-| `tests/tpu/ports.cc:180-190` 1000 vexp, one a cycle | all accepted; SFU.entry admitted 1000, cycles 1000 | all accepted; **admitted 999**, cycles 1000 | `entry` is spent at the pop in `tick(t+1)`, and the 1000th is never ticked; `SFU_insns.admitted` = 1000 (FACT check) |
+| `tests/tpu/ports.cc:180-190` 1000 vexp, one a cycle | all accepted; SFU.entry admitted 1000, cycles 1000 | all accepted; **admitted 999**, cycles 1000 | `entry` is spent at the pop in `tick(t+1)`, and the 1000th is never ticked |
 | `tests/tpu/ports.cc:216-237` misc: 10 offered | 2 a cycle × 5, admitted 10, capacity 2, committed 10 | **same** | FACT check; the driver must poll `ready()` (design §8) |
-| `tests/tpu/ports.cc:108-123` list: "5 units … no other port" | 4×5 + encodings | **FAIL, not a cycle number**: it gains `SFU_insns`, `SFU_function`, `SFU_eup_input`, `SFU_eup`, `SFU_eup_output`, `MISC_insns` (plus the other components' units) | blocks are units (decision 4); rewrite the expected list |
+| `tests/tpu/ports.cc:108-123` list: "5 units … no other port" | 4×5 + encodings | unchanged: 4×5 + encodings | queues and pipelines are no units |
 | `tests/tpuv3/ports.cc:37`, `tests/tpuv6e/ports.cc:37` lists | 4 units | grows the same way | the same |
-| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `units …` | `TPUV*_MISC … TPUV*_SFU …` | the list also gets `*_MISC_insns`, `*_SFU_eup`, `*_SFU_eup_input`, `*_SFU_eup_output`, `*_SFU_function`, `*_SFU_insns` | the same |
+| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `units …` | `TPUV*_MISC … TPUV*_SFU …` | unchanged | the same |
 | `tests/tpuv6e/run.sh:126-128` push m8 → pop, L=10 | "issue sfu_pop: **18** cycles after the last issue, 0 in flight, input queue 0, output queue 8"; pop commit 1 after its issue | "issue sfu_pop: **1** cycles after the last issue, **0 or 1** in flight, input queue **8**, output queue **0**"; pop commit **19** after its issue; push issue → pop ready **20** (was 19) | the pop now waits in `insns()`; the push is ready at t+1, and Minor may commit it before the pop's issue in that same cycle; the 8 registers enter one a cycle from t+2, and each is visible in the output L+1 after it entered the EUP (FACT check: push 1→2, pop 2→21) |
 | the same, L=4 | "issue sfu_pop: 12 …" | "issue sfu_pop: 1 …"; pop commit **13**; push → pop ready **14** (was 13) | FACT check: pop 2→15 |
 | `tests/tpu/functional/run.sh:156` refused doubles | `tpu: vexp: an element of 64 bits is not supported`, exit 1 | same | FACT check |

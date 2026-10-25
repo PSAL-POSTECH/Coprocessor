@@ -83,7 +83,7 @@ struct Insn : vcix_insn { Id id = 0; };                // gem5's id; 0 inside va
 [사실] `vcix_cp.hpp.design:321-328`. 기다림, 순서, 해저드는 모두 사용자의 `cycle()`이 정합니다. `valid()`는 흐름 제어만
 합니다(RTL의 ready). 틀린 명령은 accept된 뒤 머리에서 `fault()`로 끝납니다.
 
-### 2.2 블록 (선택 사항, 통계가 따라옴)
+### 2.2 블록 (선택 사항)
 
 ```cpp
 class Port {        // per-cycle bandwidth; holds a cp::Stats member, unit = the component's name
@@ -307,15 +307,13 @@ commit될 때(squash된 것은 commit되지 않습니다) `why`를 찍고 종료
 ### 3.6 통계와 trace
 
 **통계(ABI 변경 없음).** 쓰는 kind는 ADMITTED, CAPACITY, CYCLES, OCCUPANCY뿐입니다 [사실] `vcix_accel.h:60-63`.
-`cp::Port`는 `cp::Stats`를 멤버로 가집니다(상속 아님). Queue와 Pipeline은 단위 `"<component>.<block>"`의 PRIMARY
-`Stats`를 하나씩 가집니다. gem5는 `.`을 `_`로 바꿉니다 [사실] gem5 `vcix_accel_model.cc:22-33`.
+`cp::Port`는 `cp::Stats`를 멤버로 가집니다(상속 아님). Queue와 Pipeline도 하나씩 가지지만 REPORTING이라 표에 오르지
+않습니다: 통계 단위는 컴포넌트 하나, 그 PRIMARY 포트에서 셉니다 [사실] `vcix_cp_base.hpp:326-363`. gem5는 이름의 `.`을
+`_`로 바꿉니다 [사실] gem5 `vcix_accel_model.cc:22-33`.
 
 | 단위 | ADMITTED | CAPACITY | OCCUPANCY |
 |---|---|---|---|
 | `<C>` (PRIMARY `cp::Port` 하나) | `utilize` 합 | width | 사용자 `occupy` |
-| `<C>_insns` | issue된 명령 | 사이클당 한도 (기본 1) | 각 `cycle()` 시작 때 든 명령 |
-| `<C>_<queue>` | push된 행 | `min(capacity, per_cycle)` | 각 `cycle()` 시작 때 든 행 |
-| `<C>_<pipeline>` | push된 행 | 1 | 각 사이클 뒤 단계에 든 행 |
 
 gem5 `stats.txt`에는 다음처럼 나옵니다 [사실] 접두어 `README.md:837`, 값 `verify/cs/dump`(markers 창 1).
 
@@ -323,18 +321,12 @@ gem5 `stats.txt`에는 다음처럼 나옵니다 [사실] 접두어 `README.md:8
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.admitted                12   # rows admitted at port input
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.capacity                 1
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.occupancy               84
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_insns.admitted           7   # instructions admitted at port insns
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_insns.capacity           1   # instructions per cycle
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_input_queue.admitted    12
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_array.occupancy         84
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_output_queue.admitted   12
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER_commands.capacity          4   # commands per cycle
 ```
 
 - 각 유닛의 PRIMARY 포트는 그대로입니다: SFU `entry`, MISC `issue`, SYSTOLIC `input`, XLU `input`, MSA `input`,
   MXU `input`, COPIER `issue`. 그래서 `tests/stats`의 `consistent`(5 of 5)와 `beyond_units`(0)는 유지됩니다 [도출].
-- 새 단위 목록은 [사실] `verify/mm/liststats`, 4개 `.so`에서 확인했습니다. 예: `MSA.insns MSA MSA.input_queue
-  MSA.array MSA.output_queue`, `XLU.insns XLU XLU.queue XLU.stages XLU.moves XLU.buffer XLU.line XLU.out`.
+- 단위 목록은 컴포넌트뿐입니다 [사실] `tests/tpu/ports.cc`, `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc`: 예
+  `SFU MISC SYSTOLIC XLU MSA`.
 
 **trace.** 다음은 그대로 유지합니다.
 - `tpu::Coprocessor`가 `issue`와 `commit`을 override해서 줄을 찍습니다 [사실] `examples/tpu/machine.hpp:32-38`.
@@ -570,8 +562,8 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 |---|---|---|---|
 | `tests/contract/route_once.cc:59,63` | 6에 끝남 | **5** (복사본, 대입본, 원본 모두) [사실] `verify/eng/check` | 도착 스탬프가 없습니다. "handler ran once"는 "a copy's cycle() ticks its own blocks"로 다시 씁니다(`run.sh:103` 문장도). |
 | `tests/tpu/ports.cc:63` 외 드라이버 | `now + latency`에 commit | `ready()`를 poll해야 합니다 | `Unknown`이면 wrap됩니다 |
-| `tests/tpu/ports.cc:108-123`, `tests/tpuv3/ports.cc:37`, `tests/tpuv6e/ports.cc:37` list | 유닛 4–5개 | **FAIL**, 목록을 다시 씀 (블록마다 단위) | 결정 4 |
-| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` units | `…_MISC …_MXU …_SFU …_XLU` | 각 `_insns`와 블록 단위 추가 | 같은 이유 |
+| `tests/tpu/ports.cc:108-123`, `tests/tpuv3/ports.cc:37`, `tests/tpuv6e/ports.cc:37` list | 유닛 4–5개 | **그대로**: 컴포넌트당 하나 | 큐와 파이프라인은 REPORTING, 통계가 아님 |
+| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` units | `…_MISC …_MXU …_SFU …_XLU` | **그대로** | 같은 이유 |
 | `tests/stats` counts/consistent/beyond_units | 12 3 3 …, 5 of 5, 0 | **그대로** | PRIMARY 포트 불변 |
 
 ### 5.2 Sfu / Misc (드라이버 [사실] `verify/sm/units`)

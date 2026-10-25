@@ -48,7 +48,7 @@ echo "-- the units' statistics, with no simulator"
 "$BUILD/tpuv6e_ports" "$MODEL" > "$BUILD/tpuv6e-ports.log" 2>&1
 rc[ports]=$?
 report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpuv6e-ports.log") passed" "exit 0, 1 passed" \
-  "tpuv6e_ports: a unit per component and per block, under the names the model gives them, in its order (tpuv6e-ports.log)"
+  "tpuv6e_ports: a unit per component at its primary port, under the names the model gives them, in its order (tpuv6e-ports.log)"
 
 echo "-- matrix unit, 4 lanes: an array of 8 x 8, 15 slots, a word a cycle, queues of 8"
 on_gem5 mxu mxu "$HERE/mxu.yml"
@@ -67,8 +67,8 @@ pops=$(said mxu "issue vpop: 1 cycles after the last issue, 1 in flight, input q
 report "lines $pops of $(lines mxu issue), commits $(commits mxu vpop)" "lines 4 of 8, commits vpop:19 vpop:20 vpop:20 vpop:21" \
   "the four vpops enter insns() two a cycle, before any row is out, and wait at the head: eight rows of bfloat16 enter the line two a cycle, so the lower half's first pop commits 1 + 1 + 15 + 1 cycles after the vmatmul is carried out (into the queue, the second word into the line, the line, into the output queue), the upper half's a cycle later (one vpop a cycle per array), the second pair's two later"
 report "units $(units mxu); TPUV6E_MXU admitted $(unit_stat mxu TPUV6E_MXU admitted), capacity $(unit_stat mxu TPUV6E_MXU capacity), occupancy $(unit_stat mxu TPUV6E_MXU occupancy)" \
-  "units TPUV6E_MISC TPUV6E_MISC_insns TPUV6E_MXU TPUV6E_MXU_array0_input TPUV6E_MXU_array0_line TPUV6E_MXU_array0_lower TPUV6E_MXU_array0_upper TPUV6E_MXU_insns TPUV6E_SFU TPUV6E_SFU_eup TPUV6E_SFU_eup_input TPUV6E_SFU_eup_output TPUV6E_SFU_insns TPUV6E_XLU TPUV6E_XLU_buffer TPUV6E_XLU_insns TPUV6E_XLU_line TPUV6E_XLU_moves TPUV6E_XLU_out TPUV6E_XLU_queue TPUV6E_XLU_stages; TPUV6E_MXU admitted 8, capacity 2, occupancy 120" \
-  "gem5 reports a unit per component and per block (its insns, queues and pipelines) under the names the model gives them; the eight rows in at the matrix unit two a cycle"
+  "units TPUV6E_MISC TPUV6E_MXU TPUV6E_SFU TPUV6E_XLU; TPUV6E_MXU admitted 8, capacity 2, occupancy 120" \
+  "gem5 reports one unit per component at its primary port, none of its insns, queues and pipelines; the eight rows in at the matrix unit two a cycle"
 
 printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 16\n' > "$BUILD/tpuv6e-mxu-16.yml"
 on_gem5 mxu_rate mxu_rate "$BUILD/tpuv6e-mxu-16.yml"
