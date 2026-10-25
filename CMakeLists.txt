@@ -22,6 +22,11 @@ vcix_cp_add_model(tpuv6e examples/tpuv6e/tpuv6e.cc)
 vcix_cp_add_model(tpuv3 examples/tpuv3/tpuv3.cc)
 # examples/copier: examples/rtl/copier/copier.sv's timing as a cp component, no Verilator needed.
 vcix_cp_add_model(copier examples/copier/copier.cc)
+# examples/xlane_reduce: sum and max across the lanes, a row a cycle through a tree; Hands-on 1 of the tutorial.
+vcix_cp_add_model(xlane_reduce examples/xlane_reduce/xlane_reduce.cc)
+# The same unit beside the TPU v6e's, for a kernel PTB compiles (the tutorial's end-to-end appendix).
+vcix_cp_add_model(xlane_tpuv6e examples/xlane_reduce/xlane_tpuv6e.cc)
+target_include_directories(xlane_tpuv6e PRIVATE examples)
 # examples/tpuv6e and examples/tpuv3 are the tpu example's units, its matrix unit among them, as tpu/<unit>.hpp.
 target_include_directories(tpuv6e PRIVATE examples)
 target_include_directories(tpuv3 PRIVATE examples)
