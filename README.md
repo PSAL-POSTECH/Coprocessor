@@ -716,7 +716,8 @@ this way. The tpu units are described in
 ### The three blocks
 
 A block is a member of its component, constructed with the component
-(`*this`) and a name. Every block is a unit in gem5's statistics.
+(`*this`) and a name. Only the component's `PRIMARY` `Port` is a unit in gem5's
+statistics; the other blocks count inside the model.
 
 ```
 Port              N per cycle pass; what passes is counted
@@ -971,8 +972,7 @@ insn 1: issued at 2, committed at 4
 On Spike, `copy.c -DWAIT` (a source, a copy, a wait, then ordinary loads of
 the destination) prints `256 of 256 bytes copied` and exits 0. On gem5,
 `copy.c -DWAIT -DTIMING` prints `0 of 256` (gem5 moves no data; `-DTIMING`
-makes that exit 0) and gives these statistics (gem5's descriptions cut; the
-`cycles` and `utilized_cycles` lines of the other two units left out):
+makes that exit 0) and gives these statistics (gem5's descriptions cut):
 
 ```
 system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.admitted                3
@@ -980,22 +980,14 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.capacity                1
 system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.cycles             111444
 system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.occupancy               0
 system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.utilized_cycles         3
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER_commands.admitted       3
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER_commands.capacity       4
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER_commands.occupancy     67
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER_insns.admitted          3
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER_insns.capacity          1
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER_insns.occupancy         3
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy_source          1
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy                 1
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy_wait            1
 ```
 
-Three units from one component: `COPIER` is its `PRIMARY` port `issue`,
-`COPIER_insns` its input queue, `COPIER_commands` its queue of commands.
-`memory_` is a `REPORTING` port, which only times. `COPIER_commands.occupancy`
-67: the source and the copy each sat in the queue for a cycle, the wait for 65,
-behind the copy's 64 requests. How the units are counted is in
+One unit from the component: `COPIER` is its `PRIMARY` port `issue`. Its
+input queue, its queue of commands and the `REPORTING` port `memory_` count
+inside the model and are no statistic. How the units are counted is in
 [Statistics](#statistics) below.
 
 ### A pipeline, cycle by cycle
@@ -1118,26 +1110,24 @@ rules that keep it so:
 
 ### Statistics
 
-Every block is a unit in gem5's statistics, under the component's name. The
-four kinds are the C ABI's ([`vcix_accel.h:57-73`](include/vcix_accel.h));
+Every component is a unit in gem5's statistics, counted at its `PRIMARY`
+`Port`. The four kinds are the C ABI's ([`vcix_accel.h:57-73`](include/vcix_accel.h));
 gem5 adds `utilized_cycles` (`admitted / capacity`) to each unit and
 `vcix.committed.<encoding>` for each encoding, with every character outside
-`[A-Za-z0-9_]` turned into `_` ("copy source" is `copy_source`, `COPIER.insns`
-is `COPIER_insns`). The full name is
+`[A-Za-z0-9_]` turned into `_` ("copy source" is `copy_source`). The full name is
 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<unit>.<stat>`, `N` the
 accelerator unit's place in the pool (8 in the fixture).
 
 | unit | ADMITTED | CAPACITY | CYCLES | OCCUPANCY |
 |---|---|---|---|---|
 | `<COMPONENT>`, its `PRIMARY` `Port` | `utilize`d | width | ticks | `occupy`d |
-| `<COMPONENT>_insns` | instructions issued | pushes a cycle (1) | ticks | instructions held as each `cycle()` began |
-| `<COMPONENT>_<queue>` | rows pushed | `min(capacity, per_cycle)` | ticks | rows held as each `cycle()` began |
-| `<COMPONENT>_<pipeline>` | rows pushed | 1 | ticks | rows in its stages after each cycle |
 
-A `REPORTING` port is not a statistic. `cycles` is the ticks: the whole run,
-which for the copier exited at cycle 111444. A component named `X_insns` next
-to one named `X` is refused at create, as are two `PRIMARY` ports in one
-component ([`vcix_cp_base.hpp:326-363`](include/vcix_cp_base.hpp)).
+A `REPORTING` port, and a component's `insns()`, queues and pipelines, are no
+statistics: they count inside the model, and the table lists one unit per
+component. `cycles` is the ticks: the whole run, which for the copier exited at
+cycle 111444. Two units whose names collide once `_` replaces other characters
+are refused at create, as are two `PRIMARY` ports in one component
+([`vcix_cp_base.hpp:326-363`](include/vcix_cp_base.hpp)).
 
 ### Four rules keep the two faces together
 

@@ -1086,49 +1086,40 @@ Each unit reads its keys in `configure`: [sfu.hpp:49](sfu.hpp#L49),
 [dma.hpp:24](dma.hpp#L24), [machine.hpp:40](machine.hpp#L40). A refused value
 is a `cp::ConfigError`, which stops the run before anything is issued.
 
-## Statistics: one unit per block
+## Statistics: one unit per component
 
-gem5 reports one unit per block: `<UNIT>` is the component's primary port,
-`<UNIT>_insns` its instruction queue, and `<UNIT>_<block>` each of its queues
-and pipelines. Each unit has `admitted`, `capacity` (per cycle), `cycles`,
-`occupancy` (what it held, summed over cycles) and `utilized_cycles`
-(admitted / capacity) ([vcix_cp_base.hpp:288-308](../../include/vcix_cp_base.hpp#L288-L308),
+gem5 reports one unit per component, `<UNIT>` counted at its primary port, with
+`admitted`, `capacity` (per cycle), `cycles`, `occupancy` (what it held, summed
+over cycles) and `utilized_cycles` (admitted / capacity)
+([vcix_cp_base.hpp:288-308](../../include/vcix_cp_base.hpp#L288-L308),
 [326-363](../../include/vcix_cp_base.hpp#L326-L363)); then each encoding's
-commits as `committed.<name>`. A reporting port (`SYSTOLIC`'s `in` and `pop`,
-`MSA`'s `issue`, `weight_push` and `pop`, `XLU`'s `issue`) only times
+commits as `committed.<name>`. A component's `insns()`, queues and pipelines
+count inside the model and are no unit; a reporting port (`SYSTOLIC`'s `in` and
+`pop`, `MSA`'s `issue`, `weight_push` and `pop`, `XLU`'s `issue`) only times
 ([vcix_cp.hpp:67-68](../../include/vcix_cp.hpp#L65-L66)).
 
 ```
-unit        primary port: what it admits                 the other units
-SFU         entry: instructions leaving insns(), 1/cycle SFU_insns, SFU_eup_input, SFU_eup (registers; occupancy = in its stages), SFU_eup_output
-MISC        issue: instructions, tpu_misc_issue_width    MISC_insns
-SYSTOLIC    input: rows into the array, 1/cycle;         SYSTOLIC_insns, SYSTOLIC_commands, SYSTOLIC_input_queue, SYSTOLIC_array,
-            occupancy = rows in the stages               SYSTOLIC_output_queue
-MSA         input: rows into the array                   MSA_insns, MSA_input_queue, MSA_array, MSA_output_queue
-XLU         input: elements into the stages;             XLU_insns, XLU_queue, XLU_stages, XLU_moves, XLU_buffer, XLU_line, XLU_out
-            occupancy = elements in the stages
+unit        primary port: what it admits
+SFU         entry: instructions leaving insns(), 1/cycle
+MISC        issue: instructions, tpu_misc_issue_width
+SYSTOLIC    input: rows into the array, 1/cycle; occupancy = rows in the stages
+MSA         input: rows into the array
+XLU         input: elements into the stages; occupancy = elements in the stages
 ```
 
 From the `systolic_full.S` run above (gem5 prefixes each line with
-`system.cpu.executeFuncUnits.funcUnits8.`; `stats.txt` sorts the units by name):
+`system.cpu.executeFuncUnits.funcUnits8.`):
 
 ```
 vcix.SYSTOLIC.admitted                   20    # rows admitted at port input
 vcix.SYSTOLIC.capacity                   1
-vcix.SYSTOLIC_array.admitted             20
-vcix.SYSTOLIC_commands.admitted          0     # the command queue: unused without tpu_systolic_command_queue
-vcix.SYSTOLIC_input_queue.admitted       20
-vcix.SYSTOLIC_input_queue.capacity       8
-vcix.SYSTOLIC_insns.admitted             11
-vcix.SYSTOLIC_output_queue.admitted      16
 vcix.committed.systolic_input_push       5
 vcix.committed.systolic_weight_push      4
 vcix.committed.systolic_pop              2
 ```
 
-The `sfu.S` run gives `SFU.admitted 11`, `SFU_eup.admitted 11` and
-`SFU_eup.occupancy 110` (11 registers, 10 cycles each in the EUP); the
-`msa.S` run `MSA.admitted 4`, `MSA.occupancy 28` (4 rows, 7 cycles each).
+The `sfu.S` run gives `SFU.admitted 11`; the `msa.S` run `MSA.admitted 4`,
+`MSA.occupancy 28` (4 rows, 7 cycles each).
 
 ## Reading tpu_trace
 

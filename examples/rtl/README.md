@@ -623,14 +623,12 @@ memory traffic: 32 words, a read and a write each, one request a cycle
 reads.
 
 The statistics differ: the wrapper declares no `ports()`, so `librtl_copier.so`
-reports only its commits, while `libcopier.so` reports a unit per block, as
-every cp component does ([tpu: statistics](../tpu/README.md#statistics-one-unit-per-block)).
+reports only its commits, while `libcopier.so` reports its one unit, `COPIER` at its `issue` port, as
+every cp component does ([tpu: statistics](../tpu/README.md#statistics-one-unit-per-component)).
 The same program on `libcopier.so`:
 
 ```
 vcix.COPIER.admitted                         3     # instructions admitted at port issue
-vcix.COPIER_commands.admitted                3     # capacity 4
-vcix.COPIER_insns.admitted                   3
 vcix.committed.copy_source                   1
 vcix.committed.copy                          1
 vcix.committed.copy_wait                     1

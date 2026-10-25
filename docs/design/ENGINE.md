@@ -23,7 +23,7 @@ A model is a `cp::Coprocessor` whose members are `cp::Component`s. A component:
   field, an order the program got wrong): a wrong program is accepted and ends in fault, never refused.
 
 The framework routes each instruction to its owner's built-in queue `insns()`, runs every `cycle()` and then
-every block's `cycle()`, answers `ready(id)` from `complete()`, reports block statistics, and on Spike runs the
+every block's `cycle()`, answers `ready(id)` from `complete()`, reports each component's statistics, and on Spike runs the
 same cycles until the instruction completes. Nothing happens at issue except the push into `insns()`.
 
 ## 2. gem5 (timing) semantics
@@ -200,17 +200,13 @@ trap is re-read after its write, the same hazard as before.
 ## 6. Statistics
 
 **Mechanism (no ABI change).** Every block has a `stat()`, a `cp::Stats`: a `cp::Port` holds one as a member; a
-Queue or Pipeline its own private PRIMARY one of unit `"<component>.<block>"` and the block's unit of work. Only the C
-ABI's kinds are used (FACT `vcix_accel.h:60-63`). `Instance::describe/read_stats` unchanged but for the names (FACT
-`vcix_cp_base.hpp.design:270-363`);
-gem5 turns `.` into `_` (FACT gem5 `vcix_accel_model.cc:22-33,117-151`).
+Queue or Pipeline a REPORTING one under its component's unit, so the table lists only the component's PRIMARY
+`cp::Port` (FACT `vcix_cp_base.hpp:326-363`). Only the C ABI's kinds are used (FACT `vcix_accel.h:60-63`).
+`Instance::describe/read_stats` unchanged; gem5 turns `.` into `_` (FACT gem5 `vcix_accel_model.cc:22-33,117-151`).
 
 | unit | ADMITTED | CAPACITY | CYCLES | OCCUPANCY |
 |---|---|---|---|---|
 | `<C>` (its one PRIMARY `cp::Port`) | `utilize`s | width | ticks + reopened | `occupy`s |
-| `<C>_insns` | instructions issued | per-cycle limit (default 1) | ticks | instructions held as each `cycle()` began |
-| `<C>_<queue>` | rows pushed | `min(capacity, per_cycle)` | ticks | rows held as each `cycle()` began |
-| `<C>_<pipeline>` | rows pushed | 1 | ticks | rows in its stages after each cycle |
 
 As gem5's `stats.txt` prints it (prefix FACT `README.md:837`; values FACT `verify/cs/dump`, markers window 1):
 
@@ -218,17 +214,12 @@ As gem5's `stats.txt` prints it (prefix FACT `README.md:837`; values FACT `verif
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.admitted                12   # rows admitted at port input
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.capacity                 1
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.occupancy               84
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_insns.admitted           7   # instructions admitted at port insns
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_insns.capacity           1   # instructions per cycle
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_input_queue.admitted    12   # capacity 8, occupancy 54
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_array.admitted          12   # capacity 1, occupancy 84
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC_output_queue.admitted   12   # capacity 8, occupancy 30
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_pop            3
 ```
 
-What `tests/stats/run.sh` pins (DERIVED): `beyond_units` stays 0 (`SYSTOLIC_array` has two parts, FACT `:62-66`);
-`consistent` finds `vcix.{SFU,MISC,SYSTOLIC,XLU,MSA}.*`, each component keeps one PRIMARY `cp::Port`; `counts`
-keep their values. A component named `X_insns` next to `X` is refused at create (FACT `vcix_cp_base.hpp.design:338-342`).
+What `tests/stats/run.sh` pins (DERIVED): `beyond_units` stays 0; `consistent` finds `vcix.{SFU,MISC,SYSTOLIC,XLU,MSA}.*`,
+each component keeps one PRIMARY `cp::Port`; `counts` keep their values. Two units whose names collide once `_`
+replaces other characters are refused at create (FACT `vcix_cp_base.hpp:326-363`).
 
 ## 7. Trace hook for `tpu::Coprocessor`
 

@@ -58,15 +58,15 @@ echo "-- the units' statistics, with no simulator"
 "$BUILD/tpuv3_ports" "$MODEL" > "$BUILD/tpuv3-ports.log" 2>&1
 rc[ports]=$?
 report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpuv3-ports.log") passed" "exit 0, 1 passed" \
-  "tpuv3_ports: the model's 20 units, one per component and per block, under the names it gives them, in its order (tpuv3-ports.log)"
+  "tpuv3_ports: the model's 4 units, one per component at its primary port, under the names it gives them, in its order (tpuv3-ports.log)"
 
 echo "-- matrix unit, 4 lanes: an array of 4 x 4, 7 slots, a row a cycle, one MXU slot, queues of 8"
 on_gem5 mxu mxu "$HERE/mxu.yml"
 report "exit ${rc[mxu]}, $(issues mxu); commits $(commits mxu)" "exit 0, vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0; commits vmatpush:1 vmatmul:2 vpop:13 vpop:17" \
   "one MXU slot a cycle, no vmatprep: the vmatmul issues beside the vmatpush and is carried out the cycle after it; both pops are accepted at once and wait at the head: eight bfloat16 rows enter one a cycle, the first pop commits 13 cycles after its issue (4 rows + 7 slots + a cycle at the input and the output queue), the next 4 later"
-report "units $(units mxu); TPUV3_MXU admitted $(unit_stat mxu TPUV3_MXU admitted), capacity $(unit_stat mxu TPUV3_MXU capacity), occupancy $(unit_stat mxu TPUV3_MXU occupancy); insns $(unit_stat mxu TPUV3_MXU_insns admitted), $(unit_stat mxu TPUV3_MXU_insns capacity), $(unit_stat mxu TPUV3_MXU_insns occupancy); array0_line $(unit_stat mxu TPUV3_MXU_array0_line admitted), $(unit_stat mxu TPUV3_MXU_array0_line capacity), $(unit_stat mxu TPUV3_MXU_array0_line occupancy)" \
-  "units TPUV3_MISC TPUV3_MISC_insns TPUV3_MXU TPUV3_MXU_array0_input TPUV3_MXU_array0_line TPUV3_MXU_array0_output TPUV3_MXU_insns TPUV3_SFU TPUV3_SFU_eup TPUV3_SFU_eup_input TPUV3_SFU_eup_output TPUV3_SFU_insns TPUV3_XLU TPUV3_XLU_buffer TPUV3_XLU_insns TPUV3_XLU_line TPUV3_XLU_moves TPUV3_XLU_out TPUV3_XLU_queue TPUV3_XLU_stages; TPUV3_MXU admitted 8, capacity 1, occupancy 56; insns 4, 2, 33; array0_line 8, 1, 56" \
-  "gem5 reports the model's 20 units, each component and each of its blocks as <component>_<block>: the eight rows in at the matrix unit one a cycle, 7 cycles each in the line; its insns() took the 4 instructions, 2 a cycle at most"
+report "units $(units mxu); TPUV3_MXU admitted $(unit_stat mxu TPUV3_MXU admitted), capacity $(unit_stat mxu TPUV3_MXU capacity), occupancy $(unit_stat mxu TPUV3_MXU occupancy)" \
+  "units TPUV3_MISC TPUV3_MXU TPUV3_SFU TPUV3_XLU; TPUV3_MXU admitted 8, capacity 1, occupancy 56" \
+  "gem5 reports the model's 4 units, one per component at its primary port and none of its blocks: the eight rows in at the matrix unit one a cycle, 7 cycles each in the line"
 
 on_gem5 mxu_rate mxu_rate "$HERE/mxu.yml"
 report "exit ${rc[mxu_rate]}, $(issues mxu_rate); commits $(commits mxu_rate)" \

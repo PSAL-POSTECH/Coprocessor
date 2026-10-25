@@ -37,9 +37,9 @@ struct Insn : vcix_insn {
 class Coprocessor;
 class Component;
 
-// A component's part, a member of it, kept as an offset to its component; unit_ "<component>.<name>" names it in
-// messages and is its unit in gem5's statistics. The framework calls cycle() after every component's cycle(), clear()
-// at reset, and stat() for the statistics.
+// A component's part, a member of it, kept as an offset to its component; label_ "<component>.<name>" names it in
+// messages. Its port counts under the component's unit; only a PRIMARY Port is a statistic. The framework calls
+// cycle() after every component's cycle(), clear() at reset, and stat() for the statistics.
 class Block {
  public:
   virtual ~Block() = default;
@@ -51,10 +51,10 @@ class Block {
   bool functional_model() const;
   void moved() const;
   [[noreturn]] void broken(const char *what) const {
-    std::fprintf(stderr, "vcix_cp: %s %s in cycle %llu\n", unit_, what, static_cast<unsigned long long>(now()));
+    std::fprintf(stderr, "vcix_cp: %s %s in cycle %llu\n", label_, what, static_cast<unsigned long long>(now()));
     std::abort();
   }
-  const char *unit_, *name_;
+  const char *label_, *name_;
 
  private:
   friend class Coprocessor;
@@ -65,7 +65,7 @@ class Block {
 };
 
 // Per-cycle bandwidth: utilize(n) takes available(), which is width() again in every new cycle. The component's one
-// PRIMARY port is the component's unit in gem5's stats; a REPORTING port is a unit of its own.
+// PRIMARY port is the component's unit in gem5's stats; a REPORTING port only times.
 class Port : public Block {
  public:
   using Role = Stats::Role;
@@ -97,10 +97,10 @@ template <class T>
 class Queue : public Block {
  public:
   Queue(Component &c, const char *name, const char *unit_of_work = "rows")
-      : Block(c, name), stats_(unit_, name_, unit_of_work, 1, Stats::PRIMARY) {}
+      : Block(c, name), stats_(c.name(), name_, unit_of_work, 1) {}
   // In configure: the capacity, at least 1, and the pushes a cycle (UNLIMITED: no bound); empties the queue.
   void configure(uint64_t capacity, uint64_t per_cycle = UNLIMITED) {
-    if (!capacity || !per_cycle) throw std::invalid_argument(std::string("vcix_cp: queue ") + unit_ + ": capacity or per-cycle limit 0");
+    if (!capacity || !per_cycle) throw std::invalid_argument(std::string("vcix_cp: queue ") + label_ + ": capacity or per-cycle limit 0");
     stats_.set_capacity(std::min(capacity, per_cycle));
     capacity_ = capacity, per_cycle_ = per_cycle;
     clear();
@@ -236,17 +236,17 @@ class Pipeline : public Block {
  public:
   using Stage = void (Component::*)(T &, uint32_t);
   Pipeline(Component &c, const char *name, const char *unit_of_work = "rows")
-      : Block(c, name), stats_(unit_, name_, unit_of_work, 1, Stats::PRIMARY) {}
+      : Block(c, name), stats_(c.name(), name_, unit_of_work, 1) {}
   // In D's constructor: on Spike, fn(row, k) for each row each cycle it advances, k = 0 the stage it was pushed to.
   template <class D>
   void on_stage(void (D::*fn)(T &, uint32_t)) {
-    if (!dynamic_cast<D *>(&owner())) throw std::logic_error(std::string("vcix_cp: ") + unit_ + ": on_stage of another class");
+    if (!dynamic_cast<D *>(&owner())) throw std::logic_error(std::string("vcix_cp: ") + label_ + ": on_stage of another class");
     stage_ = static_cast<Stage>(fn);
   }
   // In configure: latency and interval from 1 to UINT32_MAX; empties the stages.
   void configure(uint64_t latency, uint64_t interval) {
     if (!latency || latency > UINT32_MAX || !interval || interval > UINT32_MAX)
-      throw std::invalid_argument(std::string("vcix_cp: pipeline ") + unit_ + ": latency " + std::to_string(latency) +
+      throw std::invalid_argument(std::string("vcix_cp: pipeline ") + label_ + ": latency " + std::to_string(latency) +
                                   ", interval " + std::to_string(interval));
     latency_ = static_cast<uint32_t>(latency), interval_ = interval;
     clear();
@@ -450,7 +450,7 @@ class Coprocessor : public Model {
 };
 
 inline Block::Block(Component &c, const char *name)
-    : unit_(intern(std::string(c.name()) + "." + name)), name_(intern(name)),
+    : label_(intern(std::string(c.name()) + "." + name)), name_(intern(name)),
       to_owner_(reinterpret_cast<char *>(&c) - reinterpret_cast<char *>(this)) {
   c.layout().blocks.push_back(-to_owner_);
 }

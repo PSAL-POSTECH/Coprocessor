@@ -424,11 +424,9 @@ A table with `num_stats` gives its unit gem5 statistics. gem5 reads them with
 the stats are `admitted`, `capacity`, `cycles`, `occupancy` and
 `utilized_cycles` (`admitted / capacity`). Each encoding gets
 `vcix.committed.<encoding>`. The group hangs under the functional unit, so the
-full name starts with the FU's path. In a model built on the cp engine every
-block of a component is a unit of its own too (`SYSTOLIC_insns`,
-`SYSTOLIC_input_queue`, `SYSTOLIC_array`, ...; the root README's
-[Statistics](../../README.md#statistics)); the component's own unit is its
-primary port.
+full name starts with the FU's path. A model built on the cp engine lists one unit per
+component, at its primary port; its queues and pipelines are no units (the
+root README's [Statistics](../../README.md#statistics)).
 
 `tests/stats/markers.S` on the `tpu` model (4x4 array, `tests/tpu/systolic.yml`)
 cuts the run into five windows with m5ops. Dump 1, the systolic array's own
@@ -447,8 +445,7 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_pop              
 ```
 
 (Columns aligned here. The comments are gem5's descriptions, without their
-unit suffix; the last three lines' descriptions and the block units'
-lines are left out.)
+unit suffix; the last three lines' descriptions are left out.)
 
 **Reset.** The model's counters only grow. At a reset gem5 stores them as a
 base, and a dump shows `value - base`, except `capacity`, which is a constant

@@ -20,9 +20,9 @@
 ```
  MyModel : cp::Coprocessor                    exported by VCIX_CP_REGISTER(MyModel)
   +-- Component "SFU"
-        insns()    : Queue<Insn>     (2 deep, 1 push a cycle)  -> stats unit SFU_insns
+        insns()    : Queue<Insn>     (2 deep, 1 push a cycle)  -> no statistic
         entry_     : Port  PRIMARY                             -> stats unit SFU
-        eup_       : Pipeline<Row>                             -> stats unit SFU_eup
+        eup_       : Pipeline<Row>                             -> no statistic
 ```
 
 ## cp::Coprocessor
@@ -109,13 +109,10 @@ t에 push한 행은 정지가 없으면 t+latency에 끝나고, 끝난 머리를
 
 ## 통계와 블록 없는 모델
 
-블록마다 통계 단위가 하나씩 생기고, 표준 컨테이너와 plain 멤버는 통계에 나오지 않습니다.
+컴포넌트마다 통계 단위가 하나(PRIMARY `cp::Port`) 생기고, 큐·파이프라인·REPORTING 포트·표준 컨테이너·plain 멤버는 통계에 나오지 않습니다.
 
 | 단위 | 조건 | ADMITTED | CAPACITY | OCCUPANCY |
 |---|---|---|---|---|
 | `<C>` | PRIMARY `cp::Port` | `utilize` 합 | width | `occupy` 합 |
-| `<C>_insns` | 모든 컴포넌트 | issue된 명령 | 사이클당 한도 | 각 `cycle()` 시작 때 든 명령 |
-| `<C>_<queue>` | `cp::Queue`마다 | push한 행 | `min(capacity, per_cycle)` | 각 `cycle()` 시작 때 든 행 |
-| `<C>_<pipeline>` | `cp::Pipeline`마다 | push한 행 | 1 | 각 사이클 뒤 단계에 든 행 |
 
 Spike 진행으로 세는 것은 Queue `push`/`pop`, Pipeline `push`/`pop`/나이 듦/interval, Port `utilize(n > 0)`, `complete()`뿐입니다.

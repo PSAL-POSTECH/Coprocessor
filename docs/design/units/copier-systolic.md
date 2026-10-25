@@ -201,19 +201,11 @@ FACT: `Instance::dump_stats` after markers.S's window 1. gem5 prefixes each line
 `system.cpu.executeFuncUnits.funcUnits8.` (FACT `README.md:837`).
 
 ```
-vcix.SYSTOLIC_insns.admitted          7   # instructions admitted at port insns
-vcix.SYSTOLIC_insns.capacity          1   # instructions per cycle
 vcix.SYSTOLIC.admitted               12   # rows admitted at port input      <- tests/stats pins this unit
 vcix.SYSTOLIC.capacity                1
 vcix.SYSTOLIC.occupancy              84   # 12 rows x 7 stages
 vcix.SYSTOLIC.utilized_cycles        12
-vcix.SYSTOLIC_commands.admitted       0   # golden: unused (see request R4)
-vcix.SYSTOLIC_input_queue.admitted   12   # capacity 8
-vcix.SYSTOLIC_array.admitted         12   # capacity 1, occupancy 84
-vcix.SYSTOLIC_output_queue.admitted  12   # capacity 8
-vcix.COPIER_insns.admitted            3   (copy.c -DWAIT -DTIMING's 3 instructions)
 vcix.COPIER.admitted                  3   # instructions admitted at port issue, as README.md:837
-vcix.COPIER_commands.admitted         3   # capacity 4
 ```
 
 ---
@@ -235,7 +227,7 @@ vcix.COPIER_commands.admitted         3   # capacity 4
 | `tests/tpu/run.sh:79-88` systolic_stream | iq 0, iq 1..6, then `2 cycles…0 in flight, input queue 6, output queue 1/3/5`; 10 of 11 | **iq 0; iq 2..7 (`1 cycles…0 in flight`); `1 cycles…1 in flight, input queue 6, output queue 0`; `2 cycles…1 in flight, input queue 6, output queue 1`; `…output queue 3`** (derived, driver run); the old list matches 6 of 11, the new list 10 of 11 | the queue counts are read after the head moved the previous push's rows; a waiting push is in flight |
 | `tests/tpu/run.sh:90-95` systolic_full, output full | 3 of 11; third `weight push … input queue 0, output queue 5` | **2 of 11 with the old text**; the new third line is `weight push: 1 cycles … input queue 1, output queue 4` (derived, driver run) | the pop of 4 takes its rows at the head one cycle after issue; the array refills next cycle |
 | `tests/tpu/run.sh:163-168` one_cycle: `weight push … input queue 0, output queue 0` | 1 | queue fields unchanged (derived); the gap of 10 is MISC's design | systolic is empty there |
-| `tests/tpu/ports.cc` list | PASS | **FAIL**: 6 units for SYSTOLIC (`insns, input, commands, input_queue, array, output_queue`, run) | framework-level: every Queue and Pipeline is a unit |
+| `tests/tpu/ports.cc` list | PASS | PASS: SYSTOLIC stays one unit, its `input` port | queues and pipelines are no units |
 | ports.cc one_row | 1, 1, 20, 7, 1 | **1, 1, 20, 7, 1 (run)** | 7 cycles in the stages, either way |
 | ports.cc continuous (>0.99) | 3999 of 4000 | **728 of 4000 (run)**, FAIL | the driver offers a pop first; it is now accepted before its rows exist and blocks the pushes behind it in order |
 | ports.cc squashed | same | **same (run, systolic-only)** | the whole model is plain or copy-on-write data |
@@ -243,7 +235,7 @@ vcix.COPIER_commands.admitted         3   # capacity 4
 | ports.cc more_pushed systolic | stops after 10, refused 1000 | **11, 1000 (run)**, PASS | |
 | ports.cc interleaved (48+7+1) | 56 | **51 (run)**, FAIL | pops are issued ahead and wait at the head; they no longer wait for acceptance |
 | `tests/stats/run.sh:90-108` counts, utilized, rows | 12 3 3 / 0 0 0 / 4 1 1 / 8 2 2 / 0 0 0; 12; 24; rows 1 and 64 | **unchanged (derived)** | an m5op commits after the pops before it, and a pop commits only after its rows entered the array |
-| `tests/stats` consistent, beyond_units | 5 of 5; 0 | **5 of 5; 0 (derived)** | SYSTOLIC keeps one primary port; `SYSTOLIC_insns` has no dot |
+| `tests/stats` consistent, beyond_units | 5 of 5; 0 | **5 of 5; 0 (derived)** | SYSTOLIC keeps one primary port, and only that port is a unit |
 
 The ports.cc drivers commit at `now + latency`, which wraps with Unknown (ENGINE §8). Their numbers above are from my
 copy, which polls `ready()`.
@@ -275,8 +267,8 @@ All of these are consequences of decisions 3 and 5, now final (DESIGN.md §8).
   head not taken. No current test hits the difference: values.c pops at most 40 of 64, and rtl_stall passes (FACT
   `verify/cs`: 7 PASS). The bubble difference is accepted.
 - **R3. `Queue::available(now)`: done.** The push uses `input_.available()`; no ordering dependence remains.
-- **R4.** A block a mode does not use still prints its unit (`SYSTOLIC_commands` stays 0 in golden). OPINION: harmless.
-- **R5.** `tests/tpu/ports.cc` `list()` must be rewritten for the per-block units (framework-level).
+- **R4.** A block a mode does not use costs nothing in the statistics: queues and pipelines are no units.
+- **R5.** `tests/tpu/ports.cc` `list()` keeps one unit per component.
 
 ## 6. Decisions (final, DESIGN.md §8)
 
