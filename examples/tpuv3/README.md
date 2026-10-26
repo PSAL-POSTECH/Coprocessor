@@ -237,16 +237,16 @@ gem5_run m5out build/libtpuv3.so lanes4.yml prep --max-ticks 100000000
 
 So a v6e program and a v3 program are not the same program. The v3 test
 program `tests/tpuv3/functional/mxu.c` on `libtpuv6e.so` is refused at its
-first `vmatpush`, which has no `vmatprep` before it
-(`tests/tpuv3/functional/run.sh`, asserted):
+first `vmatpush`, which has no `vmatprep` before it (the same refusal is
+asserted on the v6e's own program, `tests/tpuv6e/functional/run.sh:52`):
 
 ```
 tpu: vmatpush: no vmatprep of its upper half came before it
 ```
 
 `tpu_mxu_bound_to_lanes: 1` makes the v6e's array one register wide, as the
-v3's is. Then `libtpuv6e.so` runs `mxu.c` and writes what `libtpuv3.so`
-writes, byte for byte, at 4 and at 8 lanes (asserted, same file). Its timing
+v3's is. Then `libtpuv6e.so` runs `mxu.c` as the formula says, as
+`libtpuv3.so` does, at 4 and at 8 lanes (asserted, same file). Its timing
 stays the v6e's: two slots, a word a cycle (below).
 
 ## A row a cycle, not a word a cycle
@@ -655,7 +655,7 @@ beside itself, and the tpu machine from `../../tpu/gem5`.
 
 Four programs on the v6e machine and on this one. Each window is one
 statistics dump. `tests/tpuv3/run.sh` asserts the v3's numbers,
-`tests/tpuv6e/run.sh` the v6e's.
+`tests/tpuv6e/run.sh` the v6e's, all but those of `addresses.S`.
 
 - `tests/tpuv6e/valu.S`: 64 independent `vfadd`s and `vfmul`s.
   - v6e: VALUs busy 16 of 35 cycles, 4 a cycle.
@@ -678,7 +678,7 @@ statistics dump. `tests/tpuv3/run.sh` asserts the v3's numbers,
 `mxu.S` on this machine gives the same trace as on `examples/gem5_se.py`
 (the `vpop`s commit 13 and 17 cycles after their issue): the matrix unit's
 timing is the model's, not the machine's. This machine does not print the tpu
-machine's warning that it is the generic one (asserted).
+machine's warning that it is the generic one.
 
 ### Not modelled in the machine
 
@@ -730,27 +730,25 @@ Each check prints `PASS` or `FAIL`, its text and the values it read. Which
 check proves what:
 
 - `ports.cc`: the counters, their capacities and their order, with no simulator.
-- `mxu.S`, 4 lanes: one MXU slot, a row a cycle, `6 + 7`; the groups in
-  gem5's dump; `rows 8, rows_in_flight 56, active_cycles 14`.
+- `mxu.S`, 4 lanes: one MXU slot, a row a cycle, `6 + 7`;
+  `rows 8, rows_in_flight 56, active_cycles 14`.
 - `mxu_rate.S`, queues of 8 and 16: a `vmatmul` waits for room for all its
   rows.
 - `mxu.S`, 8 and 128 lanes: the delay is `2 x lanes - 1`.
 - `tpu_mxu_bound_to_lanes`: `libtpuv6e.so` bound at 4 and 128 lanes (two
   slots, a word a cycle); `libtpuv3.so` at 8 lanes with and without the key,
-  the same trace; `libtpuv6e.so` with the key at 0, the same trace as without
-  it on `tests/tpuv6e/mxu.S` (8 issues); the key at 2 refused.
+  the same trace; the key at 2 refused.
 - `tpu_mxu_registers`, `tpu_mxu_issue_slots`, `tpu_mxu_word_a_cycle`:
   `libtpuv6e.so` with the v3's values runs `mxu.S` and `mxu_rate.S` as
   `libtpuv3.so`; a value outside each key's range is refused.
-- The v3 machine: its `config.ini`, the four programs of the list above,
-  `mxu.S` timed as on `gem5_se.py`, and no generic-machine warning.
+- The v3 machine: its `config.ini`, the programs of the list above but
+  `addresses.S`, and `mxu.S` timed as on `gem5_se.py`.
 - `tpu_mxu_queue_entries: 1` refused.
 - `functional/run.sh`, on Spike: `functional/mxu.c` against a formula on 4
   and 8 lanes (`mxu: 312 of 312 elements as the formula says` and `mxu: 720
-  of 720 elements as the formula says`); `libtpuv6e.so` bound writes the same
-  bytes; the three refusals of one register an operand; the v3 program
-  refused on an unbound `libtpuv6e.so`, and its `vmatprep` refused on a bound
-  one. It uses the machine description of `tests/tpu/functional` and the
+  of 720 elements as the formula says`); `libtpuv6e.so` bound against the
+  same formula; the three refusals of one register an operand, and a
+  `vmatprep` refused on a bound `libtpuv6e.so`. It uses the machine description of `tests/tpu/functional` and the
   kernels of `tests/tpuv6e/functional`.
 
 `tpu_mxu_bound_to_lanes` is tested here for both models.

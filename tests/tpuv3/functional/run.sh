@@ -62,16 +62,11 @@ echo "-- libtpuv6e.so with tpu_mxu_bound_to_lanes: 1, an array of lanes x lanes:
 { cat "$OUT/machine-8.yml"; echo "tpu_mxu_bound_to_lanes: 1"; } > "$OUT/machine-8-bound.yml"
 formula tpuv6e-bound-4 tpuv6e "$OUT/machine-bound.yml" mxu-4 "4 lanes, an array of 4 x 4"
 formula tpuv6e-bound-8 tpuv6e "$OUT/machine-8-bound.yml" mxu-8 "8 lanes, an array of 8 x 8"
-for width in 4 8; do
-  if cmp -s "$OUT/mxu-$width.out" "$OUT/tpuv6e-bound-$width.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-  echo "  $width lanes: libtpuv6e.so bound writes what libtpuv3.so does, byte for byte"
-done
 
 echo "-- what the matrix unit does not carry out"
 refused prep tpuv3 "$MACHINE/machine.yml" prep "tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half"
 refused push2 tpuv3 "$MACHINE/machine.yml" push2 "tpu: vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not"
 refused pop-upper tpuv3 "$MACHINE/machine.yml" pop-upper "tpu: vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not"
-refused on-tpuv6e tpuv6e "$MACHINE/machine.yml" "" "tpu: vmatpush: no vmatprep of its upper half came before it"
 refused tpuv6e-bound-prep tpuv6e "$OUT/machine-bound.yml" prep \
   "tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half"
 

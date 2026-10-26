@@ -194,7 +194,7 @@ clocked again, so no byte moved. Add a copy wait (`-DWAIT`), and the wait's
 The `[rtl]` line is printed at exit by every process that used an RTL unit
 (`rtl_model.hpp:76-86`): clocks; copies, each a whole Verilator save (one
 before each gem5 issue; on Spike one before every execute, the base layer's
-copy of the model that undoes a trap, `include/vcix_cp_base.hpp:344-353`,
+copy of the model that undoes a trap, `include/vcix_cp_base.hpp:330-339`,
 and one more before each execute of a `MEM` unit, the wrapper's own,
 `rtl_model.hpp:226-241`); and executes undone by a trap. The two copier
 runs: 2 and 3 instructions, two copies each.
@@ -237,7 +237,7 @@ things fire.
   prints nothing.
 - A squash is undone by the copy the generic `Instance` makes before each
   issue. It puts the copy back and runs the ticks and commits since again
-  (`include/vcix_cp_base.hpp:164-182`); the commits run again print nothing
+  (`include/vcix_cp_base.hpp:163-181`); the commits run again print nothing
   (`rtl_model.hpp:316`).
 - An out beat whose `out_tag` is not the oldest draining command's tag ends
   the run. So do more than 2^22 cycles in a row in which commands are left,
@@ -461,7 +461,8 @@ coprocessor: rtl_systolic: RTL_SCHEDULE=random:0:12 is not slow or random:<seed,
 
 <details><summary>Reproduce</summary>
 
-The values: "exit 0, same" for each schedule in `tests/rtl/run.sh`. The
+The values: "exit 0, same" for the default and `slow`, and "exit 0 and same in
+10 of 10" for the random schedules, in `tests/rtl/run.sh`. The
 clocks: `cat build/rtl/systolic-*.err` after `tests/rtl/run.sh`. The refusal:
 
 ```
@@ -750,9 +751,8 @@ instructions ([above](#spike-a-core-infinitely-faster-than-the-unit)).
 
 What `tests/rtl/run.sh` covers:
 
-- **The array's values.** `libtpu.so` runs `values.c` (1536 bytes).
-  `rtl_systolic` gives the same bytes under the default, `slow` and ten
-  random schedules. `rtl_systolic_nowait` differs, and `libtpu.so` under
+- **The array's values.** `rtl_systolic` gives the bytes `libtpu.so` gives
+  for `values.c` under the default, `slow` and ten random schedules. `rtl_systolic_nowait` differs, and `libtpu.so` under
   `tpu_systolic_weight_waits: 0` matches it.
 - **The array's timing.** `rtl_stall`: 7 ready cycles alike.
 - **The copier on Spike.** 0 of 256 without a wait; 256 with one, under

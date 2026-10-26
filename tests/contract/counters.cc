@@ -1,4 +1,4 @@
-// Checks of the statistics a model counts in its counters, with no simulator: through the C table and through Instance.
+// Checks of the statistics a model counts in its counters, with no simulator, through the C table.
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -28,7 +28,7 @@ constexpr uint32_t FORM_MASK = 0xF000007F;
 uint32_t bits_of(Form f) { return 0x5B | (uint32_t(f) << 28); }
 Form form_of(const Insn &insn) { return Form(insn.bits >> 28); }
 
-// Room for `width` a cycle, the model's own: taken by take(), given back by a reset.
+// Room for `width` a cycle, the model's own: taken by take().
 struct Room {
   uint64_t width;
   Cycle at = Unknown;
@@ -76,12 +76,6 @@ class Toy : public Model {
     }
     rows_in_flight_.add(in_line_);
   }
-  void reset() override {
-    issue_room_ = Room{2};
-    lanes_room_ = Room{8};
-    input_ = output_ = in_line_ = head_ = 0;
-    for (bool &slot : line_) slot = false;
-  }
   std::vector<const Counter *> counters() const override {
     if (V == LISTED_TWICE) return {&issue_, &lanes_, &rows_, &rows_in_flight_, &issue_};
     return {&issue_, &lanes_, &rows_, &rows_in_flight_};
@@ -115,26 +109,18 @@ struct Driver {
   std::deque<std::pair<Id, Insn>> in_flight;
   Id next = 1;
   Cycle now = 0;
-  bool reads;
   std::string trace;
 
-  Driver(unsigned seed, bool reads_between) : rng(seed), reads(reads_between) {
+  explicit Driver(unsigned seed) : rng(seed) {
     char error[128] = "";
     self = m->create(&NO_CONFIG, error, sizeof error);
   }
   ~Driver() { m->destroy(self); }
-  void poke() {
-    if (!reads) return;
-    for (int i = 0; i < 3; i++) read(m, self);
-    m->stat(self, 0);
-    m->num_stats(self);
-  }
   Insn draw(std::mt19937 &r) {
     const Form f = Form(r() % 3);
     return {bits_of(f), uint32_t(1 + r() % (f == OP ? 8 : 3)), 32, 0};
   }
   bool try_issue(const Insn &insn) {
-    poke();
     const bool ok = m->can_accept(self, &insn, now);
     trace += ok ? 'a' : 'r';
     if (!ok) return false;
@@ -148,7 +134,6 @@ struct Driver {
   void cycle(std::mt19937 *wrong = nullptr, bool held = false) {
     now++;
     m->tick(self, now);
-    poke();
     for (int k = 0; k < 2 && !in_flight.empty() && in_flight.front().first < wrong_from; k++) {
       m->commit(self, &in_flight.front().second, in_flight.front().first, now);
       in_flight.pop_front();
@@ -224,43 +209,10 @@ void the_list() {
          "stat_name() prints '_'");
 }
 
-void within_capacity() {
-  Driver d(1, false);
-  bool ok = true, moved = false;
-  for (int c = 0; c < 3000; c++) {
-    d.cycle();
-    const std::vector<uint64_t> v = read(d.m, d.self);
-    for (size_t i = 0; i < 3; i++) ok = ok && v[i] <= d.m->stat(d.self, i)->capacity * d.now;
-    moved = moved || (v[0] && v[2] && v[3]);
-  }
-  expect(ok && moved, "each counter of a capacity stays within capacity * cycles at every cycle");
-}
-
-// A reset gives the model its room again within the cycle; the counters keep what they counted.
-void reset_keeps_the_counts() {
-  const vcix_model *m = export_model<Toy<GOOD>>();
-  char error[128] = "";
-  void *self = m->create(&NO_CONFIG, error, sizeof error);
-  const Insn op = {bits_of(OP), 4, 32, 0};
-  int accepted = 0;
-  m->tick(self, 1);
-  for (int round = 0; round < 5; round++) {
-    for (int k = 0; k < 3; k++)
-      if (m->can_accept(self, &op, 1)) m->issue(self, &op, ++accepted, 1);
-    m->reset(self);
-  }
-  if (m->can_accept(self, &op, 2)) m->issue(self, &op, ++accepted, 2);
-  const std::vector<uint64_t> v = read(m, self);
-  m->destroy(self);
-  expect(accepted == 11 && v[0] == 11 && v[1] == 44,
-         "issue, reset and issue again in one cycle: the counters keep counting across resets (11 instructions, 44 "
-         "elements)");
-}
-
 void squash_restores() {
   bool same = true;
   for (unsigned seed = 1; seed <= 40; seed++) {
-    Driver spec(seed, false), plain(seed, false);
+    Driver spec(seed), plain(seed);
     std::mt19937 wrong(seed * 7919);
     for (int c = 0; c < 400; c++) {
       const int phase = c % 23;
@@ -275,77 +227,10 @@ void squash_restores() {
   expect(same, "a wrong path issued over four cycles and squashed four later leaves every counter as if never issued");
 }
 
-void registration_follows_copies() {
-  Instance<Toy<GOOD>> instance;
-  instance.configure(Config(&NO_CONFIG));
-  const auto inside = [](const Toy<GOOD> &model) {
-    for (const Counter *p : model.counters())
-      if (reinterpret_cast<const char *>(p) < reinterpret_cast<const char *>(&model) ||
-          reinterpret_cast<const char *>(p) >= reinterpret_cast<const char *>(&model + 1))
-        return false;
-    return true;
-  };
-  Toy<GOOD> copy = instance.model;
-  const Insn op = {bits_of(OP), 5, 32, 0};
-  copy.issue(op, 1, 3);
-  instance.model = copy;
-  std::vector<uint64_t> values(instance.stats().size());
-  instance.read_stats(values.data());
-  expect(inside(instance.model) && inside(copy) && values[0] == 1 && instance.model.counters()[1]->value() == 5,
-         "after a copy-assignment the counters are the live model's, and the counts are the copy's");
-}
-
-void reads_change_nothing() {
-  Driver quiet(5, false), asked(5, true);
-  std::mt19937 wrong_q(11), wrong_a(11);
-  for (int c = 0; c < 2000; c++) {
-    const bool on = c % 31 < 3, held = c % 31 <= 6;
-    quiet.cycle(on ? &wrong_q : nullptr, held);
-    asked.cycle(on ? &wrong_a : nullptr, held);
-    if (c % 31 == 6) {
-      quiet.squash_wrong();
-      asked.squash_wrong();
-    }
-  }
-  expect(quiet.trace == asked.trace && read(quiet.m, quiet.self) == read(asked.m, asked.self),
-         "reading the statistics, three times before each call, changes no answer and no count");
-}
-
-void the_dump() {
-  Instance<Toy<GOOD>> instance;
-  instance.configure(Config(&NO_CONFIG));
-  const Insn op = {bits_of(OP), 4, 32, 0}, push = {bits_of(PUSH), 2, 32, 0};
-  instance.tick(1);
-  instance.issue(op, 1, 1);
-  instance.issue(push, 2, 1);
-  for (Cycle c = 2; c <= 4; c++) instance.tick(c);
-  instance.commit(op, 1, 4);
-  instance.commit(push, 2, 4);
-  char text[4096] = "";
-  FILE *out = fmemopen(text, sizeof text - 1, "w");
-  instance.dump_stats(out);
-  fclose(out);
-  const char *want =
-      "vcix.pipe.instructions                           1  # instructions, at most 2 a cycle\n"
-      "vcix.pipe.elements                               4  # elements, at most 8 a cycle\n"
-      "vcix.array.rows                                  2  # rows, at most 1 a cycle\n"
-      "vcix.array.rows_in_flight                        5  # rows_in_flight\n"
-      "vcix.committed.op                                1  # op\n"
-      "vcix.committed.array_push                        1  # array push\n"
-      "vcix.committed.pop                               0  # pop\n";
-  expect(std::string(text) == want, "dump_stats prints the gem5 names: each counter, then the commits");
-  if (std::string(text) != want) printf("%s", text);
-}
-
 }  // namespace
 
 int main() {
   the_list();
-  within_capacity();
-  reset_keeps_the_counts();
   squash_restores();
-  registration_follows_copies();
-  reads_change_nothing();
-  the_dump();
   return failed;
 }

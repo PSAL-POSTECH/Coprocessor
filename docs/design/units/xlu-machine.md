@@ -189,7 +189,7 @@ lets them share one. Most deltas come from the rows entering `queue_` in `tick(t
 | `ports.cc:325-336` xlu_shallower, per tile (pop, rest, push) | (1, 11, 1) ×100, first 1 | **(1, 1, 10) ×100, first 1** | both pops queue in `insns()` |
 | `ports.cc:108-123` list(), `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc` | XLU's counters | **`elements`, `elements_in_flight`** | ports, queues and pipelines are no statistics |
 | `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `groups …` | `… TPUV3_XLU` | unchanged | same |
-| `tests/stats/run.sh` listed / beyond_units | the counters, 0 | **the same** | `vcix.XLU.elements` and `elements_in_flight` |
+| `tests/stats/run.sh` listed | the counters | **the same** | `vcix.XLU.elements` and `elements_in_flight` |
 | `tests/tpu/functional/run.sh:141-146,162-164` | pass; exit 201 / 1 / 1 | **unchanged** (FACT `verify/xlu`: values of fields 0/4/8/16 and fold sum, exits 201, 1, 1) | same values and messages |
 
 The `ports.cc` drivers must poll `ready()` (FACT `tests/tpu/ports.cc:63` commits at `now + latency`). The README's
@@ -197,7 +197,7 @@ xlu timing section (`examples/tpu/README.md:626-696`) must be regenerated.
 
 ## 6. What the framework header lacked (all now in it)
 
-1. `Queue::available(now)`: free slots (a slot freed now still taken) and the per-cycle limit; a push enters vl rows all
+1. `Queue::available()`: free slots (a slot freed now still taken) and the per-cycle limit; a push enters vl rows all
    or nothing (today's `stages_.input_rows() + moves_.input_rows() + vl <= entries_`, FACT `examples/tpu/xlu.hpp:122`).
 2. The per-cycle accept limit: `insns().configure(2 * issue, issue)` restores `tpu_xlu_issue_per_cycle` at accept.
 3. Nothing else: a fold's left-over result is flushed by popping its visible rows; pipelines are never flushed.

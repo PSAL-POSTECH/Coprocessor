@@ -1,4 +1,4 @@
-// Test model: holds up to DEPTH instructions at once; reports how many were in flight at each issue, and at each commit the cycles since its issue.
+// Test model: holds up to DEPTH instructions at once; reports at each commit the cycles since its issue.
 #include <cinttypes>
 #include <cstdio>
 #include <deque>
@@ -18,14 +18,9 @@ class Pipelined : public Model {
   const char *name() const override { return "pipelined"; }
   std::vector<Encoding> owns() const override { return {{0x0600405B, 0xFE00707F, "piped"}}; }
 
-  void execute(const Host &, const Insn &) override {
-    printf("[model] execute\n");
-    fflush(stdout);
-  }
+  void execute(const Host &, const Insn &) override {}
   bool can_accept(const Insn &, Cycle) const override { return issued_.size() < DEPTH; }
   Cycle issue(const Insn &, Id, Cycle now) override {
-    printf("[model] issue, %zu in flight\n", issued_.size());
-    fflush(stdout);
     issued_.push_back(now);
     return LATENCY;
   }

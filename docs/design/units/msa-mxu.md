@@ -54,7 +54,7 @@ becomes a `tpu::Component`, so the machine's one-pipeline fallback can go (ENGIN
    - Consequence: acceptance no longer depends on the CPU's issue width beyond W: FACT (driver) the tpuv3 `mxu`
      issue lines are the same at CPU width 2 and 12 (§7, `machine-mxu`).
 4. **Lines.**
-   - MXU: `take` the finished word only when every output queue of its array has `available(now) >= its rows`. This is
+   - MXU: `take` the finished word only when every output queue of its array has `available() >= its rows`. This is
      exactly today's `Stall::WHEN_HEAD_BLOCKED` (FACT `vcix_cp.hpp:392`), so the MinorFU rule matches the MXU.
    - MSA: `take` only when `!output_.full()`. Today it is `WHEN_OUTPUT_FULL` (FACT `msa.hpp:38`,
      `vcix_cp.hpp:392`): the array stops whenever the output queue is full, even if its head is not finished.
@@ -181,7 +181,7 @@ Latency from issue at t, with nothing ahead (DERIVED):
 |---|---|---|
 | `tpu: vpop: 1 rows asked of the upper half, 0 computed` | tpuv6e/functional/run.sh:50 | `fault`, idle array |
 | `tpu: vmatmul: no vmatprep of its upper half came before it` | :51 | `carried`, `fault` |
-| `tpu: vmatpush: no vmatprep of its upper half came before it` | :52, tpuv3/functional/run.sh:145 | `carried`, `fault` |
+| `tpu: vmatpush: no vmatprep of its upper half came before it` | :52 | `carried`, `fault` |
 | `tpu: vmatpush: 1 rows, and the vmatprep before it held 2` | :53 | `carried`, `fault` |
 | `tpu: vmatmul: no weight was pushed before it` | :54 | `carried`, `fault` |
 | `tpu: vmatmul: no weights were latched before it, and it does not latch` | :55 | `carried`, `fault` |
@@ -246,7 +246,7 @@ default, FACT gem5 `BaseMinorCPU.py:409-410`) and 12 on the tpuv3/tpuv6e machine
 code it reproduces every "old" value below (FACT: `check-msa-mxu/old.out` through the tests' own `issues`/`said`
 rules, `verify/pins.py`). The "new" values are DERIVED by the same driver on the new code, not run on gem5.
 
-`issues` is `tests/tpuv3/run.sh:38-41`'s format `name:cycles-after-last:input/output` (lines that are not "the
+`issues` is `tests/tpuv3/run.sh:33-36`'s format `name:cycles-after-last:input/output` (lines that are not "the
 first"). "lines k of n" is the tests' `said` count.
 
 | test | old | new (derived) | why |
@@ -260,7 +260,6 @@ first"). "lines k of n" is the tests' `said` count.
 | tpuv3/run.sh:82 `tpuv6e-bound-4` | `vmatmul:0:0/0 vpop:9:0/4 vpop:2:0/4`; rows_in_flight 56 | `vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0`; **rows_in_flight 56, active_cycles 10** | 2 MXU slots; vpops commit 10 and 12 |
 | tpuv3/run.sh:86 `tpuv6e-bound-128` | `vmatmul:0:0/0 vpop:257:0/4 vpop:2:0/4` | `vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0` | vpops commit 258 and 260 |
 | tpuv3/run.sh:93 `lanes-8` / `bound-8` | `vmatmul:1:0/0 vpop:19:0/4 vpop:4:0/4, bound: trace same` | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0, bound: trace same` | FACT (driver): the two traces are identical |
-| tpuv3/run.sh:99 tpuv6e unbound | 8 issues, trace same | 8 issues, trace same | key 0 is the default |
 | tpuv3/run.sh:137 `machine-mxu` (12 wide) | `vmatmul:1:0/0 vpop:11:0/4 vpop:4:0/4`, equal to gem5_se's | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0`, **equal to gem5_se's** | the per-cycle limit (W = 2) binds before the CPU width: "the matrix unit's timing is the model's" still holds |
 | tpuv6e/run.sh:54 `mxu` pairs | lines 4 | **lines 1**: `vmatprep: the first …` / `vmatpush: 0 cycles …, 1 in flight, …` / `vmatprep: 1 cycles …, 1 in flight, …` / `vmatmul: 0 cycles …, 2 in flight, …` (all `input queue 0, output queues 0 and 0`) | the vmatpush is accepted beside its vmatprep and waits for the weights slot at the head |
 | tpuv6e/run.sh:60 `mxu` pops | lines 4 of 8 | **lines 0 of 8**: `vpop: 1 cycles …, 1 in flight, input queue 0` / `0 cycles …, 2 in flight, input queue 0` / `1 cycles …, 2 in flight, input queue 8` / `0 cycles …, 3 in flight, input queue 8` (`output queues 0 and 0`) | pops wait at the head; they commit 19, 20, 20, 21 after their issues |
@@ -280,7 +279,7 @@ first"). "lines k of n" is the tests' `said` count.
 
 ## 8. What the framework header lacked (all now in it)
 
-1. `Queue::available(now)` (needed: a v6e word of two rows enters both output queues whole; a vmatmul or msa input push
+1. `Queue::available()` (needed: a v6e word of two rows enters both output queues whole; a vmatmul or msa input push
    fits whole in its input queue; FACT today's `vcix_cp.hpp:392, 735`).
 2. Interned block names in `Block`; run-time names such as `array<i>_input` are safe without care.
 3. The per-cycle accept limit (§2 choice 3).

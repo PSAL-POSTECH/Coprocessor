@@ -69,8 +69,7 @@ Before it, the program loaded `vec_b` (1, 2, 3, ...) into `v2` and `vec_a`
 bits.
 
 There is no cycle anywhere: the Spike adapter calls only `execute`. The same
-`.so` on gem5 gives cycles and no values. `tests/print_args/run.sh` asserts the
-config line, nine `[execute]` lines, and the `v2`/`v1` values of `2620825b`.
+`.so` on gem5 gives cycles and no values.
 
 <details><summary>Reproduce</summary>
 
@@ -116,7 +115,8 @@ coprocessor: .../libcannot_be_made.so: coprocessor_model() returned no table
 
 Each exits with 1. In the last one, the model's own C++ wrapper prints why
 before it hands over no table. `tests/contract/run.sh` ("model table and
-instances") asserts the last three.
+instances") asserts the second and the third, and for the last one `direct`'s
+missing table and the reason (`tests/contract/direct.cc:150`, `run.sh:90`).
 
 **Symbols.** Spike exports its own symbols, so a model's *visible*
 definition of a name Spike also defines loses to Spike's. Build models hidden:

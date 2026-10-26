@@ -30,7 +30,6 @@ Labels: **FACT** = read in the repo (`file:line`) or measured in my throwaway bu
     in-order driver for `systolic_full.S` and `systolic_stream.S`. That driver offers one instruction a cycle, with the
     CPU gaps the old gem5 log shows (357 and 361 cycles for the nop blocks). Against the old libtpu.so it reproduces the
     old gem5 trace lines exactly (FACT, `build/tpu-systolic_*.gem5.log`).
-  - **`dump.cc`.** `cp::Instance::dump_stats`, which prints gem5's names.
 
 ---
 
@@ -82,7 +81,7 @@ All FACT unless marked:
 - The port `memory` (64 requests a copy, one a cycle): it is what Spike's progress test sees move while a copy runs.
 - `reset()` clears `source_`, `left_` and `waits_`.
 - On Spike, the copy writes memory inside its own `execute` (fakespike: 512 of 512 bytes before the wait). So
-  `tests/rtl/run.sh:88-91` still expects `256 of 256` for both a plain copy and a copy with a wait (DERIVED).
+  `tests/rtl/run.sh:93-96` still expects `256 of 256` for both a plain copy and a copy with a wait (DERIVED).
 
 Why `insns()` keeps its default, 2 deep and 1 a cycle (OPINION):
 - The wrapper takes a new command in the same cycle its pending one left. Under the framework's rule a freed slot is
@@ -212,12 +211,12 @@ vcix.COPIER.instructions              3   # the copier's run, README.md "The cop
 
 | test | old | new | why |
 |---|---|---|---|
-| `tests/rtl/run.sh:94-97` copier_lockstep, 50 seeds × 20000 cycles | PASS | **PASS (run)**: 109 928 instructions, every can_accept, latency and ready alike | a transcription of copier.sv and the wrapper; the depth-2 `insns()` plus `valid()` is the wrapper's skid |
+| `tests/rtl/run.sh:99-102` copier_lockstep, 50 seeds × 20000 cycles | PASS | **PASS (run)**: 109 928 instructions, every can_accept, latency and ready alike | a transcription of copier.sv and the wrapper; the depth-2 `insns()` plus `valid()` is the wrapper's skid |
 | `README.md:812-822` timing_probe, six copies | commit 1,2,3,4,5; sixth issued 67, committed 68 | **identical (run)** | as above |
 | `README.md:819-822` timing_probe, two waits | committed 2, 4 | **2, 4 (run)** | the wait enters at t+1, is taken at t+2, and the unit is idle |
-| `tests/rtl/run.sh:88-91` libcopier on Spike: plain and wait | 256 of 256, exit 0 | **same (derived; fakespike run)** | the copy's values run as it enters, inside its own execute |
-| `tests/rtl/run.sh:66-69` rtl_stall, ready cycles | 6, 70, 79, 82, 85, 94, 158 | **6, 70, 79, 82, 85, 94, 158 (run)**, 7 PASS | the RTL keys path is the RTL plus the wrapper, and no bubble freeze occurs in that program (see R2) |
-| `tests/rtl/run.sh:49-63` values vs rtl_systolic / nowait | same, differs, same | **same, differs, same (derived; fakespike byte-equal run)** | golden snapshots weights; RTL mode lands beats at the edge |
+| `tests/rtl/run.sh:93-96` libcopier on Spike: plain and wait | 256 of 256, exit 0 | **same (derived; fakespike run)** | the copy's values run as it enters, inside its own execute |
+| `tests/rtl/run.sh:71-74` rtl_stall, ready cycles | 6, 70, 79, 82, 85, 94, 158 | **6, 70, 79, 82, 85, 94, 158 (run)**, 7 PASS | the RTL keys path is the RTL plus the wrapper, and no bubble freeze occurs in that program (see R2) |
+| `tests/rtl/run.sh:49-68` values vs rtl_systolic / nowait | same, differs, same | **same, differs, same (derived; fakespike byte-equal run)** | golden snapshots weights; RTL mode lands beats at the edge |
 | `tests/tpu/functional` systolic sha and refusals `:157-161` | match | **match (derived; fakespike run)** | values code unchanged; refusals via `fault()` at the head |
 | `tests/tpu/run.sh:73-77` systolic_full: pop delay | `pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4`; lines 3 | **`pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0`, then `commit systolic pop: 12 cycles after its issue` (derived, driver run)**; lines 2 | a pop is accepted into `insns()` and waits at its head (decision 3); rows enter one cycle later (head at t+1) |
 | `tests/tpu/run.sh:79-88` systolic_stream | iq 0, iq 1..6, then `2 cycles…0 in flight, input queue 6, output queue 1/3/5`; 10 of 11 | **iq 0; iq 2..7 (`1 cycles…0 in flight`); `1 cycles…1 in flight, input queue 6, output queue 0`; `2 cycles…1 in flight, input queue 6, output queue 1`; `…output queue 3`** (derived, driver run); the old list matches 6 of 11, the new list 10 of 11 | the queue counts are read after the head moved the previous push's rows; a waiting push is in flight |
@@ -230,8 +229,8 @@ vcix.COPIER.instructions              3   # the copier's run, README.md "The cop
 | ports.cc fewer_pushed systolic | 100, 100 | **1, 1; the third pop's commit exits 1 (run)**, FAIL | an unsatisfiable pop is accepted and faults; `insns()` holds 2 |
 | ports.cc more_pushed systolic | stops after 10, refused 1000 | **11, 1000 (run)**, PASS | |
 | ports.cc interleaved (48+7+1) | 56 | **51 (run)**, FAIL | pops are issued ahead and wait at the head; they no longer wait for acceptance |
-| `tests/stats/run.sh` counts, rows | 12 3 3 / 0 0 0 / 4 1 1 / 8 2 2 / 0 0 0; 24; rows 1 and 64 | **unchanged (derived)** | an m5op commits after the pops before it, and a pop commits only after its rows entered the array |
-| `tests/stats` listed, beyond_units | the eight counters; 0 | **the same** | blocks are no statistics |
+| `tests/stats/run.sh` counts | 12 3 3 / 0 0 0 / 4 1 1 / 8 2 2 / 0 0 0 | **unchanged (derived)** | an m5op commits after the pops before it, and a pop commits only after its rows entered the array |
+| `tests/stats` listed | the eight counters | **the same** | blocks are no statistics |
 
 The ports.cc drivers commit at `now + latency`, which wraps with Unknown (ENGINE §8). Their numbers above are from my
 copy, which polls `ready()`.
@@ -257,12 +256,12 @@ All of these are consequences of decisions 3 and 5, now final (DESIGN.md §8).
 
 - **R1. Spike trap safety: done** (ENGINE §5). `export_model`'s execute restores the model when a `values()` throws,
   so a copy into an untouched page is copied once on Spike's retry (FACT `verify/probe2` for the mechanism; the
-  untouched-page runs in `tests/rtl/run.sh:84-87` use rtl_copier only).
+  untouched-page runs in `tests/rtl/run.sh:89-92` use rtl_copier only).
 - **R2. `Pipeline::hold()`: closed, not added** (DESIGN.md §8 decision 1). systolic.sv freezes the whole array while
   `output_queue` is full, bubbles included (FACT `systolic.sv:67,122-134`). A MinorFU pipeline stops only on a finished
   head not taken. No current test hits the difference: values.c pops at most 40 of 64, and rtl_stall passes (FACT
   `verify/cs`: 7 PASS). The bubble difference is accepted.
-- **R3. `Queue::available(now)`: done.** The push uses `input_.available()`; no ordering dependence remains.
+- **R3. `Queue::available()`: done.** The push uses `input_.available()`; no ordering dependence remains.
 - **R4.** A block a mode does not use costs nothing in the statistics: queues and pipelines are no units.
 - **R5.** `tests/tpu/ports.cc` `list()` keeps one unit per component.
 

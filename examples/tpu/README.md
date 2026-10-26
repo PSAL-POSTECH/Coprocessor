@@ -1091,7 +1091,7 @@ is a `cp::ConfigError`, which stops the run before anything is issued.
 
 A component's statistics are its `cp::Counter`s; gem5 prints each as
 `vcix.<COMPONENT>.<name>`, then each encoding's commits as `committed.<name>`
-([vcix_cp_base.hpp:236-248](../../include/vcix_cp_base.hpp#L236-L248)). Its
+([vcix_cp_base.hpp:249-277](../../include/vcix_cp_base.hpp#L249-L277)). Its
 ports, `insns()`, queues and pipelines are behavior and no statistic. A counter
 of a capacity is a unit TOGSim times; the others are plain counts.
 
