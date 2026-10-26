@@ -21,7 +21,7 @@ for n in 4 8; do
   riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -DLANES=${n}u \
     -Wl,--section-start=.kernel=$KERNEL_BASE "$HERE/values.c" "$OUT/kernels.o" -o "$OUT/values$n" || exit 2
   echo "-- $n lanes, on Spike: sum and max of vl = 1 .. 8 rows, against the same tree in C"
-  "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xvcixaccel --machine-config="$HERE/lanes$n.yml" \
+  "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xcoprocessor --machine-config="$HERE/lanes$n.yml" \
     --kernel-addr=$KERNEL_RANGE "$PK" "$OUT/values$n" > "$OUT/values$n.out" 2>&1
   report "exit $?, $(grep -c '^PASS' "$OUT/values$n.out") of 16" "exit 0, 16 of 16" "every lane's vd bit for bit"
   echo "-- $n lanes, on gem5: when each instruction issues and how many cycles it takes"

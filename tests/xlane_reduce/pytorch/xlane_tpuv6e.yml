@@ -1,6 +1,6 @@
 # One TPU v6e TensorCore as libtpu drives it: two 256x256 matrix units (two in every LLO dump), vregs of 8 sublanes
 # x 128 lanes x 32 bit, VMEM 134217728 B (the compile's vmem_report) = 1024 KB x 128 lanes. The array unit is
-# TPUV6E_MXU, vcix-accelerator libtpuv6e.so's port; at 1751 MHz its two 16-bit rows a cycle give 918 TFLOP/s over both.
+# TPUV6E_MXU, Coprocessor libtpuv6e.so's port; at 1751 MHz its two 16-bit rows a cycle give 918 TFLOP/s over both.
 num_cores: 1
 core_freq_mhz: 1751
 core_stats_print_period_cycles: 200
@@ -32,7 +32,7 @@ kind: tpu
 # a step, takes the delay + 9 cycles a step on gem5 (vmatmul 1 cycle after its vmatprep, vpop the delay + 8 after).
 
 # The matrix unit's shape: an operand of 2 registers (256 x 256 at 128 lanes), 2 issue slots, a word of two 16-bit
-# rows a cycle, as vcix-accelerator's tpuv6e.cc Shape has it; the compiler builds the stream for it, the model reads it.
+# rows a cycle, as Coprocessor's tpuv6e.cc Shape has it; the compiler builds the stream for it, the model reads it.
 # The XLU's stages: a lane reduce's push -> pop is 137 cycles and a lane permute's 123 (tpu-perf-archive
 # runs/v6e/xlu_chain/2026-10-19_pallas and runs/v6e/xlu_permute/2026-10-23_pallas: dependent chains step 142 and
 # 127.9 cycles, libtpu's critical paths 142 and 128 with those push -> pop distances). A move's tile takes the move key.
