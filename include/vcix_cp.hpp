@@ -46,13 +46,12 @@ class Block {
   Block(Component &c, const char *name);
   Component &owner() const;
   Cycle now() const;
-  bool functional_model() const;
   void moved() const;
   [[noreturn]] void broken(const char *what) const {
     std::fprintf(stderr, "vcix_cp: %s %s in cycle %llu\n", label_, what, static_cast<unsigned long long>(now()));
     std::abort();
   }
-  const char *label_, *name_;
+  const char *label_;
 
  private:
   friend class Coprocessor;
@@ -231,14 +230,7 @@ class Component {
 template <class T>
 class Pipeline : public Block {
  public:
-  using Stage = void (Component::*)(T &, uint32_t);
   Pipeline(Component &c, const char *name) : Block(c, name) {}
-  // In D's constructor: on Spike, fn(row, k) for each row each cycle it advances, k = 0 the stage it was pushed to.
-  template <class D>
-  void on_stage(void (D::*fn)(T &, uint32_t)) {
-    if (!dynamic_cast<D *>(&owner())) throw std::logic_error(std::string("vcix_cp: ") + label_ + ": on_stage of another class");
-    stage_ = static_cast<Stage>(fn);
-  }
   // In configure: latency and interval from 1 to UINT32_MAX; empties the stages.
   void configure(uint64_t latency, uint64_t interval) {
     if (!latency || latency > UINT32_MAX || !interval || interval > UINT32_MAX)
@@ -282,10 +274,8 @@ class Pipeline : public Block {
   // A stage on every row, or none while the head waits; an interval still running is motion too.
   void cycle() override {
     if (!blocked() && !rows_.empty()) {
-      for (Slot &s : rows_) {
+      for (Slot &s : rows_)
         if (++s.age == latency_) s.done_at = now();
-        if (stage_ && functional_model()) (owner().*stage_)(s.row, s.age - 1);
-      }
       moved();
     }
     if (pushed_ && now() - last_ < interval_) moved();
@@ -299,7 +289,6 @@ class Pipeline : public Block {
   uint64_t interval_ = 1;
   bool pushed_ = false;
   Cycle last_ = 0;
-  Stage stage_ = nullptr;
 };
 
 // The model: routes each instruction by encoding to its component's insns(), ticks every cycle() then every block,
@@ -453,7 +442,7 @@ class Coprocessor : public Model {
 };
 
 inline Block::Block(Component &c, const char *name)
-    : label_(intern(std::string(c.name()) + "." + name)), name_(intern(name)),
+    : label_(intern(std::string(c.name()) + "." + name)),
       to_owner_(reinterpret_cast<char *>(&c) - reinterpret_cast<char *>(this)) {
   c.layout().blocks.push_back(-to_owner_);
 }
@@ -461,7 +450,6 @@ inline Component &Block::owner() const {
   return *reinterpret_cast<Component *>(const_cast<char *>(reinterpret_cast<const char *>(this)) + to_owner_);
 }
 inline Cycle Block::now() const { return owner().now(); }
-inline bool Block::functional_model() const { return owner().functional_model(); }
 inline void Block::moved() const { owner().motion_++; }
 
 inline Counter::Counter(Component &c, const char *name, uint64_t capacity) : Counter(c.name(), intern(name), capacity) {
