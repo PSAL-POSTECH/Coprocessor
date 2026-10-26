@@ -1092,10 +1092,10 @@ gem5_run build/m5-pp build/libtpu.so build/tpu-trace.yml build/push_pop --max-ti
 ## A unit that is RTL
 
 A unit that exists as RTL needs no component. `examples/rtl/rtl_model.hpp` wraps one
-Verilated module with standard ports (command, in and out beats, memory,
-`busy`), and the model is a table of the encodings it owns. gem5 clocks the
-module once a cycle for the timing. Spike clocks it only while an instruction
-needs it, for the values. See
+Verilated module with standard ports (command, in and out beats, `busy`), and
+the model is a table of the encodings it owns. gem5 clocks the module once a
+cycle for the timing. Spike clocks it only while an instruction needs it, for
+the values. See
 [`examples/rtl/README.md`](examples/rtl/README.md).
 
 ## What you do not implement, and what you configure

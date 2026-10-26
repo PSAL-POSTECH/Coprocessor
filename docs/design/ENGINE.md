@@ -179,7 +179,7 @@ to a stuck one → the generic message, exit 1.
 **Spike traps (new, FACT `verify/probe2`).** A `mem_write` that throws inside `values()` (pk demand paging) leaves
 the model half-ticked. `export_model`'s execute now keeps `M saved = model` and restores it before rethrowing, so
 Spike's re-execute runs from the state before: `effects after trap + one re-execute: 1 (1 expected)` (was 2). This
-is the C++ wrapper only (`vcix_cp_base.hpp.design`), no ABI change; `rtl_model.hpp:226-238` does the same for the RTL.
+is the C++ wrapper only (`vcix_cp_base.hpp.design`), no ABI change.
 OPINION: it costs one model copy per Spike instruction; a register the instruction both read and wrote before the
 trap is re-read after its write, the same hazard as before.
 

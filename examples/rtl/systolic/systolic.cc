@@ -10,7 +10,6 @@ namespace {
 struct Systolic {
   static constexpr const char *NAME = "rtl_systolic";
   static constexpr uint32_t LANES = SYSTOLIC_LANES, TAGS = 256;
-  static constexpr bool BEATS = true, SCALAR = false, MEM = false;
   static constexpr uint32_t FORM = 0xFE00707F;
   static constexpr rtl::Op OPS[] = {
       {0x2200305B, FORM, "systolic input push", 0, true, false},
