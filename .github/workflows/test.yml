@@ -61,7 +61,7 @@ jobs:
           retention-days: 7
 
   # After main's environment image is published and its tests pass, PTB (PSAL-POSTECH/PyTorchSim-Triton-Backend), whose
-  # images are FROM that environment, gets a pull request moving its third_party/vcix-accelerator submodule here: one
+  # images are FROM that environment, gets a pull request moving its third_party/Coprocessor submodule here: one
   # branch (bot/vcix-bump) force-pushed from PTB main, one open pull request, the newest main commit winning. A newer
   # run cancels an older one. Needs the PTB_BUMP_TOKEN secret, which can push to PTB and open pull requests there; this
   # workflow's own token reads this repository and its image.

@@ -32,7 +32,7 @@ rv_program() {
 spike_run() {
   local machine=(--varch=vlen:256,elen:64)
   [ -n "$2" ] && machine=("--machine-config=$2")
-  "$SPIKE" --extlib="$1" --isa=rv64gcv_zfh_xvcixaccel "${machine[@]}" "${@:4}" "$PK" "$3"
+  "$SPIKE" --extlib="$1" --isa=rv64gcv_zfh_xcoprocessor "${machine[@]}" "${@:4}" "$PK" "$3"
 }
 
 # gem5_run <output-dir> <model.so> <machine.yml, or ""> <elf> [fixture options]

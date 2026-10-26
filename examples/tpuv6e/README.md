@@ -47,7 +47,7 @@ Run the v6e's `tests/tpuv6e/mxu.S` on `libtpu.so`, and its first
 instruction, a `vmatprep`, reaches the multi-precision array:
 
 ```
-$ spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xvcixaccel --machine-config=lanes4.yml pk mxu
+$ spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xcoprocessor --machine-config=lanes4.yml pk mxu
 tpu: msa push: inputs of 4 to a word, weights of 1
 $ echo $?
 1
@@ -382,7 +382,7 @@ Built and run as `tests/tpuv6e/functional/run.sh` builds and runs `mxu.c`:
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c tests/tpuv6e/functional/kernels.S -o kernels.o
 riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -Wl,--section-start=.kernel=0x2000000 \
     -I tests/tpu/functional mxu_walk.c kernels.o -o mxu_walk
-spike --extlib=build/libtpuv6e.so --isa=rv64gcv_zfh_xvcixaccel --machine-config=tests/tpu/functional/machine.yml \
+spike --extlib=build/libtpuv6e.so --isa=rv64gcv_zfh_xcoprocessor --machine-config=tests/tpu/functional/machine.yml \
     --kernel-addr=2000000:2100000 pk mxu_walk
 ```
 
@@ -713,7 +713,7 @@ empty and its line idle (`mxu.hpp:248-251`). Here is `mxu.S` with a fifth
 both simulators:
 
 ```
-$ spike --extlib=build/libtpuv6e.so --isa=rv64gcv_zfh_xvcixaccel --machine-config=extra.yml pk mxu_extra
+$ spike --extlib=build/libtpuv6e.so --isa=rv64gcv_zfh_xcoprocessor --machine-config=extra.yml pk mxu_extra
 tpu: vpop: 4 rows asked of the lower half, 0 computed
 $ echo $?
 1
@@ -805,7 +805,7 @@ whose one pipeline the EUP is (`examples/tpu/sfu.hpp:1-3`, `99-119`,
 Values, on Spike: push `0, 1, ..., 7`, pop, store.
 
 ```
-$ spike --extlib=build/libtpuv6e.so --isa=rv64gcv_zfh_xvcixaccel --machine-config=lanes4.yml pk eup
+$ spike --extlib=build/libtpuv6e.so --isa=rv64gcv_zfh_xcoprocessor --machine-config=lanes4.yml pk eup
 1 2 4 8 16 32 64 128
 ```
 
@@ -896,7 +896,7 @@ The options are the generic script's. The scratchpad needs a gem5 with
 ```mermaid
 flowchart LR
   subgraph cpu["Minor CPU: 12 issues a cycle, 2 LSQ requests"]
-    fu16["funcUnits16<br/>MinorVcixAccelFU<br/>libtpuv6e.so"]
+    fu16["funcUnits16<br/>MinorCoprocessorFU<br/>libtpuv6e.so"]
     valu["funcUnits21, 22, 27, 28<br/>4 MinorVALU"]
     int["funcUnits29, 30<br/>5th and 6th IntAlu"]
   end
@@ -1014,7 +1014,7 @@ The matrix unit's (`mxu.hpp:46-81`):
   all arrays take together through the pop port. At least 2, since a word of
   two rows enters whole. With 1, gem5 stops:
   ```
-  src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libtpuv6e.so: tpuv6e: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
+  src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/libtpuv6e.so: tpuv6e: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
   ```
 - **`tpu_mxu_delay_cycles`**, default `4 x vpu_num_lanes - 1`
   (`2 x vpu_num_lanes - 1` when bound to the lanes). The stages in each
@@ -1023,7 +1023,7 @@ The matrix unit's (`mxu.hpp:46-81`):
   delay line, weights and held halves. 1 to 32, what a field of 5 bits names.
   With 33, gem5 stops:
   ```
-  src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libtpuv6e.so: tpuv6e: machine description: tpu_mxu_units: '33' is not a number of arrays an instruction's field of 5 bits can name: 1 to 32
+  src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/libtpuv6e.so: tpuv6e: machine description: tpu_mxu_units: '33' is not a number of arrays an instruction's field of 5 bits can name: 1 to 32
   ```
 - **`tpu_mxu_bound_to_lanes`**, default 0. With 1 the array is
   `vpu_num_lanes x vpu_num_lanes` and an operand is one register, as in

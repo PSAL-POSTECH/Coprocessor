@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "vcix_accel.h"
+#include "coprocessor.h"
 
 namespace {
 
@@ -32,7 +32,7 @@ struct Run {
   explicit Run(const char *path) {
     void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!h) fprintf(stderr, "%s\n", dlerror()), exit(2);
-    m = reinterpret_cast<const vcix_model *(*)()>(dlsym(h, "vcix_accel_model"))();
+    m = reinterpret_cast<const vcix_model *(*)()>(dlsym(h, "coprocessor_model"))();
     vcix_config config = {nullptr, key};
     char error[256] = "";
     if (!(self = m->create(&config, error, sizeof error))) fprintf(stderr, "create: %s\n", error), exit(2);

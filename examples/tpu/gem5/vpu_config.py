@@ -168,7 +168,7 @@ class MinorCustomFUPool(MinorFUPool):
         MinorCustomMiscFU(),
 
         # Accelerator: the script names its model
-        MinorVcixAccelFU(),
+        MinorCoprocessorFU(),
 
         # Vector
         MinorVecConfig(),
@@ -279,7 +279,7 @@ def _vector_unit(valus):
 def vliw_pool(valus):
     if valus < 2 or valus % 2:
         raise ValueError(f"vliw_pool: {valus} VALUs is not an even count of at least 2")
-    return MinorFUPool(funcUnits=_scalar_unit() + _scalar_unit() + [MinorVcixAccelFU()] + _vector_unit(valus // 2)
+    return MinorFUPool(funcUnits=_scalar_unit() + _scalar_unit() + [MinorCoprocessorFU()] + _vector_unit(valus // 2)
                        + _vector_unit(valus // 2) + [MinorCustomIntFU(), MinorCustomIntFU()])
 
 class RiscvVPU(RiscvMinorCPU):

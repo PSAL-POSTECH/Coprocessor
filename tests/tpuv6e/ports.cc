@@ -8,7 +8,7 @@
 #include <map>
 #include <string>
 
-#include "vcix_accel.h"
+#include "coprocessor.h"
 
 int main(int argc, char **argv) {
   if (argc != 2) {
@@ -16,10 +16,10 @@ int main(int argc, char **argv) {
     return 2;
   }
   void *lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
-  auto entry = lib ? reinterpret_cast<const vcix_model *(*)()>(dlsym(lib, "vcix_accel_model")) : nullptr;
+  auto entry = lib ? reinterpret_cast<const vcix_model *(*)()>(dlsym(lib, "coprocessor_model")) : nullptr;
   const vcix_model *m = entry ? entry() : nullptr;
-  if (!m || m->abi_version != VCIX_ACCEL_ABI_VERSION || !m->num_stats) {
-    fprintf(stderr, "%s: no table of ABI %u with statistics\n", argv[1], VCIX_ACCEL_ABI_VERSION);
+  if (!m || m->abi_version != COPROCESSOR_ABI_VERSION || !m->num_stats) {
+    fprintf(stderr, "%s: no table of ABI %u with statistics\n", argv[1], COPROCESSOR_ABI_VERSION);
     return 1;
   }
   vcix_config config = {nullptr, [](void *, const char *key) -> const char * {

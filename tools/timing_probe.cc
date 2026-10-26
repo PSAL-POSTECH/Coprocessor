@@ -7,7 +7,7 @@
 #include <cstring>
 #include <system_error>
 
-#include "vcix_accel.h"
+#include "coprocessor.h"
 
 namespace {
 
@@ -44,14 +44,14 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s\n", dlerror());
     return 1;
   }
-  auto entry = reinterpret_cast<const vcix_model *(*)()>(dlsym(lib, "vcix_accel_model"));
+  auto entry = reinterpret_cast<const vcix_model *(*)()>(dlsym(lib, "coprocessor_model"));
   if (!entry) {
-    fprintf(stderr, "%s does not export vcix_accel_model\n", argv[1]);
+    fprintf(stderr, "%s does not export coprocessor_model\n", argv[1]);
     return 1;
   }
   const vcix_model *m = entry();
-  if (m->abi_version != VCIX_ACCEL_ABI_VERSION) {
-    fprintf(stderr, "%s has ABI %u, the probe has %u\n", argv[1], m->abi_version, VCIX_ACCEL_ABI_VERSION);
+  if (m->abi_version != COPROCESSOR_ABI_VERSION) {
+    fprintf(stderr, "%s has ABI %u, the probe has %u\n", argv[1], m->abi_version, COPROCESSOR_ABI_VERSION);
     return 1;
   }
   if (!m->create || !m->destroy || !m->can_accept || !m->issue || !m->squash || !m->commit) {

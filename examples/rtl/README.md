@@ -456,7 +456,7 @@ The seed must not be 0. A malformed value is refused when the model is
 configured:
 
 ```
-vcixaccel: rtl_systolic: RTL_SCHEDULE=random:0:12 is not slow or random:<seed, not 0>:<max gap>
+coprocessor: rtl_systolic: RTL_SCHEDULE=random:0:12 is not slow or random:<seed, not 0>:<max gap>
 ```
 
 <details><summary>Reproduce</summary>
@@ -533,11 +533,11 @@ Each of these came from a run:
 - A machine description with `vpu_num_lanes: 8` for the 4-lane array. The
   table's `check` refuses it (`systolic/systolic.cc:20-26`). On Spike:
   ```
-  vcixaccel: rtl_systolic: machine description: vpu_num_lanes: '8' is not the lanes this RTL was built with
+  coprocessor: rtl_systolic: machine description: vpu_num_lanes: '8' is not the lanes this RTL was built with
   ```
   On gem5 (`<build>` stands for the build directory's path):
   ```
-  src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/librtl_systolic.so: rtl_systolic: machine description: vpu_num_lanes: '8' is not the lanes this RTL was built with
+  src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/librtl_systolic.so: rtl_systolic: machine description: vpu_num_lanes: '8' is not the lanes this RTL was built with
   ```
 - More rows waiting for a pop than the array holds, on Spike
   ([the limits](#the-limits)):

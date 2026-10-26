@@ -153,10 +153,10 @@ def machine(args, vpu, scratchpad, clock="1GHz"):
     system.cpu = valid_cpu[args.cpu]()
     system.cpu.ArchISA.vlen = args.vlen
     for unit in system.cpu.executeFuncUnits.funcUnits:
-        if isinstance(unit, MinorVcixAccelFU):
-            unit.vcixModel = args.model
-            unit.vcixConfigKeys = list(settings.keys())
-            unit.vcixConfigValues = list(settings.values())
+        if isinstance(unit, MinorCoprocessorFU):
+            unit.coprocessorModel = args.model
+            unit.coprocessorConfigKeys = list(settings.keys())
+            unit.coprocessorConfigValues = list(settings.values())
 
     system.mem_ranges = [AddrRange(start=0, size="16GB")]
 

@@ -30,7 +30,7 @@ riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -Wl,
 # on_model <name> -- <program> [arguments]: standard output to $OUT/<name>.out, on $MACHINE_YML if set.
 on_model() {
   local name=$1; shift 2
-  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xvcixaccel --machine-config="${MACHINE_YML:-$MACHINE/machine.yml}" \
+  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xcoprocessor --machine-config="${MACHINE_YML:-$MACHINE/machine.yml}" \
     --kernel-addr=$KERNEL_RANGE "$PK" "$OUT/$1" "${@:2}" < /dev/null > "$OUT/$name.out" 2> "$OUT/$name.err"
 }
 
