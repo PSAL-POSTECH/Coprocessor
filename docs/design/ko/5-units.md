@@ -15,7 +15,6 @@
 | Systolic | `insns -> commands -> input_queue -> array -> output_queue` | 202 → 285 | golden은 머리에서 명령 전체를 옮기거나 기다리고, RTL 키는 RTL과 wrapper를 옮겨 적었습니다. |
 | Msa | `insns -> input_queue -> array -> output_queue` | 145 → 199 | 상태 검사가 머리로 옮겨 가고, 배열은 끝난 머리만 붙잡습니다. |
 | Mxu | `insns(2W, W) -> array<i>_input -> array<i>_line -> array<i>_lower/_upper` | 294 → 362 | vpop·vmatmul이 머리에서 기다리고, accept가 W = SLOTS + units로 묶입니다. |
-| Copier | `insns(2, 1) -> commands(4) -> left_ x memory -> waits_` | 68 → 87 | copier.sv와 wrapper를 사이클 단위로 옮겨 적었고, 사이클 값은 같습니다. |
 
 ## 유닛별 cycle()
 
@@ -92,18 +91,9 @@
     active_cycles_.add(in_line != 0);
 ```
 
-**Copier** — copier.sv의 한 클럭 에지가 `cycle()` 하나이며, `copier_lockstep`이 PASS입니다.
-```cpp
-    if (left_) {
-      left_ -= memory_.utilize(1);
-    } else if (commands_.length() && is(COPY, commands_.pop())) {
-      left_ = 2 * BYTES / 8;
-    }
-```
-
 ## cycle 재기준
 
-바뀌는 값만 모았고, 첫 gem5 실행이 이 값들의 사실상 검증입니다(구현 순서 10단계).
+바뀌는 값만 모았고, 첫 gem5 실행이 이 값들의 사실상 검증입니다(구현 순서 9단계).
 
 | 유닛 | test | old → new |
 |---|---|---|
@@ -130,7 +120,7 @@
 | 3. Spike 진행 규칙 | 유지하고 `moved()` 같은 탈출구는 만들지 않습니다. | 지금 유닛 중 걸리는 것은 없습니다. |
 | 4. `vcix_cp_base.hpp`의 두 변경 | trap 시 모델 복원과 `check_layout`을 승인합니다. | ABI는 그대로이고, 비용은 Spike 명령마다 모델 복사 한 번입니다. |
 | 5. 틀린 프로그램 | 순서 오류와 필드 오류 모두 `fault(insn, why, exit_code = 1)`로 완료합니다. gem5는 commit에서, Spike는 `execute`에서 `why`를 내고 끝납니다. `why_stuck`은 없앱니다. | 순서 오류는 XLU·MXU, 필드 오류는 sfu·xlu·msa·mxu·misc·systolic이 대상입니다. gem5도 이유를 출력합니다(지금은 받지 않고 멈춤). squash된 명령은 commit되지 않으므로 오류가 나지 않습니다. |
-| 6. `valid()` | 흐름 제어 전용으로 좁힙니다. 이름은 `valid`로 둡니다. | copier와 systolic RTL 모드만 씁니다. `copier_lockstep`이 이 accept 시점에 기댑니다. |
+| 6. `valid()` | 흐름 제어 전용으로 좁힙니다. 이름은 `valid`로 둡니다. | systolic RTL 모드만 씁니다. |
 | 7. 종료 코드 201·200 | xlu pattern 오류(201)와 MVIN/MVOUT 주소 overflow(200)도 `fault(insn, why, 201|200)`로 통일합니다. `std::exit` 직접 호출은 없습니다. | Spike 거절 테스트 12개의 문구와 종료 코드는 그대로입니다. gem5는 pattern 누락 pop을 영구 대기 대신 commit에서 exit 201로 끝냅니다. "gem5는 받지 않는다" 테스트와 README 문장은 "commit에서 오류로 끝난다"로 바꿉니다. |
 | 8. 이름 | 공용 층과 엔진을 한 네임스페이스 `cp`로 합칩니다. `vcix_accel.hpp` → `vcix_cp_base.hpp`, `Block::end_cycle` → `cycle`, `spike()`/`on_spike()` → `functional_model()`, `VCIX_ACCEL_REGISTER` → `VCIX_CP_REGISTER`. | C ABI(`vcix_accel.h`, 심볼 `vcix_accel_model`)는 그대로입니다. RTL 모델과 contract 테스트 14곳의 include와 네임스페이스를 함께 고칩니다. 공용 층의 `Insn` 별칭은 없애고 `vcix_insn`을 씁니다(`cp::Insn`은 엔진의 id 달린 명령).  설계 파일 전체에 적용했고, 일회용 드라이버 출력 42개가 변경 전과 바이트 단위로 같습니다. |
 | 9. 블록 메서드 이름 | `room(now)` → `available()`, `spend(n, now)` → `utilize(n)`. | `Port`와 `Queue`에 같이 적용. 드라이버 출력 42개 동일. |
@@ -142,8 +132,7 @@
 |---|---|---|---|
 | 1 | `include/vcix_cp_base.hpp` | `vcix_cp_base.hpp.diff` 적용 | `tests/contract`, `tests/rtl` PASS |
 | 2 | `include/vcix_cp.hpp` | `vcix_cp.hpp.design`으로 교체 | `verify/probe2`, `verify/eng/check`를 `tests/contract`로 |
-| 3 | `examples/copier/copier.cc` | 새 파일 | `copier_lockstep`, `timing_probe`, `tests/rtl/run.sh` |
-| 4–8 | `machine.hpp`, `{sfu,misc,dma}`, `{systolic,msa}`, `xlu`, `mxu` | trace 변경, 새 파일 | 빌드, `rtl_stall`, 각 functional |
-| 9 | `tests/*/ports.cc` | `ready()` poll, 블록 단위 목록, 프로그램 순서 | 각 ports 테스트 |
-| 10 | `tests/*/run.sh`, `route_once.cc` | 새 값으로 다시 고정 | gem5 실행 후 드라이버 값과 비교 |
-| 11 | `README.md`, `examples/tpu*/README.md` | 핸들러 설명과 사이클 예시 재생성 | `units/*.md`의 README 목록 |
+| 3–7 | `machine.hpp`, `{sfu,misc,dma}`, `{systolic,msa}`, `xlu`, `mxu` | trace 변경, 새 파일 | 빌드, `rtl_stall`, 각 functional |
+| 8 | `tests/*/ports.cc` | `ready()` poll, 블록 단위 목록, 프로그램 순서 | 각 ports 테스트 |
+| 9 | `tests/*/run.sh`, `route_once.cc` | 새 값으로 다시 고정 | gem5 실행 후 드라이버 값과 비교 |
+| 10 | `README.md`, `examples/tpu*/README.md` | 핸들러 설명과 사이클 예시 재생성 | `units/*.md`의 README 목록 |

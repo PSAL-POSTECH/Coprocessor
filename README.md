@@ -672,8 +672,7 @@ memory are touched:
  +-------------------------------------------------------------------------------+
 ```
 
-Every tpu unit and [`examples/copier`](examples/copier/copier.cc) are written
-this way. The tpu units are described in
+Every tpu unit is written this way. The tpu units are described in
 [`examples/tpu/README.md`](examples/tpu/README.md).
 
 ### A component's life
@@ -900,99 +899,6 @@ table as gem5 does: A ready at 4, B at 5):
 | 4 | `eup.take` A, `values`, `complete(A)` | B 3, finished | `ready(A, 4)` true |
 | 5 | `eup.take` B, `complete(B)` | empty | `ready(B, 5)` true |
 
-### The copier: memory, `values()` and `host()`
-
-[`examples/copier/copier.cc`](examples/copier/copier.cc) is the timing of the
-RTL copier in [`examples/rtl/copier`](examples/rtl/copier) as one component,
-87 lines. Copy it to start a unit that moves memory.
-
-```cpp
-// examples/copier/copier.cc:19-32: three encodings; a counter, a port and a queue of four; valid as the RTL wrapper's can_accept
-explicit Copier(cp::Coprocessor &cp) : Component(cp, "COPIER") {
-  register_insn(COPY_SOURCE); register_insn(COPY); register_insn(COPY_WAIT);
-}
-void configure(const cp::Config &) override { commands_.configure(DEPTH); }                      // DEPTH 4
-void reset() override { source_ = left_ = 0; waits_.clear(); }
-bool valid(const cp::Insn &) const override { return !insns().size() && commands_.size() < DEPTH; }
-
-// :35-45: one clock edge: a request of the running copy, or the head taken; the pending command in; then the waits
-void cycle() override {
-  if (left_) left_ -= memory_.utilize(1);
-  else if (commands_.length() && is(COPY, commands_.pop())) left_ = 2 * BYTES / 8;           // 64 requests
-  if (insns().length() && commands_.push(insns().front())) enter(insns().pop());
-  if (left_ || commands_.size()) return;
-  for (const cp::Insn &wait : waits_) complete(wait);
-  waits_.clear();
-}
-
-// :51-66: a source or a copy is ready as it enters the queue; on Spike its values happen then
-void enter(const cp::Insn &insn) {
-  values([&](const cp::Host &host) {
-    if (is(COPY_SOURCE, insn)) source_ = host.xreg(cp::rs1(insn));
-    if (!is(COPY, insn)) return;
-    const uint64_t to = host.xreg(cp::rs1(insn));
-    for (uint64_t i = 0; i < BYTES; i += 8) { /* host.mem_read(source_ + i, ...), host.mem_write(to + i, ...) */ }
-    source_ += BYTES;
-  });
-  instructions_.add(1);
-  if (is(COPY_WAIT, insn)) waits_.push_back(insn); else complete(insn);
-}
-
-// :68-72: the counter and the blocks, then plain members
-cp::Counter instructions_{*this, "instructions", 1};
-cp::Port memory_{*this, "memory", 1};
-cp::Queue<cp::Insn> commands_{*this, "commands"};
-uint64_t source_ = 0, left_ = 0;
-std::vector<cp::Insn> waits_;
-```
-
-`source_` is written inside `values()`, so it holds a value on Spike only;
-nothing in `cycle` decides on it. `left_` and `waits_` are timing state, and
-plain copyable members are fine for it: the waiting itself happens at the
-`memory_` port, one request a cycle, which the engine can see move.
-
-What the component gives, with no simulator (`timing_probe` ticks the model
-until each instruction is ready, then issues the next):
-
-```
-$ build/timing_probe build/libcopier.so 0a00405b 6        six copies
-insn 0: issued at 0, committed at 1
-insn 1: issued at 1, committed at 2
-insn 2: issued at 2, committed at 3
-insn 3: issued at 3, committed at 4
-insn 4: issued at 4, committed at 5
-insn 5: issued at 67, committed at 68
-
-$ build/timing_probe build/libcopier.so 0e00405b 2        two waits
-insn 0: issued at 0, committed at 2
-insn 1: issued at 2, committed at 4
-```
-
-- A copy is ready in the cycle after its issue: `enter` runs in `tick(t+1)`
-  and completes it as it joins the queue.
-- The queue has four slots, but five copies get in: the first was taken as the
-  head in cycle 2, before the second arrived, and started its 64 requests.
-- The sixth waits for a slot. The requests end at cycle 66, the next head is
-  taken at 67, and `valid` lets it in then.
-- A wait is complete once the queue is empty and nothing copies: the cycle
-  after it entered.
-
-On Spike, `copy.c -DWAIT` (a source, a copy, a wait, then ordinary loads of
-the destination) prints `256 of 256 bytes copied` and exits 0. On gem5,
-`copy.c -DWAIT -DTIMING` prints `0 of 256` (gem5 moves no data; `-DTIMING`
-makes that exit 0) and gives these statistics (gem5's descriptions cut):
-
-```
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.instructions           3
-system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy_source          1
-system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy                 1
-system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy_wait            1
-```
-
-One counter from the component, `COPIER.instructions`. Its input queue, its
-queue of commands and the port `memory_` are behavior, no statistic. How the
-counters are reported is in [Statistics](#statistics) below.
-
 ### A pipeline, cycle by cycle
 
 The EUP of the tpu model's special-function unit is one `Pipeline` of
@@ -1118,7 +1024,7 @@ entry `{group, name, capacity}` each ([`coprocessor.h:57-64`](include/coprocesso
 `group` the component's name, then one entry per encoding in group
 `committed` with capacity 0, its commits. gem5 prints each as one scalar,
 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<group>.<name>`, every character
-outside `[A-Za-z0-9_]` turned into `_` ("copy source" is `copy_source`), `N`
+outside `[A-Za-z0-9_]` turned into `_` ("systolic input push" is `systolic_input_push`), `N`
 the accelerator unit's place in the pool (8 in the fixture).
 
 | counter | capacity | read as |
@@ -1151,12 +1057,6 @@ at create, as is a group named `committed`
 
 ```
 source scripts/sim.sh
-build/timing_probe build/libcopier.so 0a00405b 6
-build/timing_probe build/libcopier.so 0e00405b 2
-riscv64-unknown-elf-gcc -O1 -static -march=rv64gcv -mabi=lp64d -DWAIT examples/rtl/copier/copy.c -o build/copy-wait
-riscv64-unknown-elf-gcc -O1 -static -march=rv64gcv -mabi=lp64d -DWAIT -DTIMING examples/rtl/copier/copy.c -o build/copy-timing
-spike_run build/libcopier.so "" build/copy-wait
-gem5_run build/m5-copier build/libcopier.so "" build/copy-timing && grep vcix build/m5-copier/stats.txt
 ```
 
 The ExpSfu model, once `vcix_cp_add_model(exp_sfu ...)` is in `CMakeLists.txt`
@@ -1195,9 +1095,7 @@ A unit that exists as RTL needs no component. `examples/rtl/rtl_model.hpp` wraps
 Verilated module with standard ports (command, in and out beats, memory,
 `busy`), and the model is a table of the encodings it owns. gem5 clocks the
 module once a cycle for the timing. Spike clocks it only while an instruction
-needs it, for the values. So on Spike a copy with no wait after it copies
-nothing on the RTL copier, and everything on `libcopier.so`, which copies as
-the copy enters its queue ([`tests/rtl/run.sh:84-85,93-96`](tests/rtl/run.sh)). See
+needs it, for the values. See
 [`examples/rtl/README.md`](examples/rtl/README.md).
 
 ## What you do not implement, and what you configure
@@ -1294,7 +1192,6 @@ adapters/spike/           what the Spike branch does; its code is in the Spike r
 adapters/gem5/            what the gem5 branch does; its code is in the gem5 repository
 examples/print_args/      the first example: a model, a program, a machine description,
                           and a script that runs both simulators
-examples/copier/          the RTL copier's timing as one cp component (libcopier.so)
 examples/tpu/             libtpu.so: five cp components (special functions, one-cycle
                           and DMA instructions, systolic array, cross-lane unit,
                           multi-precision array); also the matrix unit the next two use
@@ -1308,8 +1205,8 @@ examples/tpuv3/           libtpuv3.so: the same units, with the matrix unit in t
 examples/tpuv3/gem5/      its machine: the tpu machine with the v3's VALUs, scratchpad
                           slots and 940 MHz
 examples/rtl/             models whose unit is Verilated RTL behind one wrapper: a systolic
-                          array checked against the tpu example's, and an asynchronous
-                          memory copier; built when Verilator is found
+                          array checked against the tpu example's; built when Verilator
+                          is found
 examples/gem5_se.py       the gem5 fixture the example and the tests run on
 examples/machine_description.py
                           how a gem5 config script reads the machine description

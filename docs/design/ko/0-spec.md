@@ -154,7 +154,7 @@ try { model.execute(Host(h), *i); } catch (...) { model = std::move(saved); thro
 
 결정 2의 목록에 없는 추가 항목과 그 이유는 다음과 같습니다 [의견, 각 항목의 필요는 사실].
 - `cp::Insn`(id 포함): `complete()`가 gem5의 id를 알아야 합니다.
-- `virtual reset()`: `Model::reset`이 plain 멤버를 되돌려야 합니다 [사실] `tests/rtl/copier.cc:84`.
+- `virtual reset()`: `Model::reset`이 plain 멤버를 되돌려야 합니다 [사실] `examples/tpu/sfu.hpp:59`.
 - `fault(insn, why, exit_code = 1)`: 틀린 프로그램을 accept한 뒤 끝내는 길입니다. `why_stuck()`과 `executing()`은 없습니다
   (멈춤을 설명하는 대신 머리에서 fault합니다).
 - protected `owner(insn)`: tpu trace가 소유 컴포넌트를 찾습니다.
@@ -231,7 +231,7 @@ try { model.execute(Host(h), *i); } catch (...) { model = std::move(saved); thro
 - 한도는 실제로 필요합니다. Minor의 `executeIssueLimit` 기본값은 2이고 [사실] gem5 `BaseMinorCPU.py:409-410`, vcix
   명령은 MinorFU 슬롯을 쓰지 않습니다 [사실] `execute.cc:855,868`. 한도를 고정하는 테스트도 있습니다 [사실]
   `tests/tpu/run.sh:47-51, 209, 223`.
-- 유닛별 설정: Sfu, Msa, systolic, copier는 기본값 `(2, 1)`, Misc는 `(2W, W)`, Xlu는 `(2·issue, issue)`, Mxu는
+- 유닛별 설정: Sfu, Msa, systolic은 기본값 `(2, 1)`, Misc는 `(2W, W)`, Xlu는 `(2·issue, issue)`, Mxu는
   `(2(SLOTS+units), SLOTS+units)`입니다.
 - Queue의 통계 CAPACITY는 `min(capacity, per_cycle)`, 곧 한 사이클에 받을 수 있는 양입니다.
 
@@ -315,7 +315,7 @@ commit될 때(squash된 것은 commit되지 않습니다) `why`를 찍고 종료
 
 | 컴포넌트 | capacity > 0 | 그냥 개수 |
 |---|---|---|
-| SFU, MISC, COPIER | `instructions` | |
+| SFU, MISC | `instructions` | |
 | SYSTOLIC, MSA | `rows` | `rows_in_flight` |
 | XLU | `elements` | `elements_in_flight` |
 | MXU | `rows` | `rows_in_flight`, `active_cycles` |
@@ -519,31 +519,6 @@ void cycle() override {                                   // mxu.hpp:76
   검사합니다(통과, [사실] `verify/out/libtpuv{3,6e}.so` create 성공).
 - Spike 값 해시 36개와 거절 stderr 22개가 오늘 코드와 같습니다 [사실] `verify/mm`.
 
-### 4.7 Copier (`examples/copier/copier.cc`, 87줄)
-
-```
- insns (2,1) [valid: nothing pending, commands_ < 4] --tick(t+1)--> commands_ Queue(4), COPIER.instructions
-   source / copy: values() at entry, complete() at entry     wait: waits_ (plain) until !left_ && commands_ empty
- head popped while left_ == 0; a copy then makes 64 requests, memory Port(1) one a cycle
-```
-
-```cpp
-void cycle() override {                               // copier.cc:35
-  if (left_) left_ -= memory_.utilize(1);
-  else if (commands_.length() && is(COPY, commands_.pop())) left_ = 2 * BYTES / 8;
-  if (insns().length() && commands_.push(insns().front())) enter(insns().pop());
-  if (left_ || commands_.size()) return;
-  for (const cp::Insn &wait : waits_) complete(wait);
-  waits_.clear();
-}
-```
-
-- `copier_lockstep`(50 seeds × 20000 cycles, 109928 명령)이 PASS입니다 [사실] `verify`.
-- `timing_probe` 출력이 `README.md:812-822`와 같습니다 [사실].
-- trap 복원 덕분에 처음 건드리는 페이지로의 copy도 한 번만 복사됩니다 [도출].
-
----
-
 ## 5. cycle 재기준 표 (전체)
 
 개요: 새 규칙에서는 issue에서 아무 일도 일어나지 않습니다. 그래서 대부분의 지연이 1 늘어납니다. 또 상태를 기다리는
@@ -606,13 +581,10 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 | `ports.cc:291-302` fewer_pushed(XLU) | 1, 100 | **1, 1** (세 번째 pop: 100) | |
 | `ports.cc:325-336` xlu_shallower | (1, 11, 1) ×100 | **(1, 1, 10) ×100** | |
 
-### 5.4 Systolic / Copier (드라이버와 RTL [사실] `verify/cs`)
+### 5.4 Systolic (드라이버와 RTL [사실] `verify/cs`)
 
 | test | old | new | why |
 |---|---|---|---|
-| `tests/rtl/run.sh:99-102` copier_lockstep | PASS | **PASS (run)** | wrapper의 skid를 그대로 옮겼습니다 |
-| `README.md:812-822` timing_probe 6 copies / 2 waits | 1,2,3,4,5, 67→68 / 2, 4 | **같음 (run)** | |
-| `tests/rtl/run.sh:93-96` libcopier on Spike | 256 of 256 | **같음** (가짜 Spike: wait 전에 512 of 512) | copy 값은 들어갈 때 |
 | `tests/rtl/run.sh:71-74` rtl_stall | 6, 70, 79, 82, 85, 94, 158 | **같음 (run), 7 PASS** | |
 | `tests/rtl/run.sh:49-68` values | same, differs, same | **same, differs, same** (가짜 Spike 바이트 동일) | |
 | `tests/tpu/run.sh:73-77` systolic_full pop | `pop: 11 cycles …, input queue 0, output queue 4`; lines 3 | `pop: 1 cycles …, 0 in flight, input queue 4, output queue 0`, commit **12**; **lines 2** | pop이 머리에서 기다림 |
@@ -692,15 +664,14 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 |---|---|---|---|
 | 1 | `include/vcix_accel.hpp` → `include/vcix_cp_base.hpp` | `vcix_cp_base.hpp.diff` 적용: namespace `cp`, 통계는 `cp::Counter`, `VCIX_CP_REGISTER`, `Model::check_layout`, `Instance::configure`의 두 번 검사, `export_model` trap 복원. `vcix_accel.h`와 `vcix_accel_model`은 그대로 | 기존 `tests/contract`, `tests/rtl` 그대로 PASS. RTL 모델이 영향을 받지 않는지 확인합니다. |
 | 2 | `include/vcix_cp.hpp` | `vcix_cp.hpp.design`으로 교체 | `verify/probe2`와 `verify/eng/check`를 `tests/contract`에 옮깁니다(trap 1회, vector 거절, 처리량 표, 컴포넌트별 멈춤, interval 거절, on_stage 거절). |
-| 3 | `examples/copier/copier.cc` | `units/examples/copier/copier.cc` | `copier_lockstep`, `timing_probe`, `tests/rtl/run.sh` 전체 |
-| 4 | `examples/tpu/machine.hpp` | trace 변경 (§3.6) | 빌드 |
-| 5 | `examples/tpu/{sfu,misc,dma}.hpp` | 새 파일 | `tests/tpu/functional`의 sfu/dma 부분, `tpu_ports`의 SFU/MISC |
-| 6 | `examples/tpu/{systolic,msa}.hpp` | 새 파일 | `rtl_stall`, `tests/rtl/run.sh:49-68` values, functional systolic/msa |
-| 7 | `examples/tpu/xlu.hpp` | 새 파일 | functional xlu (값 표, exit 201/1/1) |
-| 8 | `examples/tpu/mxu.hpp` | 새 파일 (`tpu.cc`, `tpuv3.cc`, `tpuv6e.cc`는 그대로 [사실] `cmp`) | tpuv3/tpuv6e functional |
-| 9 | `tests/tpu/ports.cc`, `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc` | `ready()` poll, 블록 단위 목록, 드라이버가 프로그램 순서로 제시 | 각 ports 테스트 |
-| 10 | `tests/tpu/run.sh`, `tests/tpuv3/run.sh`, `tests/tpuv6e/run.sh`, `tests/contract/route_once.cc`, `run.sh:103` | §5의 새 값으로 다시 고정 | gem5 실행. 결과를 §5의 [도출] 값과 비교하고, 다르면 원인을 기록합니다. |
-| 11 | `README.md`, `examples/tpu*/README.md` | 핸들러 설명과 사이클 예시를 다시 생성 | `units/*.md`의 README 목록 |
+| 3 | `examples/tpu/machine.hpp` | trace 변경 (§3.6) | 빌드 |
+| 4 | `examples/tpu/{sfu,misc,dma}.hpp` | 새 파일 | `tests/tpu/functional`의 sfu/dma 부분, `tpu_ports`의 SFU/MISC |
+| 5 | `examples/tpu/{systolic,msa}.hpp` | 새 파일 | `rtl_stall`, `tests/rtl/run.sh:49-68` values, functional systolic/msa |
+| 6 | `examples/tpu/xlu.hpp` | 새 파일 | functional xlu (값 표, exit 201/1/1) |
+| 7 | `examples/tpu/mxu.hpp` | 새 파일 (`tpu.cc`, `tpuv3.cc`, `tpuv6e.cc`는 그대로 [사실] `cmp`) | tpuv3/tpuv6e functional |
+| 8 | `tests/tpu/ports.cc`, `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc` | `ready()` poll, 블록 단위 목록, 드라이버가 프로그램 순서로 제시 | 각 ports 테스트 |
+| 9 | `tests/tpu/run.sh`, `tests/tpuv3/run.sh`, `tests/tpuv6e/run.sh`, `tests/contract/route_once.cc`, `run.sh:103` | §5의 새 값으로 다시 고정 | gem5 실행. 결과를 §5의 [도출] 값과 비교하고, 다르면 원인을 기록합니다. |
+| 10 | `README.md`, `examples/tpu*/README.md` | 핸들러 설명과 사이클 예시를 다시 생성 | `units/*.md`의 README 목록 |
 
 검증 원칙은 다음 네 가지입니다 [의견].
 - 값은 Spike functional 테스트의 sha와 바이트로 비교합니다.
@@ -712,7 +683,7 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 설계 파일(`cpdesign/`)은 다음과 같습니다.
 - `vcix_cp.hpp.design`, `vcix_cp_base.hpp.design`, `vcix_cp_base.hpp.diff`
 - `ENGINE.md` (영문 엔진 명세)
-- `units/examples/tpu/*.hpp`, `units/examples/copier/copier.cc`, `units/*.md` (유닛별 영문 설계)
+- `units/examples/tpu/*.hpp`, `units/*.md` (유닛별 영문 설계)
 - `verify/` (일회용 검증: `inc/`, `out/`, `sm/`, `mm/`, `xlu/`, `cs/`, `eng/`, `probe2.cc`, `pins.py`, `xpins.py`)
 
 ---
