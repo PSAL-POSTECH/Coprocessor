@@ -196,7 +196,7 @@ its configuration twice, and each unit sees one of the two commits:
 both counts.
 
 **What is refused, and how it reads.** gem5 loads each library path once
-(`CoprocessorModel::load`, `src/cpu/minor/coprocessor_model.cc:202-231`) and stops
+(`CoprocessorModel::load`, `src/cpu/minor/coprocessor_model.cc:119-148`) and stops
 with `fatal` when:
 
 - a unit takes `Coprocessor` instructions but names no `coprocessorModel`
@@ -212,8 +212,8 @@ Two of them, from runs of `tests/contract/unowned.S` (a refused description
 reads as in [the root README](../../README.md#the-machine-description)):
 
 ```
-src/cpu/minor/coprocessor_model.cc:220: fatal: fatal condition !model occurred: .../libnull_table.so: coprocessor_model() returned no table
-src/cpu/minor/coprocessor_model.cc:221: fatal: fatal condition model->abi_version != COPROCESSOR_ABI_VERSION occurred: .../libother_abi.so has ABI 14, gem5 has 13
+src/cpu/minor/coprocessor_model.cc:137: fatal: fatal condition !model occurred: .../libnull_table.so: coprocessor_model() returned no table
+src/cpu/minor/coprocessor_model.cc:138: fatal: fatal condition model->abi_version != COPROCESSOR_ABI_VERSION occurred: .../libother_abi.so has ABI 14, gem5 has 13
 ```
 
 A description whose top level is not a mapping stops in the config script:
@@ -227,7 +227,7 @@ and the not-a-mapping cases ("machine description", "model table and
 instances"). The other-ABI line is from the run below.
 
 **Symbols.** gem5 opens a model with `dlopen(RTLD_NOW | RTLD_LOCAL)`
-(`coprocessor_model.cc:212`), not `RTLD_DEEPBIND`. gem5 exports its own
+(`coprocessor_model.cc:129`), not `RTLD_DEEPBIND`. gem5 exports its own
 symbols, so a model's *visible* definition of a name gem5 also defines loses to
 gem5's. Build models hidden:
 [Build with hidden visibility](../../README.md#build-with-hidden-visibility).

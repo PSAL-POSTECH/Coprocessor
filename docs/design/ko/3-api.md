@@ -33,7 +33,7 @@
 | 메서드 | 효과 |
 |---|---|
 | `owns()` / `configure(config)` | 모든 컴포넌트의 인코딩을 생성 순서로 이어 붙임 / 각 컴포넌트 `configure` 후 `reset()` |
-| `can_accept(insn, t)` | 소유자가 있고 accept hook이 참이고 `insns().full(t)`가 거짓 |
+| `can_accept(insn, t)` | 소유자가 있고 accept hook이 참이고 `insns().full()`가 거짓 |
 | `issue(insn, id, t)` | 소유자의 `insns()`에 push. `tick(t+1)`부터 보임 |
 | `ready(id, t)` / `commit(insn, id, t)` | `cycle()`에서 `complete()`된 id면 같은 t에 참 / 완료 목록에서 지움 |
 | `tick(t)` | 모든 `cycle()`, 그 다음 모든 블록의 `cycle()` |
@@ -106,7 +106,6 @@ t에 push한 행은 정지가 없으면 t+latency에 끝나고, 끝난 머리를
 | `configure(latency, interval)` | 각 1 .. `UINT32_MAX`. 단계를 비움 |
 | `available()` / `push(row)` | 머리가 안 막혔고 interval이 지남 / 단계 k = 0에 넣음, 못 넣으면 `false` |
 | `length()` / `front()` / `pop()` | 머리가 끝남 / 끝난 머리 / 꺼냄, `available()`가 즉시 참이 될 수 있음 |
-| `on_stage(&D::fn)` | Spike에서만, 행이 나아갈 때마다 `fn(row, k)` |
 
 ## `cp::Counter`와 통계
 

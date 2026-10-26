@@ -22,14 +22,14 @@ flowchart LR
 - [tpu.cc:18-22](tpu.cc#L18-L22) lists the units and the names their
   statistics use: `SFU`, `MISC`, `SYSTOLIC`, `XLU`, `MSA`. An instruction goes
   to the first unit whose encoding matches it
-  ([vcix_cp.hpp:380-386](../../include/vcix_cp.hpp#L380-L386)). Nothing on
+  ([vcix_cp.hpp:369-375](../../include/vcix_cp.hpp#L369-L375)). Nothing on
   custom-3 is owned.
 - [machine.hpp](machine.hpp) is `tpu::Coprocessor`, a `cp::Coprocessor` plus
   one key, `tpu_trace` ([below](#reading-tpu_trace)), and `tpu::Component`, a
   `cp::Component` that adds its queues to the trace.
 - [mxu.hpp](mxu.hpp) is in this directory, but `libtpu.so` does not hold it.
   It is the matrix unit of [tpuv6e](../tpuv6e/README.md) and
-  [tpuv3](../tpuv3/README.md) (`tpuv6e.cc:30`, `tpuv3.cc:31`), which also use
+  [tpuv3](../tpuv3/README.md) (`tpuv6e.cc:29`, `tpuv3.cc:30`), which also use
   `Sfu`, `Misc` and `Xlu` from here.
 - [values.hpp](values.hpp) holds the number formats every unit uses.
   [dma.hpp](dma.hpp) is the DMA that `tpu::Misc` carries out.
@@ -86,7 +86,7 @@ custom-1 (opcode 0x2B): .insn r 0x2b, 3, <funct7>, x0, a0, a1
 
 The match words and masks are each unit's `cp::Encoding` constants, registered
 in its constructor: [sfu.hpp:35-43](sfu.hpp#L35-L43),
-[misc.hpp:28-38](misc.hpp#L28-L38), [systolic.hpp:46-48](systolic.hpp#L46-L48),
+[misc.hpp:28-38](misc.hpp#L28-L38), [systolic.hpp:53-55](systolic.hpp#L53-L55),
 [msa.hpp:28-29](msa.hpp#L28-L29), [xlu.hpp:73-76](xlu.hpp#L73-L76). Most masks
 are `0xFE00707F`: funct6, vm, funct3 and the opcode. vsin, vcos, vlog, vatan,
 unpack_lo and unpack_hi also match the field (`0xFE0FF07F`). sfu_push and
@@ -382,18 +382,20 @@ anti-diagonal work in the same step.
 The model does not keep a register per PE. It keeps:
 
 - **One pipeline of `2 x lanes - 1` stages**, `array`
-  ([systolic.hpp:68](systolic.hpp#L68), [72](systolic.hpp#L72)). Stage k is
+  ([systolic.hpp:74](systolic.hpp#L74), [78](systolic.hpp#L78)). Stage k is
   anti-diagonal k. With 4 lanes that is 7 stages.
 - **A `Row` per input vector**, riding the pipeline
-  ([systolic.hpp:39-42](systolic.hpp#L39-L42)): its `input` (x), its `sums`
-  (one partial sum per output lane), and the weights it computes with.
-- **The weights in a plain member**, `weights_`
-  ([systolic.hpp:25-36](systolic.hpp#L25-L36), [271](systolic.hpp#L271)): per
-  lane, its last `lanes` weights.
-- **A `stage` function** ([systolic.hpp:185-194](systolic.hpp#L185-L194)): at
-  stage k, lane L adds `input[k-L] * W[L][k-L]` to its sum. Only Spike calls
-  it (`on_stage`, [systolic.hpp:55](systolic.hpp#L55)); gem5's rows carry no
-  values.
+  ([systolic.hpp:40-44](systolic.hpp#L40-L44)): its `input` (x), its `sums`
+  (one partial sum per output lane), the weights it computes with and the
+  array advance it entered at.
+- **The weights, one version per landing**, `landed_`
+  ([systolic.hpp:26-37](systolic.hpp#L26-L37), [46-49](systolic.hpp#L46-L49),
+  [294](systolic.hpp#L294)): per lane, its last `lanes` weights, each version
+  held from the array advance it landed at.
+- **A `sum` function** ([systolic.hpp:200-211](systolic.hpp#L200-L211)): as a
+  row leaves the array, for each stage k, lane L adds `input[k-L] * W[L][k-L]`
+  to its sum. Only Spike calls it (`values`,
+  [systolic.hpp:111](systolic.hpp#L111)); gem5's rows carry no values.
 
 ```
 insns() ──head──► input_queue ──► array, 1 row a cycle ──► [ stage 0 | stage 1 | ... | stage 2L-2 ] ──► output_queue ──► pop
@@ -401,8 +403,8 @@ insns() ──head──► input_queue ──► array, 1 row a cycle ──►
           all vl rows in            a row leaves and a row enters only while the output queue had room as the cycle began
 ```
 
-The blocks are [systolic.hpp:264-270](systolic.hpp#L264-L270); `cycle` is
-[systolic.hpp:89-108](systolic.hpp#L89-L108).
+The blocks are [systolic.hpp:286-293](systolic.hpp#L286-L293); `cycle` is
+[systolic.hpp:96-123](systolic.hpp#L96-L123).
 
 ### Row 0, worked through
 
@@ -429,7 +431,7 @@ pop: element i of lane L is row i's sum for output lane L
 ```
 
 Row 0 is `x = (1, 2, 3, 4)`. What each stage adds to it, one term per lane on
-that anti-diagonal (`stage()`):
+that anti-diagonal (`sum()`):
 
 ```
 stage   lane 0      lane 1      lane 2      lane 3
@@ -478,17 +480,17 @@ row 3                                       s0    s1    s2    s3    s4    s5    
 ```
 
 - An instruction is accepted into `insns()` at its issue and worked by the
-  head one cycle later ([systolic.hpp:93-94](systolic.hpp#L93-L94)): the weight
+  head one cycle later ([systolic.hpp:100-101](systolic.hpp#L100-L101)): the weight
   push's beats are taken at 1, the input push's 4 rows go into the input queue
   at 2 (the pop's issue line already shows them: `input queue 4`), and the pop
   waits at the head from 3.
 - A row enters the stages the cycle after it reached the input queue, one a
-  cycle (`array_.issue`, [systolic.hpp:103-106](systolic.hpp#L103-L106)), is in
+  cycle (`array_.push`, [systolic.hpp:114-120](systolic.hpp#L114-L120)), is in
   them 7 cycles, leaves into the output queue in the next (`out`) and is
   visible to the pop a cycle after that. The fourth row enters at 6 and is
   visible at 14.
 - The pop takes exactly `vl` rows, all in one cycle (the default, `whole_`,
-  [systolic.hpp:165-181](systolic.hpp#L165-L181)): at 14, 12 cycles after its
+  [systolic.hpp:180-196](systolic.hpp#L180-L196)): at 14, 12 cycles after its
   issue.
 - A weight push moves no row through the stages. gem5's `SYSTOLIC.rows`
   counts rows entering the array: 20 for the whole `systolic_full.S` (its 4 +
@@ -522,7 +524,7 @@ two cycles, the waiting push `1 in flight` and the next one accepted behind it
 
 The end of `systolic_full.S` pushes 16 rows and pops none until the output
 queue is full. The array stops with 8 rows out, 7 in the stages and 1 waiting
-(`enable`, [systolic.hpp:91](systolic.hpp#L91), [102-103](systolic.hpp#L102-L103)).
+(`enable`, [systolic.hpp:98](systolic.hpp#L98), [109-116](systolic.hpp#L109-L116)).
 A pop of 4 takes its rows at the head the cycle after its issue; the weight
 push issued in that cycle sees the queue at 4, and the array moves again in
 the cycle after:
@@ -543,12 +545,12 @@ is the program's `nop`s.
 
 ### Every pop takes exactly vl
 
-A pop takes exactly `vl` rows ([systolic.hpp:165-177](systolic.hpp#L165-L177)).
+A pop takes exactly `vl` rows ([systolic.hpp:180-192](systolic.hpp#L180-L192)).
 Two mistakes a program can make, and what happens:
 
 - **Pop more than was pushed.** The pop is accepted and waits at the head.
   Once nothing can add rows (input queue empty, array idle, fewer rows out than
-  it asks) it is a `fault` ([systolic.hpp:166-170](systolic.hpp#L166-L170)):
+  it asks) it is a `fault` ([systolic.hpp:181-185](systolic.hpp#L181-L185)):
   `tpu: systolic pop: 1 elements asked, 0 computed`. Spike exits 1 as the
   pop's execute returns; gem5 prints the line and exits 1 when the pop commits.
 - **Push more than you pop.** What a pop leaves stays in the output queue, and
@@ -557,7 +559,7 @@ Two mistakes a program can make, and what happens:
   good. On gem5 the run reaches its tick limit; on Spike, which runs each
   instruction to its end, the engine ends it:
   `vcix_cp: systolic input push waits, and nothing in its unit moves any more: on Spike, which runs each instruction to its end before the next, it never ends`
-  ([vcix_cp.hpp:419-430](../../include/vcix_cp.hpp#L419-L430)).
+  ([vcix_cp.hpp:408-419](../../include/vcix_cp.hpp#L408-L419)).
 
 <details><summary>Reproduce</summary>
 
@@ -570,21 +572,21 @@ The Spike message is the `pop` case of `tests/tpu/functional/refused.c`
 
 By default (`tpu_systolic_command_queue: 0`) the head of `insns()` moves the
 whole instruction in one cycle, and a row carries the weights that are in the
-register when it is pushed ([systolic.hpp:200-205](systolic.hpp#L200-L205),
-`whole_ ? weights_ : nullptr`; `stage` reads `row.weights`,
-[185-186](systolic.hpp#L185-L186)). A later weight push travels down the array
-behind the rows already in it.
+register when it is pushed ([systolic.hpp:220-225](systolic.hpp#L220-L225),
+`whole_ && landed_.size() ? landed_.back().weights : nullptr`; `sum` reads
+`row.weights`, [203](systolic.hpp#L203)). A later weight push travels down
+the array behind the rows already in it.
 
 With `tpu_systolic_command_queue: N` the unit is `examples/rtl/systolic/systolic.sv`
 behind its wrapper: an instruction is accepted only while none is pending and
-a command slot is free (`valid`, [systolic.hpp:83-85](systolic.hpp#L83-L85)),
+a command slot is free (`valid`, [systolic.hpp:90-92](systolic.hpp#L90-L92)),
 enters an in-order queue of N the cycle after (`enter`,
-[138-142](systolic.hpp#L138-L142)), and the head of that queue works one
+[153-157](systolic.hpp#L153-L157)), and the head of that queue works one
 command a cycle, as many rows a cycle as `tpu_systolic_in_rows_per_cycle`
-allows. A row then reads the register as it is at each stage (`held()`), and a
-weight push's beats land the cycle after they are taken (`land`,
-[214-223](systolic.hpp#L214-L223)), so a weight push lands on rows still in
-the array.
+allows. A row then meets at each stage the weights held at that array advance
+(`met()`, [213-218](systolic.hpp#L213-L218)), and a weight push's beats land
+the cycle after they are taken (`land`, [235-246](systolic.hpp#L235-L246)), so
+a weight push lands on rows still in the array.
 
 The program: weights W, 4 input rows, weights 2W, 4 input rows, two pops of 4.
 
@@ -626,7 +628,7 @@ tpu: machine description: tpu_systolic_command_queue: '0' is no queue: what move
 ### Element formats
 
 What an element is rides the push or the pop in its rs1 field, one table at
-every width ([systolic.hpp:116-123](systolic.hpp#L116-L123)):
+every width ([systolic.hpp:131-138](systolic.hpp#L131-L138)):
 
 - e8: 0 an int8, 1 an E4M3 float, 2 an E5M2 float. 3 is refused.
 - e16: 0 a half, 3 a bfloat16. 1 and 2 are refused.
@@ -635,10 +637,10 @@ every width ([systolic.hpp:116-123](systolic.hpp#L116-L123)):
 - Any code above 3 is refused.
 
 A refused code is a `fault` as the instruction reaches the head (`wrong`,
-[systolic.hpp:127-134](systolic.hpp#L127-L134)). A pop reads the same table
+[systolic.hpp:142-149](systolic.hpp#L142-L149)). A pop reads the same table
 and also refuses 3: a bfloat16 result is not modeled. A pop to halves or 8-bit
 floats rounds by `frm`, read through the host
-([systolic.hpp:225-239](systolic.hpp#L225-L239)).
+([systolic.hpp:248-262](systolic.hpp#L248-L262)).
 `tests/tpu/functional/systolic.c` covers every width, both 8-bit floats and
 every value of `frm`.
 
@@ -649,7 +651,7 @@ single, 2 halves or 4 floats of 8 bits, so a column keeps `lanes` times that
 many weights ([msa.hpp:69-72](msa.hpp#L69-L72), [114-127](msa.hpp#L114-L127)).
 It has its own pipeline of `2 x vpu_num_lanes - 1` stages and its own queues,
 sized by the same two keys as the systolic array
-([msa.hpp:36-47](msa.hpp#L36-L47); blocks [172-178](msa.hpp#L172-L178)).
+([msa.hpp:36-47](msa.hpp#L36-L47); blocks [173-178](msa.hpp#L173-L178)).
 
 One instruction, `msa push`, serves both operands. Its field (bits 19:15) says
 which:
@@ -982,11 +984,11 @@ sized to it, [xlu.hpp:105](xlu.hpp#L105)). So:
 
 An instruction the model cannot carry out has no trap to take. The unit
 `fault`s it at the head of `insns()` with a reason and an exit code
-([vcix_cp.hpp:184-186](../../include/vcix_cp.hpp#L184-L186),
-[463-466](../../include/vcix_cp.hpp#L463-L466)): Spike prints the reason on
+([vcix_cp.hpp:183-185](../../include/vcix_cp.hpp#L183-L185),
+[469-472](../../include/vcix_cp.hpp#L469-L472)): Spike prints the reason on
 standard error and exits as the instruction's execute returns; gem5 prints it
 and exits when the instruction commits
-([vcix_cp.hpp:432-439](../../include/vcix_cp.hpp#L432-L439)), so a squashed
+([vcix_cp.hpp:421-428](../../include/vcix_cp.hpp#L421-L428)), so a squashed
 one never does. Only the DMA's checks of what it reads (the descriptor, an
 index, an address) call `fail` ([values.hpp:18-26](values.hpp#L18-L26))
 directly and are Spike's alone: gem5 sees no values.
@@ -1082,7 +1084,7 @@ All
 - `tpu_trace` (0): not 0, a line at every issue and every commit.
 
 Each unit reads its keys in `configure`: [sfu.hpp:49](sfu.hpp#L49),
-[misc.hpp:47](misc.hpp#L47), [systolic.hpp:57](systolic.hpp#L57),
+[misc.hpp:47](misc.hpp#L47), [systolic.hpp:63](systolic.hpp#L63),
 [msa.hpp:36](msa.hpp#L36), [xlu.hpp:82](xlu.hpp#L82),
 [dma.hpp:24](dma.hpp#L24), [machine.hpp:40](machine.hpp#L40). A refused value
 is a `cp::ConfigError`, which stops the run before anything is issued.
@@ -1139,13 +1141,13 @@ With `tpu_trace: 1` the model prints a line at every issue and every commit
   instruction before it, worked in that same cycle, are.
 - Which units add the queue fields (`trace_queues`, of a `tpu::Component`,
   [machine.hpp:27-32](machine.hpp#L27-L32), [74](machine.hpp#L74)): `Systolic`
-  and `Msa`, their input and output queue ([systolic.hpp:109-111](systolic.hpp#L109-L111),
+  and `Msa`, their input and output queue ([systolic.hpp:124-126](systolic.hpp#L124-L126),
   [msa.hpp:63-65](msa.hpp#L63-L65)); `Xlu`, its input queue and its buffer as
   "output queue" ([xlu.hpp:143-145](xlu.hpp#L143-L145)); `Sfu` only for
   `sfu_push` and `sfu_pop`, the EUP's two queues ([sfu.hpp:83-87](sfu.hpp#L83-L87)).
   `Misc` is a plain `cp::Component` and adds nothing.
 - The lines do not change what the model answers, and Spike prints none: its
-  execute runs the engine's base methods ([vcix_cp.hpp:348-359](../../include/vcix_cp.hpp#L348-L359)).
+  execute runs the engine's base methods ([vcix_cp.hpp:337-348](../../include/vcix_cp.hpp#L337-L348)).
   `tests/tpu/run.sh` checks the timing of all five units with them.
 
 ## Where the values come from

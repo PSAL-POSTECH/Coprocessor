@@ -44,19 +44,19 @@ issue는 `insns()`에 넣기만 하고, 그 밖의 모든 움직임은 사용자
 1. `tick(t)`: 생성 순서대로 모든 컴포넌트의 `cycle()`, 그다음 모든 블록의 `cycle()` (Pipeline은 여기서만 나이를 먹음).
 2. `ready(id, t)` / `commit(insn, id, t)`: id가 `done_`에 있는지 / 지움. `cycle()`에서 `complete()`했으면 같은 t에 참입니다.
 3. `squash(first, t)`: `Instance`가 복사본을 복원합니다 (§5).
-4. `can_accept(insn, t)`: `owner && valid(insn) && !insns().full(t)`, const입니다.
-5. `issue(insn, id, t)`: `Instance`가 모델을 복사한 뒤 `insns().push(insn, t)`, `Unknown`을 돌려줍니다.
+4. `can_accept(insn, t)`: `owner && valid(insn) && !insns().full()`, const입니다.
+5. `issue(insn, id, t)`: `Instance`가 모델을 복사한 뒤 `insns().push(insn)`, `Unknown`을 돌려줍니다.
 
 예: `insns()` `(2, 1)`, 지연 L=10, interval 1에서 연달아 오는 독립 vexp A, B를 t=1부터 제시하면 둘 다 issue에서 ready까지 11 사이클(= L+1)입니다.
 
 | t | `tick(t)`: `SFU.cycle()` | `cycle()` | gem5 쪽 (`tick` 뒤) |
 |---|---|---|---|
-| 1 | `insns()` 비어 있음 (`length(1)=0`) | 없음 | `can_accept(A,1)`: `available(1)=min(2−0−0, 1−0)=1` → issue A. `can_accept(B,1)`: `available(1)=min(2−1, 1−1)=0` → 거절 |
-| 2 | A가 보임 (`length(2)=1`). `eup_.push(A의 레지스터 0)`, `insns().pop()`, `instructions_.add(1)` | A 나이 1 (단계 k=0) | `ready(A,2)` 거짓. `can_accept(B,2)`: `available(2)=min(2−0−1, 1−0)=1` → issue B |
-| 3 | B가 보임. `available(3)`: 3−2 ≥ 1 → `eup_.push(B의 레지스터 0)`, pop, add | A 2, B 1 | |
+| 1 | `insns()` 비어 있음 (`length()=0`) | 없음 | `can_accept(A,1)`: `available()=min(2−0−0, 1−0)=1` → issue A. `can_accept(B,1)`: `available()=min(2−1, 1−1)=0` → 거절 |
+| 2 | A가 보임 (`length()=1`). `eup_.push(A의 레지스터 0)`, `insns().pop()`, `instructions_.add(1)` | A 나이 1 (단계 k=0) | `ready(A,2)` 거짓. `can_accept(B,2)`: `available()=min(2−0−1, 1−0)=1` → issue B |
+| 3 | B가 보임. `available()`: 3−2 ≥ 1 → `eup_.push(B의 레지스터 0)`, pop, add | A 2, B 1 | |
 | 4–10 | 할 일 없음 | 매 사이클 모두 한 단계 | |
-| 11 | `length(11)` 거짓 (A의 나이 9) | A 나이 10 = L → `done_at=11`. B 9 | |
-| 12 | `length(12)`: 막힘 && 11 < 12 → `pop(A)`(그룹의 마지막 레지스터), `values(...)`(gem5에서는 실행 안 됨), `complete(A)` | B 나이 10 → `done_at=12` | `ready(A,12)` 참 → `commit(A,12)` |
+| 11 | `length()` 거짓 (A의 나이 9) | A 나이 10 = L → `done_at=11`. B 9 | |
+| 12 | `length()`: 막힘 && 11 < 12 → `pop(A)`(그룹의 마지막 레지스터), `values(...)`(gem5에서는 실행 안 됨), `complete(A)` | B 나이 10 → `done_at=12` | `ready(A,12)` 참 → `commit(A,12)` |
 | 13 | `pop(B)`, `complete(B)` | 비어 있음 | `ready(B,13)` 참 → `commit(B,13)` |
 
 드라이버의 vexp 5개 연속 결과: `vexp burst issues: 1 2 3 4 5  ready-issue: 11 11 11 11 11`.
@@ -97,7 +97,7 @@ squash는 issue 직전의 모델 복사본으로 되돌린 뒤 그 사이의 tic
 
 `execute`는 gem5와 같은 `tick`을 자체 시계 `now_`로 돌리며, 받아들여질 때까지, 그리고 `complete`될 때까지 기다립니다.
 
-- `values(f)`와 `on_stage`는 Spike에서만 실행되므로, 같은 `cycle()` 코드가 gem5에서는 타이밍만, Spike에서는 값까지 냅니다.
+- `values(f)`는 Spike에서만 실행되므로, 같은 `cycle()` 코드가 gem5에서는 타이밍만, Spike에서는 값까지 냅니다.
 - 멈춤 판정: tick 한 번 뒤 소유 컴포넌트의 `motion_`이 그대로면 (사용자가 `fault`를 부르지 않은 경우) `vcix_cp: op waits, and nothing in its unit moves any more: …`와 `exit 1`로 끝납니다. interval만 도는 동안은 멈춤이 아닙니다 (probe: `PASS  spike: latency 1, interval 4: the interval is waited out, not judged stuck`).
 - trap 복원: `export_model`의 execute 칸이 `M saved = model;`을 두고 throw 때 `model = std::move(saved);` 후 다시 던집니다. probe: `P2 effects after trap + one re-execute: 1 (1 expected)`.
 

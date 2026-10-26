@@ -429,7 +429,7 @@ Each of these came from a run:
   ```
   On gem5 (`<build>` stands for the build directory's path):
   ```
-  src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/librtl_systolic.so: rtl_systolic: machine description: vpu_num_lanes: '8' is not the lanes this RTL was built with
+  src/cpu/minor/coprocessor_model.cc:174: fatal: <build>/librtl_systolic.so: rtl_systolic: machine description: vpu_num_lanes: '8' is not the lanes this RTL was built with
   ```
 - More rows waiting for a pop than the array holds, on Spike
   ([the limits](#the-limits)):
@@ -509,11 +509,10 @@ the call goes there:
 vcix_cp_add_rtl_model(rtl_systolic examples/rtl/systolic/systolic.cc examples/rtl/systolic/systolic.sv systolic -GL=4)
 ```
 
-It verilates with `--savable -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL` and
-any extra arguments you pass. A parameter the table also needs is given
-twice, as the array does: `-GL=4` to Verilator and `SYSTOLIC_LANES=4` to the
-compiler (`CMakeLists.txt:48-50`). RTL parameters are fixed at build time, so
-another size is another library.
+It verilates with `--savable -Wall` and any extra arguments you pass. A
+parameter the table also needs is given twice, as the array does: `-GL=4` to
+Verilator and `SYSTOLIC_LANES=4` to the compiler (`CMakeLists.txt:48-50`). RTL
+parameters are fixed at build time, so another size is another library.
 
 **4. Check it.** Compare its values on Spike under the default, `slow` and
 random schedules against a reference, and read its `[rtl]` lines on gem5.

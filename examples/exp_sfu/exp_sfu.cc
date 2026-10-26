@@ -1,7 +1,5 @@
 // libexp_sfu.so: an SFU that computes only vexp (sf.vc.v.iv 0x3, vd, vs2, 0) on a pipelined EUP.
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 
 #include "vcix_cp.hpp"
 

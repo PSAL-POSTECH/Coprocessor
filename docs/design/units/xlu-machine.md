@@ -184,11 +184,10 @@ lets them share one. Most deltas come from the rows entering `queue_` in `tick(t
 | `run.sh:137-139` `commit xlu_pop: 9` (pattern), `12` (move), `9` (move-exchange) | 2 and 2, 2 | **0 and 0, 0**: pattern 8 and 8, move 11 and 11, move-exchange 8 and 8 | the move latency still adds 3 |
 | `run.sh:141-147` eight pushes | lines 8 | **lines 5**: `8 cycles …, 0 in flight, input queue 1, output queue 0`, then `1 cycles …` with queues `2 0`, `3 0`, `4 1`, `5 2`, `6 3`, `7 4` | the push after the pop waits for it at the head; the queue counts include the previous push's rows |
 | `run.sh:149-154` pops after the 18-element tile | lines 3 of 13 | **lines 0 of 13**: `issue xlu_pop: 1 cycles …, 0 in flight, input queue 2, output queue 16`, `issue xlu_pop: 1 cycles …, 1 in flight, input queue 1, output queue 16`; commits 8 and 7 | the second pop waits in `insns()` behind the first and completes from what is left |
-| `tests/tpu/ports.cc:192-199` sfu_and_xlu, XLU part | elements 5, elements_in_flight 15 | **5, 15** | 3 cycles per element in the stages |
+| `tests/tpu/ports.cc:205-212` sfu_and_xlu, XLU part | elements 5, elements_in_flight 15 | **5, 15** | 3 cycles per element in the stages |
 | `ports.cc:291-302` fewer_pushed(XLU) | 1, 100 | **1, 1**; the first pop faults, and its commit exits 1 (`tpu: xlu pop: 2 elements asked, 1 left`) | a second pop fits behind the faulted first |
 | `ports.cc:325-336` xlu_shallower, per tile (pop, rest, push) | (1, 11, 1) ×100, first 1 | **(1, 1, 10) ×100, first 1** | both pops queue in `insns()` |
-| `ports.cc:108-123` list(), `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc` | XLU's counters | **`elements`, `elements_in_flight`** | ports, queues and pipelines are no statistics |
-| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `groups …` | `… TPUV3_XLU` | unchanged | same |
+| `ports.cc:115-139` list(), `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc` | XLU's counters | **`elements`, `elements_in_flight`** | ports, queues and pipelines are no statistics |
 | `tests/stats/run.sh` listed | the counters | **the same** | `vcix.XLU.elements` and `elements_in_flight` |
 | `tests/tpu/functional/run.sh:141-146,162-164` | pass; exit 201 / 1 / 1 | **unchanged** (FACT `verify/xlu`: values of fields 0/4/8/16 and fold sum, exits 201, 1, 1) | same values and messages |
 

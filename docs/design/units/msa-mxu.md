@@ -54,9 +54,9 @@ becomes a `tpu::Component`, so the machine's one-pipeline fallback can go (ENGIN
    - Consequence: acceptance no longer depends on the CPU's issue width beyond W: FACT (driver) the tpuv3 `mxu`
      issue lines are the same at CPU width 2 and 12 (§7, `machine-mxu`).
 4. **Lines.**
-   - MXU: `take` the finished word only when every output queue of its array has `available() >= its rows`. This is
+   - MXU: `pop` the finished word only when every output queue of its array has `available() >= its rows`. This is
      exactly today's `Stall::WHEN_HEAD_BLOCKED` (FACT `vcix_cp.hpp:392`), so the MinorFU rule matches the MXU.
-   - MSA: `take` only when `!output_.full()`. Today it is `WHEN_OUTPUT_FULL` (FACT `msa.hpp:38`,
+   - MSA: `pop` only when `!output_.full()`. Today it is `WHEN_OUTPUT_FULL` (FACT `msa.hpp:38`,
      `vcix_cp.hpp:392`): the array stops whenever the output queue is full, even if its head is not finished.
      DESIGN.md §8 decision 1 (final) adds no `Pipeline::hold`: the MSA takes the MinorFU rule. No test pins MSA's
      full-queue timing exactly. `more_pushed(MSA)` still passes, stopping after 11 rounds instead of 10 (DERIVED).
@@ -175,7 +175,7 @@ Latency from issue at t, with nothing ahead (DERIVED):
   of all four formats, every pop width and a shift. 7 of 7 are the same.
 - **Refusal messages:** every message below, with exit 1. The stderr of old and new is byte-identical over 22
   refusal programs (FACT, harness). The programs follow `tests/tpuv6e/functional/mxu.c:120-160`,
-  `tests/tpuv3/functional/run.sh:142-147` and `tests/tpu/functional/refused.c:52-56`.
+  `tests/tpuv3/functional/run.sh:67-71` and `tests/tpu/functional/refused.c:52-56`.
 
 | message | grepped at | new producer |
 |---|---|---|
@@ -192,13 +192,13 @@ Latency from issue at t, with nothing ahead (DERIVED):
 | `tpu: vmatpush: its elements are words of 32 bits, not of 16` | :61 | `carried`, `fault` |
 | `tpu: vpop: array 1, and the machine has 1 (tpu_mxu_units)` | :62 | `carried`, `fault` |
 | `tpu: vmatmul: array 2, and the machine has 2 (tpu_mxu_units)` | :69 | `carried`, `fault` |
-| `tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half` | tpuv3/functional/run.sh:142,146 | `carried`, `fault` |
-| `tpu: vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not` | :143 | `carried`, `fault` |
-| `tpu: vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not` | :144 | `carried`, `fault` |
+| `tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half` | tpuv3/functional/run.sh:67,70-71 | `carried`, `fault` |
+| `tpu: vmatpush: [4:3] 2 names a second half of the depth, which an array of lanes x lanes has not` | :68 | `carried`, `fault` |
+| `tpu: vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not` | :69 | `carried`, `fault` |
 | `tpu: msa pop: 8 elements asked, 3 computed` | tpu/functional/run.sh:165 | `fault`, idle array |
 | `tpu: msa push: its elements are words of 32 bits, not of 16` | :166 | `carried`, `fault` |
-| `tpuv3:`/`tpuv6e: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2` | tpuv3/run.sh:145, tpuv6e/run.sh:163 | `configure`, unchanged |
-| `tpuv6e: machine description: tpu_mxu_bound_to_lanes: '2' is not 0 …` | tpuv3/run.sh:103 | `configure`, unchanged |
+| `tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2` | tpuv3/run.sh:145-146 | `configure`, unchanged |
+| `tpuv6e: machine description: tpu_mxu_bound_to_lanes: '2' is not 0 …` | tpuv3/run.sh:92 | `configure`, unchanged |
 
 - **Trace:** `trace_queues` prints the same fields: `, array i` (several arrays only), then `, input queue N, output
   queue M` or `, output queues L and U`. N, L and U are now `Queue::size()`: the rows held after `cycle()`. An
@@ -246,32 +246,32 @@ default, FACT gem5 `BaseMinorCPU.py:409-410`) and 12 on the tpuv3/tpuv6e machine
 code it reproduces every "old" value below (FACT: `check-msa-mxu/old.out` through the tests' own `issues`/`said`
 rules, `verify/pins.py`). The "new" values are DERIVED by the same driver on the new code, not run on gem5.
 
-`issues` is `tests/tpuv3/run.sh:33-36`'s format `name:cycles-after-last:input/output` (lines that are not "the
+`issues` is `tests/tpuv3/run.sh:25-28`'s format `name:cycles-after-last:input/output` (lines that are not "the
 first"). "lines k of n" is the tests' `said` count.
 
 | test | old | new (derived) | why |
 |---|---|---|---|
-| tpuv3/run.sh:54 `tpuv3_ports`, tpuv6e/run.sh:44 | exit 0, 1 passed | exit 0, 1 passed | each component's counters (§6) |
+| tpuv3/run.sh:43-47 `tpuv3_ports`, tpuv6e/run.sh:44-48 | exit 0, 1 passed | exit 0, 1 passed | each component's counters (§6) |
 | tpuv3/run.sh:59 `mxu` | `vmatmul:1:0/0 vpop:11:0/4 vpop:4:0/4` | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0` | the vpops are accepted at once and wait at the head; they commit 13 and 17 after their issues |
-| tpuv3/run.sh:62 groups, counters | `TPUV3_MISC TPUV3_MXU TPUV3_SFU TPUV3_XLU`; 8, 56 | unchanged; **rows 8, rows_in_flight 56, active_cycles 14** | §6 |
+| tpuv3/run.sh:53-54 counters | 8, 56 | **rows 8, rows_in_flight 56, active_cycles 14** | §6 |
 | tpuv3/run.sh:66 `mxu_rate` | `vmatmul:1:0/0 vmatmul:4:0/0 vpop:7:1/4 vpop:4:0/4 vpop:4:0/4` | `vmatmul:0:0/0 vmatmul:1:0/0 vpop:0:0/0 vpop:1:4/0 vpop:1:3/0` | the second vmatmul (8 rows) waits at the head for the singles to leave the queue of 8 (commits 6 after its issue); vpops commit 13, 17, 20 |
 | tpuv3/run.sh:70 `mxu_rate-16` (first two) | `vmatmul:1:0/0 vmatmul:1:3/0` | `vmatmul:0:0/0 vmatmul:1:0/0` | queues of 16 take both, one MXU slot a cycle |
 | tpuv3/run.sh:75 `lanes-128` | `vmatmul:1:0/0 vpop:259:0/4 vpop:4:0/4` | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0` | as `mxu`; vpops commit 261 and 265 after their issues |
-| tpuv3/run.sh:82 `tpuv6e-bound-4` | `vmatmul:0:0/0 vpop:9:0/4 vpop:2:0/4`; rows_in_flight 56 | `vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0`; **rows_in_flight 56, active_cycles 10** | 2 MXU slots; vpops commit 10 and 12 |
+| tpuv3/run.sh:73-75 `tpuv6e-bound-4` | `vmatmul:0:0/0 vpop:9:0/4 vpop:2:0/4`; rows_in_flight 56 | `vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0`; **rows_in_flight 56, active_cycles 10** | 2 MXU slots; vpops commit 10 and 12 |
 | tpuv3/run.sh:86 `tpuv6e-bound-128` | `vmatmul:0:0/0 vpop:257:0/4 vpop:2:0/4` | `vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0` | vpops commit 258 and 260 |
 | tpuv3/run.sh:93 `lanes-8` / `bound-8` | `vmatmul:1:0/0 vpop:19:0/4 vpop:4:0/4, bound: trace same` | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0, bound: trace same` | FACT (driver): the two traces are identical |
 | tpuv3/run.sh:137 `machine-mxu` (12 wide) | `vmatmul:1:0/0 vpop:11:0/4 vpop:4:0/4`, equal to gem5_se's | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0`, **equal to gem5_se's** | the per-cycle limit (W = 2) binds before the CPU width: "the matrix unit's timing is the model's" still holds |
 | tpuv6e/run.sh:54 `mxu` pairs | lines 4 | **lines 1**: `vmatprep: the first …` / `vmatpush: 0 cycles …, 1 in flight, …` / `vmatprep: 1 cycles …, 1 in flight, …` / `vmatmul: 0 cycles …, 2 in flight, …` (all `input queue 0, output queues 0 and 0`) | the vmatpush is accepted beside its vmatprep and waits for the weights slot at the head |
 | tpuv6e/run.sh:60 `mxu` pops | lines 4 of 8 | **lines 0 of 8**: `vpop: 1 cycles …, 1 in flight, input queue 0` / `0 cycles …, 2 in flight, input queue 0` / `1 cycles …, 2 in flight, input queue 8` / `0 cycles …, 3 in flight, input queue 8` (`output queues 0 and 0`) | pops wait at the head; they commit 19, 20, 20, 21 after their issues |
-| tpuv6e/run.sh:63 groups, counters | 8, 120 | **rows 8, rows_in_flight 120, active_cycles 18** | §6 |
+| tpuv6e/run.sh:66-67 counters | 8, 120 | **rows 8, rows_in_flight 120, active_cycles 18** | §6 |
 | tpuv6e/run.sh:69 `mxu_rate` input queues | `0 0 0 0 3 2 10 9 8 6 0 0 0 0 0 0` | `0 0 0 0 0 0 4 4 3 3 10 9 9 8 6 4` | rows enter the queue a cycle after the vmatmul's issue; vpops issue before their rows |
 | tpuv6e/run.sh:73 `mxu_rate` pops | `14:4/4 1:2/6 1:4/4 1:2/6 1:4/4 1:0/4` | `1:0/0 1:0/0 0:0/0 1:0/0 1:0/0 1:0/0` | all six vpops are accepted early (W = 3); they commit 18, 18, 19, 19, 19, 19 |
-| tpuv6e/run.sh:88 `mxu_arrays` | lines 8 of 12 | **lines 0 of 12** | both vmatmuls are accepted in one cycle (`1 cycles …, 1 in flight, array 0` / `0 cycles …, 2 in flight, array 1`); array 0's vpops commit 18, array 1's 19 |
+| tpuv6e/run.sh:82-92 `mxu_arrays` | lines 8 of 12 | **lines 0 of 12** | both vmatmuls are accepted in one cycle (`1 cycles …, 1 in flight, array 0` / `0 cycles …, 2 in flight, array 1`); array 0's vpops commit 18, array 1's 19 |
 | tpuv6e/run.sh:98 `mxu_arrays-script` (12 wide) | lines 3 of 12 | **lines 0 of 12** | W = 4: the first cycle takes both arrays' vmatprep and vmatpush; two a cycle are still carried out over both arrays |
 | tpuv6e/run.sh:109 `mxu_slots`, gem5_se and machine | lines 2 of 14, both | **lines 0 of 14, both** | a vmatmul and a vpop still issue in one cycle (`vmatmul: 1 cycles …, 2 in flight, input queue 8` + `vpop: 0 cycles …, 3 in flight, input queue 8`); the vmatmul waits behind the vpop at the head (commit 18) |
 | tpuv6e/run.sh:118 `mxu_pops` | lines 2 of 10 | **lines 0 of 10** | both vpops issue in one cycle (`1 cycles …, 2 in flight, array 0` / `0 cycles …, 3 in flight, array 1`); they commit 21 and 22: array 1's a cycle behind, by the shared pop port |
 | tpu/run.sh:103 `msa` | lines 3 of 3 | **lines 2 of 3**: the pop line is `issue msa pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0` | the pop is accepted at once and waits at the head; it commits 12 after its issue, 13 after the input push's issue (old 12) |
-| tpu/ports.cc:210 msa stats | rows 3, commits 2, 1 | **rows 3, commits 2, 1** | driver polling `ready()` (ENGINE §8) |
+| tpu/ports.cc:214-224 msa stats | rows 3, commits 2, 1 | **rows 3, commits 2, 1** | driver polling `ready()` (ENGINE §8) |
 | tpu/ports.cc:380 `fewer_pushed(MSA)` | 100, 100 | **1, 1** | a pop is accepted and waits at the head; a second fits behind it |
 | tpu/ports.cc:382 `more_pushed(MSA)` | stops after 10, refused 1000 of 1000 | **stops after 11, refused 1000 of 1000** (PASS) | MinorFU take rule (choice 4) |
 | tpu/ports.cc:385 `interleaved(MSA, 56)` | 56 | **51** (last commit at 58) | waits moved from accept to the head |
