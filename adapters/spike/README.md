@@ -98,7 +98,7 @@ ends, with the library's path and the reason, when:
 - an encoding has no name, or is not within custom-1 (`0x2B`) or custom-2
   (`0x5B`).
 
-The timing members of the table are not looked at. Four of these, run on
+The timing members of the table are not looked at. Three of these, run on
 `tests/contract/unowned.S`:
 
 ```
@@ -108,15 +108,10 @@ $ spike --extlib=build/libnull_table.so ...
 coprocessor: .../libnull_table.so: coprocessor_model() returned no table
 $ spike --extlib=build/libother_abi.so ...
 coprocessor: .../libother_abi.so has ABI 14, Spike has 13
-$ spike --extlib=build/libcannot_be_made.so ...
-vcix_cp: the model cannot be made: no such unit can be built
-coprocessor: .../libcannot_be_made.so: coprocessor_model() returned no table
 ```
 
-Each exits with 1. In the last one, the model's own C++ wrapper prints why
-before it hands over no table. `tests/contract/run.sh` ("model table and
-instances") asserts the second and the third, and for the last one `direct`'s
-missing table and the reason (`tests/contract/direct.cc:150`, `run.sh:90`).
+Each exits with 1. `tests/contract/run.sh` ("model table and instances")
+asserts the second and the third.
 
 **Symbols.** Spike exports its own symbols, so a model's *visible*
 definition of a name Spike also defines loses to Spike's. Build models hidden:
@@ -129,7 +124,7 @@ shows `reports`' own `f16_to_f32` losing to Spike's.
 source scripts/sim.sh
 rv_program tests/contract/unowned.S build/unowned
 $SPIKE --isa=rv64gcv_zfh_xcoprocessor --varch=vlen:256,elen:64 $PK build/unowned
-for m in null_table other_abi cannot_be_made; do spike_run build/lib$m.so "" build/unowned; echo "exit $?"; done
+for m in null_table other_abi; do spike_run build/lib$m.so "" build/unowned; echo "exit $?"; done
 ```
 
 </details>

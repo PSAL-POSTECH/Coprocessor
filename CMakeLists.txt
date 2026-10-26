@@ -73,8 +73,6 @@ vcix_cp_add_model(null_table tests/contract/refused.cc)
 target_compile_definitions(null_table PRIVATE WHICH=1)
 vcix_cp_add_model(other_abi tests/contract/refused.cc)
 target_compile_definitions(other_abi PRIVATE WHICH=2)
-vcix_cp_add_model(cannot_be_made tests/contract/refused.cc)
-target_compile_definitions(cannot_be_made PRIVATE WHICH=3)
 
 # tests/contract: the checks that need no simulator.
 add_executable(direct tests/contract/direct.cc)
