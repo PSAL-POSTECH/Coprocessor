@@ -90,7 +90,7 @@ Spike:  [model] execute 062541db, 0 in flight, 0 commits seen
         pc 00000000000101a6 va/inst 000000000a2541db sr 8000000200006620
         An illegal instruction was executed!
 
-gem5:   src/arch/riscv/faults.cc:299: panic: Illegal instruction 0x500010d00a2541db at pc (0x101a6=>0x101aa).(0=>1): no VCIX accelerator model owns it
+gem5:   src/arch/riscv/faults.cc:299: panic: Illegal instruction 0x500010d00a2541db at pc (0x101a6=>0x101aa).(0=>1): no Coprocessor model owns it
 ```
 
 The test is [`tests/contract/run.sh:48-63`](tests/contract/run.sh).

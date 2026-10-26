@@ -69,5 +69,5 @@ spike_illegal() {
 # gem5_illegal <log> [insn as 8 hex digits]
 gem5_illegal() {
   local insn=${2:-'[0-9a-f]{8}'}
-  grep -Eq "panic: Illegal instruction 0x[0-9a-f]*$insn at pc .*: no VCIX accelerator model owns it\$" "$1"
+  grep -Eq "panic: Illegal instruction 0x[0-9a-f]*$insn at pc .*: no Coprocessor model owns it\$" "$1"
 }
