@@ -20,8 +20,6 @@ vcix_cp_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)
 vcix_cp_add_model(tpu examples/tpu/tpu.cc)
 vcix_cp_add_model(tpuv6e examples/tpuv6e/tpuv6e.cc)
 vcix_cp_add_model(tpuv3 examples/tpuv3/tpuv3.cc)
-# examples/copier: examples/rtl/copier/copier.sv's timing as a cp component, no Verilator needed.
-vcix_cp_add_model(copier examples/copier/copier.cc)
 # examples/tpuv6e and examples/tpuv3 are the tpu example's units, its matrix unit among them, as tpu/<unit>.hpp.
 target_include_directories(tpuv6e PRIVATE examples)
 target_include_directories(tpuv3 PRIVATE examples)
@@ -51,7 +49,6 @@ if(VCIX_RTL AND verilator_FOUND)
                              -GL=${rtl_systolic_lanes} -GWEIGHT_WAITS=${waits} -GBAD_TAG=${bad_tag})
     target_compile_definitions(${name} PRIVATE SYSTOLIC_LANES=${rtl_systolic_lanes})
   endforeach()
-  vcix_cp_add_rtl_model(rtl_copier examples/rtl/copier/copier.cc examples/rtl/copier/copier.sv copier)
 elseif(VCIX_RTL)
   message(STATUS "Verilator not found (VERILATOR_ROOT, PATH): examples/rtl is not built")
 endif()
@@ -99,9 +96,6 @@ target_link_libraries(tpuv3_ports PRIVATE vcix_cp ${CMAKE_DL_LIBS})
 # tests/rtl: libtpu.so's RTL keys against librtl_systolic.so where the array's stall mode shows, with no simulator.
 add_executable(rtl_stall tests/rtl/stall.cc)
 target_link_libraries(rtl_stall PRIVATE vcix_cp ${CMAKE_DL_LIBS})
-# tests/rtl: libcopier.so against librtl_copier.so in lockstep, with no simulator.
-add_executable(copier_lockstep tests/rtl/copier.cc)
-target_link_libraries(copier_lockstep PRIVATE vcix_cp ${CMAKE_DL_LIBS})
 
 add_executable(timing_probe tools/timing_probe.cc)
 target_link_libraries(timing_probe PRIVATE vcix_cp ${CMAKE_DL_LIBS})

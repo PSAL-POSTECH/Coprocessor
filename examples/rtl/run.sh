@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs the RTL models: the array's values.c on Spike beside libtpu.so's, the copier's copy with a wait on Spike, then
-# both timing programs on gem5. Needs a build that found Verilator; tests/rtl/run.sh checks every schedule.
+# Runs the RTL array: its values.c on Spike beside libtpu.so's, then its timing program on gem5.
+# Needs a build that found Verilator; tests/rtl/run.sh checks every schedule.
 # Usage: examples/rtl/run.sh [build-dir [spike [pk [gem5.opt]]]]
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -14,9 +14,6 @@ mkdir -p "$OUT"
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c "$FUNCTIONAL/kernels.S" -o "$OUT/kernels.o"
 riscv64-unknown-elf-gcc -O1 -static -march=rv64gc -mabi=lp64d -I"$FUNCTIONAL" -Wl,--section-start=.kernel=0x2000000 \
   "$HERE/systolic/values.c" "$OUT/kernels.o" -o "$OUT/values"
-riscv64-unknown-elf-gcc -O1 -static -march=rv64gcv -mabi=lp64d -DWAIT "$HERE/copier/copy.c" -o "$OUT/copy-wait"
-riscv64-unknown-elf-gcc -O1 -static -march=rv64gcv -mabi=lp64d -DWAIT -DTIMING "$HERE/copier/copy.c" \
-  -o "$OUT/copy-timing"
 rv_program "$HERE/systolic/timing.S" "$OUT/timing"
 
 echo "== spike: the array's values, libtpu.so and rtl_systolic"
@@ -30,11 +27,6 @@ else
   echo "they differ"
 fi
 
-echo "== spike: a copy, then a copy wait"
-spike_run "$BUILD/librtl_copier.so" "" "$OUT/copy-wait" || true
-
 echo "== gem5: the array's timing"
 gem5_run "$OUT/m5out-systolic" "$BUILD/librtl_systolic.so" "$FUNCTIONAL/machine.yml" "$OUT/timing" 2>&1 |
   grep -E '^\[rtl\]|^exit:'
-echo "== gem5: the copier's timing (gem5 moves no data; -DTIMING exits 0)"
-gem5_run "$OUT/m5out-copier" "$BUILD/librtl_copier.so" "" "$OUT/copy-timing" 2>&1 | grep -E '^\[rtl\]|^exit:'

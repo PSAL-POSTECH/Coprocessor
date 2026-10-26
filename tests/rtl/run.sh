@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# The examples/rtl models: the array's values and stall against libtpu.so's, the copier's copy with and without a wait
-# and into a page that faults, libcopier.so against it in lockstep and on Spike, their gem5 timing lines, a wrong out_tag.
+# The examples/rtl models: the array's values and stall against libtpu.so's, its gem5 timing lines, a wrong out_tag.
 # Skipped (exit 0) when the build has no RTL models. Usage: tests/rtl/run.sh [build-dir [spike [pk [gem5.opt]]]]
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -10,7 +9,7 @@ FUNCTIONAL="$REPO/tests/tpu/functional"
 OUT="$BUILD/rtl"
 failed=0
 
-for lib in rtl_systolic rtl_systolic_nowait rtl_systolic_badtag rtl_copier; do
+for lib in rtl_systolic rtl_systolic_nowait rtl_systolic_badtag; do
   [ -e "$BUILD/lib$lib.so" ] && continue
   echo "SKIP  examples/rtl: $BUILD has no lib$lib.so (not built: no Verilator, or -DVCIX_RTL=OFF)"
   exit 0
@@ -26,13 +25,6 @@ clang --target=riscv64 -march=rv64gcv_xsfvcp -c "$FUNCTIONAL/kernels.S" -o "$OUT
     -Wl,--section-start=.kernel=0x2000000 "$EXAMPLE/systolic/values.c" "$OUT/kernels.o" -o "$OUT/values" ||
   { echo "FAIL  systolic/values.c does not build"; exit 2; }
 rv_program "$EXAMPLE/systolic/timing.S" "$OUT/timing" || { echo "FAIL  systolic/timing.S does not build"; exit 2; }
-for variant in plain:"" wait:-DWAIT untouched:-DUNTOUCHED wait-untouched:"-DWAIT -DUNTOUCHED" \
-  timing:"-DWAIT -DTIMING"; do
-  # shellcheck disable=SC2086
-  riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gcv -mabi=lp64d ${variant#*:} \
-    "$EXAMPLE/copier/copy.c" -o "$OUT/copy-${variant%%:*}" ||
-    { echo "FAIL  copier/copy.c (${variant%%:*}) does not build"; exit 2; }
-done
 
 # values <model> <schedule, or ""> <name> [machine]: the array's program, its output to $OUT/<name>.out; prints the exit status
 values() {
@@ -73,34 +65,6 @@ rc=$?
 report "exit $rc, $(grep -c '^PASS' "$OUT/stall.log") passed" "exit 0, 7 passed" \
   "rtl_stall: the array stops while its output queue is full, slot empty or not; each instruction ready as on the RTL"
 
-# copy <program> <schedule, or ""> <name> [model]: prints the exit status and what the program and the unit said
-copy() {
-  RTL_SCHEDULE=$2 spike_run "$BUILD/lib${4:-rtl_copier}.so" "" "$OUT/copy-$1" < /dev/null > "$OUT/$3.out" 2> "$OUT/$3.err"
-  local rc=$? restored
-  restored=$(sed -n 's/^\[rtl\] .* copies, \([0-9]*\) restored after a trap$/\1/p' "$OUT/$3.err")
-  echo "exit $rc, $(cat "$OUT/$3.out"), ${restored:-0} restored"
-}
-echo "-- copier: memory, on Spike"
-report "$(copy plain "" copy-default)" "exit 1, 0 of 256 bytes copied, 0 restored" \
-  "a copy and no wait, default schedule: the loads run before the unit has copied anything"
-report "$(copy wait "" copy-wait-default)" "exit 0, 256 of 256 bytes copied, 0 restored" \
-  "a copy and a copy wait, default schedule: the wait clocks the unit until the copy is in memory"
-report "$(copy wait slow copy-wait-slow)" "exit 0, 256 of 256 bytes copied, 0 restored" "the same, schedule slow"
-report "$(copy wait-untouched "" copy-fault-default)" "exit 0, 256 of 256 bytes copied, 1 restored" \
-  "into a page not yet touched, default schedule: the wait faults and is undone (the bytes come out exact either way)"
-report "$(copy untouched slow copy-fault-slow)" "exit 0, 256 of 256 bytes copied, 1 restored" \
-  "the same with no wait, schedule slow: the copy's own execute faults with its command taken, and is undone"
-report "$(copy plain "" libcopier-plain copier)" "exit 0, 256 of 256 bytes copied, 0 restored" \
-  "libcopier.so, a copy and no wait: it copies as the copy issues, so the loads find what the RTL has not copied yet"
-report "$(copy wait "" libcopier-wait copier)" "exit 0, 256 of 256 bytes copied, 0 restored" \
-  "libcopier.so, a copy and a copy wait: as the RTL"
-
-echo "-- copier: libcopier.so against librtl_copier.so, with no simulator"
-"$BUILD/copier_lockstep" "$BUILD/librtl_copier.so" "$BUILD/libcopier.so" 50 20000 2>&1 | grep -v '^\[rtl\]' > "$OUT/lockstep.log"
-rc=${PIPESTATUS[0]}
-report "exit $rc, $(grep -c '^PASS' "$OUT/lockstep.log") passed" "exit 0, 1 passed" \
-  "copier_lockstep: libcopier.so answers each of gem5's calls as the RTL does, 50 random programs of 20000 cycles"
-
 # on_gem5 <model> <machine, or ""> <program> <name>: prints gem5's exit status and how many [rtl] lines it printed
 on_gem5() {
   gem5_run "$OUT/m5out-$4" "$BUILD/lib$1.so" "$2" "$OUT/$3" --max-ticks 20000000000 > "$OUT/$4.gem5.log" 2>&1
@@ -111,8 +75,6 @@ on_gem5() {
 echo "-- gem5: a timing line at each commit"
 report "$(on_gem5 rtl_systolic "$FUNCTIONAL/machine.yml" timing systolic)" "exit 0, exit line 1, 6 timing lines" \
   "rtl_systolic runs timing.S: one line for each of its six instructions"
-report "$(on_gem5 rtl_copier "" copy-timing copier)" "exit 0, exit line 1, 3 timing lines" \
-  "rtl_copier runs copy.c -DWAIT -DTIMING: one line for each of its three instructions"
 on_gem5 rtl_systolic_badtag "$FUNCTIONAL/machine.yml" timing badtag > /dev/null
 report "$(grep -c '^rtl_systolic: a beat came out with out_tag [0-9]*, but the oldest command with beats out is' \
   "$OUT/badtag.gem5.log") message, $(grep -c '^exit: ' "$OUT/badtag.gem5.log") exit line" "1 message, 0 exit line" \

@@ -49,7 +49,7 @@
 |---|---|
 | `configure(config)` / `reset()` | 키를 읽고 블록 크기를 정함 / plain 멤버만 되돌림 |
 | `cycle()` | 매 tick, 블록의 `cycle()`보다 먼저. 순수 가상 |
-| `valid(insn)` (선택) | 흐름 제어 전용: 지금은 못 받지만 곧 받을 때 false. copier와 systolic RTL 모드만 씁니다 |
+| `valid(insn)` (선택) | 흐름 제어 전용: 지금은 못 받지만 곧 받을 때 false. systolic RTL 모드만 씁니다 |
 | `Component(cp, name)`, `register_insn(e)` | 모델에 등록하고 `insns().configure(2, 1)`, 생성자에서 인코딩 등록 |
 | `insns()` | 이 컴포넌트의 명령 큐 |
 | `complete(insn)` | `cycle()`에서 부르면 `ready(id, t)`가 같은 t에 참 |

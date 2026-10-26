@@ -423,18 +423,7 @@ class Coprocessor : public cp::Coprocessor {
 #endif
 ```
 
-## 2. 예제 B: copier — `values()`와 `host()`
-
-메모리·레지스터는 `values()` 람다 안에서 `host()`로만 만집니다: Spike에서만 돌고, gem5에서는 아무것도 하지 않습니다. gem5에서 `host()`를 부르면 `vcix_cp: COPIER asked for Spike's host on gem5`로 abort합니다.
-
-```cpp
-    values([&](const cp::Host &host) {
-      if (is(COPY_SOURCE, insn)) source_ = host.xreg(cp::rs1(insn));
-      const uint64_t to = host.xreg(cp::rs1(insn));  // then host.mem_read / host.mem_write, BYTES
-    });
-```
-
-## 3. 예제 C: backpressure가 있는 유한 버퍼
+## 2. 예제 B: backpressure가 있는 유한 버퍼
 
 출력 큐가 차면 배열이 서고, 입력 큐가 차면 push 명령이 `insns()`의 머리에서 기다립니다.
 
@@ -451,7 +440,7 @@ class Coprocessor : public cp::Coprocessor {
     if (enable && input_.length() && array_.push(std::move(input_.front()))) { input_.pop(); rows_.add(1); }
 ```
 
-## 4. 빌드하고 실행하기
+## 3. 빌드하고 실행하기
 
 `CMakeLists.txt`에 `vcix_accel_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)` 한 줄을 더하면 `build/libexp_sfu.so`가 나옵니다.
 
@@ -470,7 +459,7 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.SFU.instructions           2
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vexp             2
 ```
 
-## 5. 점검표
+## 4. 점검표
 
 | 규칙 | 이유 |
 |---|---|

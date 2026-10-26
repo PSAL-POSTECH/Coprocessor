@@ -21,7 +21,7 @@ no `issue` and no timing code. The wrapper is a `cp::Model` of the base layer
 its timing. The rules every model follows (call order, `Unknown` and `ready`,
 squash) are in the [root README](../../README.md).
 
-## The four libraries
+## The three libraries
 
 - `librtl_systolic.so`: `systolic/systolic.sv` built with `L=4`, the tpu
   example's systolic array on int8. Input push, weight push, pop.
@@ -31,9 +31,6 @@ squash) are in the [root README](../../README.md).
 - `librtl_systolic_badtag.so`: the same module with `BAD_TAG=1`. Every
   `out_tag` is one off. Both faces check the tag and stop
   ([the messages](#messages-that-end-a-run)).
-- `librtl_copier.so`: `copier/copier.sv`, a memory copier. One instruction
-  sets the source, one copies 256 bytes and returns at once, one waits for
-  every earlier copy.
 
 The array is built three times from one source with different `-G`
 parameters (`CMakeLists.txt:43-51`).
@@ -57,11 +54,7 @@ assembler writes them:
 ```
 
 `cmd_op` is the number the module sees on its `cmd_op` port. It is a column
-of the table, not a field of the instruction. The copier shows this best:
-`copy.c` writes `.insn r 0x5b, 4, 0x03 / 0x05 / 0x07`, which assemble to
-`0x0609405b`, `0x0a04405b` and `0x0e00405b`. Under `FORM` these are
-`0x0600405B` "copy source" (`cmd_op` 0), `0x0A00405B` "copy" (`cmd_op` 1)
-and `0x0E00405B` "copy wait" (`cmd_op` 2) (`copier/copier.cc:13-17`).
+of the table, not a field of the instruction (`systolic/systolic.cc:16-20`).
 
 <details><summary>Reproduce</summary>
 
@@ -73,8 +66,6 @@ Every run in this README used the environment image of [setup/](../../setup)
 source scripts/sim.sh
 rv_program examples/rtl/systolic/timing.S /tmp/timing
 riscv64-unknown-elf-objdump -d /tmp/timing.o | grep '5b\s'
-riscv64-unknown-elf-gcc -O1 -static -march=rv64gcv -mabi=lp64d -DWAIT -c examples/rtl/copier/copy.c -o /tmp/copy.o
-riscv64-unknown-elf-objdump -d /tmp/copy.o | grep '405b'
 ```
 </details>
 
@@ -92,15 +83,15 @@ it has with three flags: `BEATS`, `SCALAR`, `MEM`.
   `mem_wdata`, `mem_rdata`. One request of 8 bytes at a time.
 - **busy** (always): the unit's state can still change without new input.
 
-The two modules side by side:
+The array's ports:
 
 ```
-systolic.sv  (BEATS)                       copier.sv  (SCALAR, MEM)
-  cmd_valid, cmd_ready                       cmd_valid, cmd_ready
-  cmd_op[1:0], cmd_vl[15:0], cmd_tag[7:0]    cmd_op[1:0], cmd_x[63:0]
-  in_valid, in_ready, in_data[L*8-1:0]       mem_valid, mem_ready, mem_we
-  out_valid, out_ready, out_data[L*8-1:0]    mem_addr, mem_wdata, mem_rdata [63:0]
-  out_tag[7:0], out_last                     busy
+systolic.sv  (BEATS)
+  cmd_valid, cmd_ready
+  cmd_op[1:0], cmd_vl[15:0], cmd_tag[7:0]
+  in_valid, in_ready, in_data[L*8-1:0]
+  out_valid, out_ready, out_data[L*8-1:0]
+  out_tag[7:0], out_last
   busy
 ```
 
@@ -166,54 +157,15 @@ until this instruction's command, beats and results are through, then writes
 `vd` and returns (`rtl_model.hpp:344-390`). Between two instructions nobody
 clocks the unit. It does not move.
 
-```
-Spike runs:    copy source       copy                    loads of dst     exit
-unit clocks:   |1|               |1|                     (none)
-               command taken     command taken, queued;
-                                 nothing copied yet
-```
-
-That picture is a real run. `copier/copy.c` sets the source, starts one copy
-and then reads the destination with ordinary loads. On Spike the whole
-program clocks the unit twice:
-
-```
-0 of 256 bytes copied                                     (stdout, exit 1)
-[rtl] 2 clocks, 4 copies, 0 restored after a trap         (stderr)
-```
-
-The copy command was taken and queued in the unit, but the unit was never
-clocked again, so no byte moved. Add a copy wait (`-DWAIT`), and the wait's
-`execute` clocks the unit until it is no longer busy:
-
-```
-256 of 256 bytes copied                                   (stdout, exit 0)
-[rtl] 69 clocks, 6 copies, 0 restored after a trap        (stderr)
-```
-
 The `[rtl]` line is printed at exit by every process that used an RTL unit
 (`rtl_model.hpp:76-86`): clocks; copies, each a whole Verilator save (one
 before each gem5 issue; on Spike one before every execute, the base layer's
 copy of the model that undoes a trap, `include/vcix_cp_base.hpp:330-339`,
 and one more before each execute of a `MEM` unit, the wrapper's own,
-`rtl_model.hpp:226-241`); and executes undone by a trap. The two copier
-runs: 2 and 3 instructions, two copies each.
+`rtl_model.hpp:226-241`); and executes undone by a trap.
 
-A push works the same way. It returns once its beats are in the unit, before
-anything is computed. A later pop clocks the array until its results come
-out.
-
-<details><summary>Reproduce</summary>
-
-`tests/rtl/run.sh` asserts "exit 1, 0 of 256 bytes copied, 0 restored" and
-"exit 0, 256 of 256 bytes copied, 0 restored". The clock counts are in its
-outputs:
-
-```
-tests/rtl/run.sh
-cat build/rtl/copy-default.err build/rtl/copy-wait-default.err
-```
-</details>
+A push returns once its beats are in the unit, before anything is computed.
+A later pop clocks the array until its results come out.
 
 ## gem5: one clock a cycle, no data
 
@@ -226,9 +178,9 @@ things fire.
   The instruction becomes `ready` in the cycle its last step fires:
   - with out beats (a pop): at its last out beat;
   - with only in beats (a push): when its last in beat fires;
-  - one that waits (the copy wait): when `busy` falls and no older beats are
-    left;
-  - any other (copy source, copy): when its command is taken;
+  - one that waits (an `Op` with `waits`): when `busy` falls and no older
+    beats are left;
+  - any other: when its command is taken;
   - with beats but `vl` 0: at issue, without the unit.
 - `can_accept` is true only when nothing else issued this cycle, no command
   is still waiting to be taken (one command is presented at a time),
@@ -349,13 +301,6 @@ values, a unit follows two rules:
 Under these rules a result depends on the order of the inputs, not on their
 timing. So Spike gives the values the hardware would give at any timing.
 
-### Rule 1: the copier needs its wait
-
-The copy returns at once, so without a wait the loads run before the unit
-has copied anything: `0 of 256 bytes copied` ([above](#spike-a-core-infinitely-faster-than-the-unit)).
-An `Op` with `waits` clocks the unit until `busy` falls: a drain. Nothing
-drains at exit.
-
 ### Rule 2: what goes wrong when a weight push does not wait
 
 `overtake.c` pushes weights of 1, then four rows (row `r` is `r+1` in every
@@ -472,47 +417,6 @@ RTL_SCHEDULE=random:0:12 spike_run build/librtl_systolic.so tests/tpu/functional
 ```
 </details>
 
-## A trap in the middle of `execute`
-
-A `MEM` unit touches host memory while Spike clocks it, and that access can
-trap (for example on a page pk has not mapped yet). Spike then runs the
-instruction again. So `execute` saves the unit first and, on a trap,
-restores it and rethrows (`rtl_model.hpp:226-241`):
-
-```
-execute(copy wait)
-  save the unit                                   (a copy)
-  clock ... the unit stores to dst's first page -> page fault
-  restore the unit to the save, rethrow           (1 restored)
-pk maps the page
-execute(copy wait) again
-  save the unit                                   (a copy)
-  clock ... the copy completes                    256 of 256 bytes
-```
-
-`copy.c -DUNTOUCHED` copies into a heap page the program never touched, so
-the unit's own first store faults:
-
-- with a wait, default schedule: `256 of 256 bytes copied`, and
-  `[rtl] 71 clocks, 8 copies, 1 restored after a trap` (three executes, one
-  of them run twice; two copies each);
-- no wait, schedule `slow`: the copy's own `execute` faults with its command
-  already taken. `256 of 256 bytes copied`, and
-  `[rtl] 73 clocks, 6 copies, 1 restored after a trap`.
-
-Why the restore matters: when the unit takes a copy, it moves its source
-past the 256 bytes (`copier.sv:53-56`). A copy taken twice would copy the
-source's second half. Memory already written stays written, so a `MEM` unit
-must give the same result when an instruction runs again from the restored
-state.
-
-<details><summary>Reproduce</summary>
-
-`tests/rtl/run.sh` asserts "exit 0, 256 of 256 bytes copied, 1 restored" for
-both; the `[rtl]` lines are in `build/rtl/copy-fault-default.err` and
-`build/rtl/copy-fault-slow.err`.
-</details>
-
 ## Messages that end a run
 
 Each of these came from a run:
@@ -577,102 +481,33 @@ gem5_run /tmp/m5-lanes8 build/librtl_systolic.so /tmp/lanes8.yml /tmp/timing
 ```
 </details>
 
-## `rtl_copier` and `libcopier.so`
-
-`examples/copier/copier.cc` is the same copier written as a cp component
-instead of RTL: `libcopier.so`, a `cp::Coprocessor` of one `cp::Component`,
-`COPIER`, whose `cycle` is one clock edge of `copier.sv`
-(`examples/copier/copier.cc:11-75`). Its `insns()` is the wrapper's one
-pending command (`valid`: nothing pending and a slot in the unit's queue,
-`copier.cc:32`); a command enters its `commands` queue of 4 the cycle after
-its issue, spending the `issue` port; a copy at the queue's head makes 64
-memory requests, one a cycle on the `memory` port; a wait completes once
-nothing is queued or copying (`copier.cc:35-45`). It owns the same three
-encodings. Driven as gem5 drives them, the two give the same answers. On Spike
-they differ when a program breaks rule 1.
-
-```
-                       librtl_copier.so                  libcopier.so
-written as             copier.sv, Verilated              a cp::Component's cycle()
-memory moves           only while Spike clocks the       as the copy enters the unit's queue, inside
-                       unit                              its own Spike execute (copier.cc:51-66)
-Spike, copy, no wait   0 of 256 bytes copied, exit 1     256 of 256 bytes copied, exit 0
-Spike, copy + wait     256 of 256, exit 0                256 of 256, exit 0
-gem5's calls           the same answer to every can_accept, latency and ready
-```
-
-The last row comes from `copier_lockstep` (`tests/rtl/copier.cc`). It drives
-both libraries through the C table as gem5 does, with no simulator: seeded
-programs issued 1 to 3 a cycle, committed late, squashed and reset.
-
-```
-PASS  50 seeds of 20000 cycles, 109928 instructions issued: every answer alike
-```
-
-On gem5 the three instructions of `copy.c -DWAIT -DTIMING` on
-`librtl_copier.so` print:
-
-```
-[rtl] copy source vl=1: issued @51227, ready @51228 (1 cycles)
-[rtl] copy vl=1: issued @51228, ready @51229 (1 cycles)
-[rtl] copy wait vl=1: issued @51229, ready @51295 (66 cycles)
-```
-
-The copy is ready when its command is taken. The wait waits for the copy's
-memory traffic: 32 words, a read and a write each, one request a cycle
-(`copier.sv:64-70`). gem5 moves no data, so `-DTIMING` exits 0 whatever it
-reads.
-
-The statistics differ: the wrapper declares no `counters()`, so
-`librtl_copier.so` reports only its commits, while `libcopier.so` reports its
-component's counter, `COPIER.instructions`
-([tpu: statistics](../tpu/README.md#statistics-each-components-counters)).
-The same program on `libcopier.so`:
-
-```
-vcix.COPIER.instructions                     3     # instructions, at most 1 a cycle
-vcix.committed.copy_source                   1
-vcix.committed.copy                          1
-vcix.committed.copy_wait                     1
-```
-
-<details><summary>Reproduce</summary>
-
-`tests/rtl/run.sh` asserts the Spike rows, "exit 0, 1 passed" for the
-lockstep and three timing lines on gem5. The lockstep line is in
-`build/rtl/lockstep.log`; the gem5 lines are printed by `examples/rtl/run.sh`.
-The statistics: `gem5_run m5 build/libcopier.so "" <copy-timing>` and
-`grep 'vcix\.' m5/stats.txt`.
-</details>
-
 ## Writing a unit
 
-The copier is the smallest template. Four steps.
+The array is the template. Four steps.
 
 **1. The module.** Give it the ports it needs, and follow the two rules.
-`copier.sv` has the command port with `cmd_x`, the memory port and `busy`,
-and no beats. It is busy while a command is queued or a copy is active
-(`copier.sv:37`). Its wait does nothing in the module: the wrapper's drain is
-the whole wait.
+`systolic.sv` has the command port with `cmd_vl` and `cmd_tag`, the in and
+out beats and `busy`. It is busy while rows are in its input queue or the
+array and its output queue has room (`systolic.sv:73`).
 
-**2. The table.** A struct with these members (`copier/copier.cc:8-19`):
+**2. The table.** A struct with these members (`systolic/systolic.cc:10-32`):
 
 ```cpp
-struct Copier {
-  static constexpr const char *NAME = "rtl_copier";
-  static constexpr uint32_t LANES = 1, TAGS = 0;
-  static constexpr bool BEATS = false, SCALAR = true, MEM = true;
+struct Systolic {
+  static constexpr const char *NAME = "rtl_systolic";
+  static constexpr uint32_t LANES = SYSTOLIC_LANES, TAGS = 256;
+  static constexpr bool BEATS = true, SCALAR = false, MEM = false;
   static constexpr uint32_t FORM = 0xFE00707F;
   static constexpr rtl::Op OPS[] = {
-      {0x0600405B, FORM, "copy source", 0, false, false},
-      {0x0A00405B, FORM, "copy", 1, false, false},
-      {0x0E00405B, FORM, "copy wait", 2, false, false, true},
+      {0x2200305B, FORM, "systolic input push", 0, true, false},
+      {0x2600305B, FORM, "systolic weight push", 1, true, false},
+      {0x0800305B, FORM, "systolic pop", 2, false, true},
   };
-  static void check(const cp::Config &) {}
+  static void check(const cp::Config &config);  // refuses another vpu_num_lanes
 };
 
-using CopierModel = rtl::Model<Vcopier, Copier>;
-VCIX_CP_REGISTER(CopierModel)
+using SystolicModel = rtl::Model<Vsystolic, Systolic>;
+VCIX_CP_REGISTER(SystolicModel)
 ```
 
 - `TAGS`: the command tags the unit tells apart; 0 without tag ports.
@@ -682,18 +517,18 @@ VCIX_CP_REGISTER(CopierModel)
   refuses any `vpu_num_lanes` but its own (`systolic/systolic.cc:20-26`).
 
 An `Op` that waits has no beats; otherwise it would be ready twice. Give the
-copy wait `beats_in = true` and the build stops (`rtl_model.hpp:183-188`):
+pop `waits = true` and the build stops (`rtl_model.hpp:183-188`):
 
 ```
 rtl_model.hpp:188:36: error: static assertion failed: an Op that waits has no beats: it would be ready twice
 ```
 
 **3. CMake.** `vcix_cp_add_rtl_model` exists only inside the
-`if(VCIX_RTL AND verilator_FOUND)` block of `CMakeLists.txt` (`:35-55`), so
+`if(VCIX_RTL AND verilator_FOUND)` block of `CMakeLists.txt` (`:35-54`), so
 the call goes there:
 
 ```cmake
-vcix_cp_add_rtl_model(rtl_copier examples/rtl/copier/copier.cc examples/rtl/copier/copier.sv copier)
+vcix_cp_add_rtl_model(rtl_systolic examples/rtl/systolic/systolic.cc examples/rtl/systolic/systolic.sv systolic -GL=4)
 ```
 
 It verilates with `--savable -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL` and
@@ -704,7 +539,7 @@ another size is another library.
 
 **4. Check it.** Compare its values on Spike under the default, `slow` and
 random schedules against a reference, and read its `[rtl]` lines on gem5.
-`tests/rtl/run.sh` does exactly this for the two units here.
+`tests/rtl/run.sh` does exactly this for the array.
 
 ## Build and run
 
@@ -716,7 +551,7 @@ them. The environment image's Verilator reports
 
 ```
 scripts/build.sh
-examples/rtl/run.sh     # both models on both simulators
+examples/rtl/run.sh     # the array on both simulators
 tests/rtl/run.sh        # the checks below, also run by tests/run.sh; SKIP when not built
 ```
 
@@ -726,9 +561,6 @@ tests/rtl/run.sh        # the checks below, also run by tests/run.sh; SKIP when 
 == spike: the array's values, libtpu.so and rtl_systolic
 [rtl] 171 clocks, 18 copies, 0 restored after a trap
 the same 1536 bytes
-== spike: a copy, then a copy wait
-256 of 256 bytes copied
-[rtl] 69 clocks, 6 copies, 0 restored after a trap
 == gem5: the array's timing
 [rtl] systolic weight push vl=4: issued @6209, ready @6214 (5 cycles)
 [rtl] systolic input push vl=4: issued @6210, ready @6218 (8 cycles)
@@ -738,12 +570,6 @@ the same 1536 bytes
 [rtl] systolic pop vl=8: issued @6292, ready @6309 (17 cycles)
 exit: exiting with last active thread context at cycle 8069
 [rtl] 8074 clocks, 8 copies, 0 restored after a trap
-== gem5: the copier's timing (gem5 moves no data; -DTIMING exits 0)
-[rtl] copy source vl=1: issued @51227, ready @51228 (1 cycles)
-[rtl] copy vl=1: issued @51228, ready @51229 (1 cycles)
-[rtl] copy wait vl=1: issued @51229, ready @51295 (66 cycles)
-exit: exiting with last active thread context at cycle 111444
-[rtl] 111487 clocks, 8 copies, 0 restored after a trap
 ```
 
 The 18 copies of the first run are one per Spike execute of `values.c`'s 18
@@ -755,11 +581,7 @@ What `tests/rtl/run.sh` covers:
   for `values.c` under the default, `slow` and ten random schedules. `rtl_systolic_nowait` differs, and `libtpu.so` under
   `tpu_systolic_weight_waits: 0` matches it.
 - **The array's timing.** `rtl_stall`: 7 ready cycles alike.
-- **The copier on Spike.** 0 of 256 without a wait; 256 with one, under
-  the default and `slow`; 256 with one restore after a fault, with and
-  without a wait; `libcopier.so` copies 256 with and without a wait.
-- **The copier's timing.** `copier_lockstep`, 50 seeds.
-- **gem5.** Six `[rtl]` lines for `timing.S`, three for the copier, and
+- **gem5.** Six `[rtl]` lines for `timing.S`, and
   `rtl_systolic_badtag` stops at its first out beat.
 
 ## The limits
@@ -847,12 +669,8 @@ systolic/systolic.sv      the array (parameters L, Q, WEIGHT_WAITS, BAD_TAG)
 systolic/systolic.cc      its table; built three times (CMakeLists.txt:43-51)
 systolic/values.c         values, compared with libtpu.so byte for byte
 systolic/timing.S         its gem5 program
-copier/copier.sv          the copier; copier/copier.cc its table
-copier/copy.c             the copier's program (-DWAIT, -DUNTOUCHED, -DTIMING)
-run.sh                    both models on both simulators
+run.sh                    the array on both simulators
 
-../copier/copier.cc       libcopier.so: the same copier as a cp::Component
 ../../tests/rtl/run.sh    the checks
 ../../tests/rtl/stall.cc  rtl_stall
-../../tests/rtl/copier.cc copier_lockstep
 ```
