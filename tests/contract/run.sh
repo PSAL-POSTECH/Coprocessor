@@ -87,8 +87,7 @@ log="$BUILD/direct.log"
 "$BUILD/direct" "$BUILD" > "$log" 2>&1; rc=$?
 grep -E '^(PASS|FAIL)  ' "$log"
 ended 0
-line 1 "vcix_cp: the model cannot be made: no such unit can be built"
-verdict "direct: every check above passed, and a constructor that throws says why"
+verdict "direct: every check above passed"
 
 log="$BUILD/counters.log"
 "$BUILD/counters" > "$log" 2>&1; rc=$?

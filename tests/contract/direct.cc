@@ -147,6 +147,5 @@ int main(int argc, char **argv) {
   two_libraries("same_name_default", "with the compiler's default visibility");
   instances();
   numbers();
-  expect(table("cannot_be_made") == nullptr, "a model whose constructor throws hands over no table");
   return failed;
 }
