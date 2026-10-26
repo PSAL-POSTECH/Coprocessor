@@ -303,8 +303,8 @@ commit될 때(squash된 것은 commit되지 않습니다) `why`를 찍고 종료
 | `tpu: msa pop: 8 elements asked, 3 computed`; `tpu: msa push: its elements are words of 32 bits, not of 16` | `:165-166` | Msa `fault` (verify/mm) |
 | `MVIN ERROR: Scratchpad address overflow: 0xd0080000` (exit 200) | `:167` | `Dma::mvin`, `values()` 안 |
 | MXU 12개 문장 (`tpu: vpop: 1 rows asked of the upper half, 0 computed` … `tpu: vmatmul: array 2, and the machine has 2 (tpu_mxu_units)`) | `tests/tpuv6e/functional/run.sh:50-69` | Mxu `carried` → `fault` (verify/mm: stderr 22개 프로그램이 오늘 코드와 바이트 단위로 같음) |
-| lanes x lanes 4개 문장 | `tests/tpuv3/functional/run.sh:71-76` | Mxu `carried` → `fault` |
-| `'0' is not a pipeline depth: at least 1`, `'0' is not an issue width: at least 1`, `tpu_mxu_queue_entries: '1' …`, `tpu_mxu_bound_to_lanes: '2' …`, `reports: … latency: '8 cycles' …` | `tests/tpu/run.sh:172,225`, `tests/tpuv3/run.sh:103,145`, `tests/tpuv6e/run.sh:163`, `tests/contract/run.sh:74` | `configure()`의 `ConfigError`, 그대로 |
+| lanes x lanes 4개 문장 | `tests/tpuv3/functional/run.sh:67-71` | Mxu `carried` → `fault` |
+| `'0' is not a pipeline depth: at least 1`, `'0' is not an issue width: at least 1`, `tpu_mxu_queue_entries: '1' …`, `tpu_mxu_bound_to_lanes: '2' …`, `reports: … latency: '8 cycles' …` | `tests/tpu/run.sh`, `tests/tpuv3/run.sh`, `tests/contract/run.sh` | `configure()`의 `ConfigError`, 그대로 |
 
 ### 3.6 통계와 trace
 
@@ -327,7 +327,7 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows                    12
 system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows_in_flight          84
 ```
 
-- `tests/stats`의 `listed`(카운터 여덟 개)와 `beyond_units`(0)가 이 목록을 고정합니다.
+- `tests/stats`의 `listed`(카운터 여덟 개)가 이 목록을 고정합니다.
 - 카운터 목록은 모델의 순서입니다 [사실] `tests/tpu/ports.cc`, `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc`: 예
   `SFU MISC SYSTOLIC XLU MSA`의 카운터들.
 
@@ -568,7 +568,7 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 | `tests/tpu/ports.cc:63` 외 드라이버 | `now + latency`에 commit | `ready()`를 poll해야 합니다 | `Unknown`이면 wrap됩니다 |
 | `tests/tpu/ports.cc:108-123`, `tests/tpuv3/ports.cc:37`, `tests/tpuv6e/ports.cc:37` list | 컴포넌트의 카운터 | **그대로** | 포트, 큐, 파이프라인은 통계가 아님 |
 | `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` units | `…_MISC …_MXU …_SFU …_XLU` | **그대로** | 같은 이유 |
-| `tests/stats` counts/listed/beyond_units | 12 3 3 …, 카운터 여덟 개, 0 | **그대로** | 카운터 불변 |
+| `tests/stats` counts/listed | 12 3 3 …, 카운터 여덟 개 | **그대로** | 카운터 불변 |
 
 ### 5.2 Sfu / Misc (드라이버 [사실] `verify/sm/units`)
 
@@ -610,11 +610,11 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 
 | test | old | new | why |
 |---|---|---|---|
-| `tests/rtl/run.sh:94-97` copier_lockstep | PASS | **PASS (run)** | wrapper의 skid를 그대로 옮겼습니다 |
+| `tests/rtl/run.sh:99-102` copier_lockstep | PASS | **PASS (run)** | wrapper의 skid를 그대로 옮겼습니다 |
 | `README.md:812-822` timing_probe 6 copies / 2 waits | 1,2,3,4,5, 67→68 / 2, 4 | **같음 (run)** | |
-| `tests/rtl/run.sh:88-91` libcopier on Spike | 256 of 256 | **같음** (가짜 Spike: wait 전에 512 of 512) | copy 값은 들어갈 때 |
-| `tests/rtl/run.sh:66-69` rtl_stall | 6, 70, 79, 82, 85, 94, 158 | **같음 (run), 7 PASS** | |
-| `tests/rtl/run.sh:49-63` values | same, differs, same | **same, differs, same** (가짜 Spike 바이트 동일) | |
+| `tests/rtl/run.sh:93-96` libcopier on Spike | 256 of 256 | **같음** (가짜 Spike: wait 전에 512 of 512) | copy 값은 들어갈 때 |
+| `tests/rtl/run.sh:71-74` rtl_stall | 6, 70, 79, 82, 85, 94, 158 | **같음 (run), 7 PASS** | |
+| `tests/rtl/run.sh:49-68` values | same, differs, same | **same, differs, same** (가짜 Spike 바이트 동일) | |
 | `tests/tpu/run.sh:73-77` systolic_full pop | `pop: 11 cycles …, input queue 0, output queue 4`; lines 3 | `pop: 1 cycles …, 0 in flight, input queue 4, output queue 0`, commit **12**; **lines 2** | pop이 머리에서 기다림 |
 | `run.sh:79-88` systolic_stream | 10 of 11 | **6 of 11** (옛 문장 기준). 새 줄: input queue 0, 2..7 (`1 cycles…0 in flight`), `1 cycles…1 in flight, input queue 6, output queue 0`, `2 cycles…1 in flight, input queue 6, output queue 1/3` | 앞 push의 행이 머리에서 옮겨진 뒤 큐를 셉니다 |
 | `run.sh:90-95` output full | 3 of 11 | **2 of 11** (세 번째 줄은 `weight push: 1 cycles … input queue 1, output queue 4`) | |
@@ -639,7 +639,6 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 | tpuv3 `:82` bound-4 | `vmatmul:0:0/0 vpop:9:0/4 vpop:2:0/4`; 2, 56 | `vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0`; **2, 56** | commit 10, 12 |
 | tpuv3 `:86` bound-128 | `vmatmul:0:0/0 vpop:257:0/4 vpop:2:0/4` | `vmatmul:0:0/0 vpop:1:8/0 vpop:0:8/0` | commit 258, 260 |
 | tpuv3 `:93` lanes-8 / bound-8 | `…vpop:19:0/4 vpop:4:0/4`, same | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0`, **same** | |
-| tpuv3 `:99` tpuv6e unbound | 8 issues, same | **8 issues, same** | |
 | tpuv3 `:137` machine-mxu (폭 12) | gem5_se와 같음 | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0`, **gem5_se와 같음** | 한도 W=2가 CPU 폭보다 먼저 묶습니다 |
 | tpuv6e `:54` mxu pairs | lines 4 | **lines 1** | vmatpush가 vmatprep 옆에서 accept |
 | tpuv6e `:60` mxu pops | lines 4 of 8 | **lines 0 of 8** | commit 19, 20, 20, 21 |
@@ -696,7 +695,7 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 | 3 | `examples/copier/copier.cc` | `units/examples/copier/copier.cc` | `copier_lockstep`, `timing_probe`, `tests/rtl/run.sh` 전체 |
 | 4 | `examples/tpu/machine.hpp` | trace 변경 (§3.6) | 빌드 |
 | 5 | `examples/tpu/{sfu,misc,dma}.hpp` | 새 파일 | `tests/tpu/functional`의 sfu/dma 부분, `tpu_ports`의 SFU/MISC |
-| 6 | `examples/tpu/{systolic,msa}.hpp` | 새 파일 | `rtl_stall`, `tests/rtl/run.sh:49-63` values, functional systolic/msa |
+| 6 | `examples/tpu/{systolic,msa}.hpp` | 새 파일 | `rtl_stall`, `tests/rtl/run.sh:49-68` values, functional systolic/msa |
 | 7 | `examples/tpu/xlu.hpp` | 새 파일 | functional xlu (값 표, exit 201/1/1) |
 | 8 | `examples/tpu/mxu.hpp` | 새 파일 (`tpu.cc`, `tpuv3.cc`, `tpuv6e.cc`는 그대로 [사실] `cmp`) | tpuv3/tpuv6e functional |
 | 9 | `tests/tpu/ports.cc`, `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc` | `ready()` poll, 블록 단위 목록, 드라이버가 프로그램 순서로 제시 | 각 ports 테스트 |

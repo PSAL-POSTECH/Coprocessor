@@ -34,7 +34,7 @@ class Copier : public cp::Component {
   // waits if the unit is no longer busy.
   void cycle() override {
     if (left_) {
-      left_ -= memory_.utilize(1);
+      if (memory_.utilize(1)) left_--;
     } else if (commands_.length() && is(COPY, commands_.pop())) {
       left_ = 2 * BYTES / 8;
     }

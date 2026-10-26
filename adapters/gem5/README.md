@@ -79,8 +79,7 @@ gem5's `Exec` trace of the same run shows both:
 6461000: system.cpu: T0 : 0x10218 @main+44    : vcix 0x062541db <- a0      : Coprocessor :
 ```
 
-`tests/print_args/run.sh` asserts the latencies 7, 14 and 7, nine commits and
-one `exit:` line.
+`tests/print_args/run.sh` asserts the latencies 7, 14 and 7.
 
 <details><summary>Reproduce</summary>
 
@@ -457,8 +456,8 @@ dump 4    8  2  2
 dump 5    0  0  0    to the end of the run
 ```
 
-`tests/stats/run.sh` ("m5op windows") asserts these counts, and that every dump
-lists each counter and nothing else of the model but the commits.
+`tests/stats/run.sh` ("m5op windows") asserts these counts, and that the first
+dump lists each counter and nothing else of the model but the commits.
 
 **FUs that are not models.** Any `MinorFU` takes a `unit` name
 (`BaseMinorCPU.py:141-145`). The cycles in which any FU of the unit is occupied

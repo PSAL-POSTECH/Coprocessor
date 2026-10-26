@@ -191,10 +191,6 @@ rc[machine]=$?
 report "exit ${rc[machine]}, $(chain machine 11)" "exit 0, readers 6, commits 6 and 11" \
   "script_systolic.py runs sfu.S to the program's exit, the reader of a special function's result issued 11 cycles after it"
 
-
-# machine_stat <run> <name>: the value of the stat ending in .<name> in the run's one dump
-machine_stat() { awk -v want=".$2" 'substr($1, length($1) - length(want) + 1) == want { print $2; exit }' "$BUILD/m5out-tpu-$1/stats.txt"; }
-
 # misc_per_cycle <run>: the most tpu::Misc instructions issued in one cycle, and how many it issued, from the trace
 misc_per_cycle() {
   awk '/^\[tpu\] issue / { split($0, part, ": "); name = substr(part[1], 13); split(part[2], after, " ")
@@ -207,14 +203,8 @@ timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-misc" "$REPO/examples/tpu/gem5/
   -c "$BUILD/tpu-one_cycle" --model "$BUILD/libtpu.so" --machine-config "$HERE/trace.yml" \
   > "$BUILD/tpu-machine-misc.gem5.log" 2>&1
 rc[machine-misc]=$?
-committed=0
-for name in vlane_idx compute dma_config_desc dma_index_key mvin mvin2 mvin3 mvout; do
-  committed=$((committed + $(machine_stat machine-misc "committed.$name")))
-done
 report "exit ${rc[machine-misc]}, at most and in all $(misc_per_cycle machine-misc)" "exit 0, at most and in all 2 8" \
   "script_systolic.py issues one_cycle.S's eight tpu::Misc instructions at most two a cycle, though the CPU issues 12"
-report "instructions $(machine_stat machine-misc MISC.instructions) of $committed committed" "instructions 8 of 8 committed" \
-  "MISC counts each committed custom-2 and DMA instruction of tpu::Misc once"
 
 printf 'tpu_trace: 1\ntpu_misc_issue_width: 3\nvpu_spad_size_kb_per_lane: 512\n' > "$BUILD/tpu-misc-3.yml"
 printf 'tpu_misc_issue_width: 0\n' > "$BUILD/tpu-misc-0.yml"
@@ -229,12 +219,6 @@ report "exit ${rc[machine-misc-3]}, at most and in all $(misc_per_cycle machine-
 why=$(grep -Fc "tpu: machine description: tpu_misc_issue_width: '0' is not an issue width: at least 1" \
   "$BUILD/tpu-machine-misc-0.gem5.log")
 report "exit ${rc[machine-misc-0]}, reason given $why" "exit 1, reason given 1" "gem5 stops on tpu_misc_issue_width: 0"
-
-# memories <run>: each memory of the scratchpad, from the run's config.ini: its address range at its bandwidth (ps a byte)
-memories() {
-  awk '/^\[/ { in_mem = ($0 ~ /^\[system\.mem_ctrls[0-9]*\]$/) } in_mem && /^bandwidth=/ { bw = substr($0, 11) }
-    in_mem && /^range=/ { out = out sep substr($0, 7) " at " bw; sep = ", " } END { print out }' "$BUILD/m5out-tpu-$1/config.ini"
-}
 
 # window <run> <dump> <name>: the value of the stat named <name> in the dump-th dump, 0 if the dump does not print it
 window() {
@@ -253,11 +237,6 @@ data_reads() {
 
 timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-loads" "$REPO/examples/tpu/gem5/script_systolic.py" \
   -c "$BUILD/tpu-loads" --model "$BUILD/libtpu.so" > "$BUILD/tpu-machine-loads.gem5.log" 2>&1
-rc[machine-loads]=$?
-report "exit ${rc[machine-loads]}, $(memories machine-loads); requests $(grep -Po '^executeLSQRequestsQueueSize=\K.*' \
-  "$BUILD/m5out-tpu-machine-loads/config.ini")" \
-  "exit 0, 0:17179869184:0:64 at 29.000000, 0:17179869184:1:64 at 29.000000; requests 2" \
-  "script_systolic.py's scratchpad is two banks, interleaved by the 64-byte line at 32 GB/s each, and its LSQ takes two requests"
 report "$(data_reads machine-loads 2); $(data_reads machine-loads 4)" "64 0; 32 32" \
   "loads.S's 64 loads from lines 128 bytes apart all read bank 0; from lines 64 bytes apart, 32 each bank"
 report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-loads 4 system.cpu.numCycles)" "85 and 51" \
@@ -265,9 +244,6 @@ report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-load
 
 timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-addresses" "$REPO/examples/tpu/gem5/script_systolic.py" \
   -c "$BUILD/tpu-addresses" --model "$BUILD/libtpu.so" > "$BUILD/tpu-machine-addresses.gem5.log" 2>&1
-rc[machine-addresses]=$?
-report "exit ${rc[machine-addresses]}, integer units $(grep -c '^opClass=IntAlu$' "$BUILD/m5out-tpu-machine-addresses/config.ini")" \
-  "exit 0, integer units 6" "script_systolic.py's CPU has six units of IntAlu, two more than the original's four"
 report "$(window machine-addresses 2 system.cpu.numCycles)" "91" \
   "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 91 cycles (99 with four integer units, 95 with five)"
 

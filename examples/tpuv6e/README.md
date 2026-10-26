@@ -92,7 +92,7 @@ struct Shape {
 };
 ```
 
-gem5 reports each component's counters (`vcix_cp_base.hpp:264-292`):
+gem5 reports each component's counters (`vcix_cp_base.hpp:250-278`):
 `TPUV6E_SFU.instructions`, `TPUV6E_MISC.instructions`, `TPUV6E_XLU.elements`
 and `elements_in_flight`, `TPUV6E_MXU.rows`, `rows_in_flight` and
 `active_cycles`. A component's ports, `insns()`, queues and pipelines are no
@@ -485,7 +485,7 @@ head's rows (`mxu.hpp:166-169`; the pipeline's rule,
 ```cpp
 if (line.length(now)) {
   const uint32_t rows = line.front(now).rows;
-  if (lower.available(now) >= rows && (!upper || upper->available(now) >= rows)) {
+  if (lower.available() >= rows && (!upper || upper->available() >= rows)) {
     Word w = line.pop(now);
     ...
 ```
@@ -939,7 +939,7 @@ interleaved by the 64-byte line):
  addresses.S   64 loads, each with its addi   76 cycles               91 cycles
 ```
 
-v6e column: `tests/tpuv6e/run.sh`. Generic column: `tests/tpu/run.sh`. The
+v6e column: `tests/tpuv6e/run.sh` (`addresses.S`: a run). Generic column: `tests/tpu/run.sh`. The
 two `loads.S` windows take the same here, since the ports take any address.
 
 These window counts depend on the exact binary. Build with the pinned
@@ -1033,8 +1033,8 @@ The matrix unit's (`mxu.hpp:48-84`):
   this model's. A `vmatprep`, a `vmatpush` to the second half and an upper
   `vpop` are then faults (`mxu.hpp:214-215`, `218-219`, `226-227`).
   `tests/tpuv3/run.sh` runs it on `libtpuv6e.so`: on 4 lanes a 4 x 4 array
-  and 7 stages, the first `vpop` committing 10 cycles after its issue; 0
-  gives the same trace as no key; 2 is refused.
+  and 7 stages, the first `vpop` committing 10 cycles after its issue; 2 is
+  refused.
 - **`tpu_mxu_registers`**, **`tpu_mxu_issue_slots`**, **`tpu_mxu_word_a_cycle`**,
   defaults this model's `Shape` (2, 2, 1). The registers an operand spans (1 or
   2; 1 with `tpu_mxu_bound_to_lanes: 1`), the instructions of `vmatprep`,
@@ -1065,8 +1065,7 @@ queues. Every trace in this README comes from it.
   unless noted;
 - the EUP's push and pop, `sfu.S`, with latency 10 and 4;
 - the v6e machine: its configuration; `scratchpad.S`; `tests/tpu`'s
-  `loads.S` and `addresses.S`; `valu.S`;
-- a refused machine description (`tpu_mxu_queue_entries: 1`);
+  `loads.S`; `valu.S`;
 - `functional/run.sh`: on Spike, `mxu.c` against a formula on one array and
   on two, and the fourteen refusals above. It runs on the machine of
   `tests/tpu/functional` (`machine.yml`, `common.h`).

@@ -192,8 +192,8 @@ trap is re-read after its write, the same hazard as before.
 | `XLU ERROR: the pre stage walks 1 columns but lane 0 carries 0 pattern entries (SIMM5 16)` (exit 201) | `tests/tpu/functional/run.sh:162` | xlu `fault()` with exit_code 201 |
 | `MVIN ERROR: Scratchpad address overflow: 0xd0080000` (exit 200) | `tests/tpu/functional/run.sh:167` | `Dma::mvin` inside `values()` |
 | the 12 `tpu: vpop/vmatmul/vmatpush/vmatprep: …` texts | `tests/tpuv6e/functional/run.sh:50-69` | MXU `carried` → `fault()` |
-| the 4 lanes x lanes texts | `tests/tpuv3/functional/run.sh:71-76` | MXU `carried` → `fault()` |
-| `… '0' is not a pipeline depth: at least 1`, `… '0' is not an issue width: at least 1`, `tpu_mxu_queue_entries: '1' …`, `tpu_mxu_bound_to_lanes: '2' …`, `reports: … latency: '8 cycles' …` | `tests/tpu/run.sh:172,225`, `tests/tpuv3/run.sh:103,145`, `tests/tpuv6e/run.sh:163`, `tests/contract/run.sh:74` | `configure()` throwing `ConfigError` before any block's own `invalid_argument` |
+| the 4 lanes x lanes texts | `tests/tpuv3/functional/run.sh:67-71` | MXU `carried` → `fault()` |
+| `… '0' is not a pipeline depth: at least 1`, `… '0' is not an issue width: at least 1`, `tpu_mxu_queue_entries: '1' …`, `tpu_mxu_bound_to_lanes: '2' …`, `reports: … latency: '8 cycles' …` | `tests/tpu/run.sh`, `tests/tpuv3/run.sh`, `tests/contract/run.sh` | `configure()` throwing `ConfigError` before any block's own `invalid_argument` |
 
 ## 6. Statistics
 
@@ -202,7 +202,7 @@ whose `add(n)` only grows it; the C table lists every counter as `{group = compo
 encoding as `{"committed", name, 0}` (`include/coprocessor.h:57-64`). A counter of capacity > 0 is a unit TOGSim
 times as `<COMPONENT>.<name>`; capacity 0 is a plain count. gem5 prints one scalar `vcix.<group>.<name>` per entry,
 turning characters outside `[A-Za-z0-9_]` into `_`; names that collide that way, and a group named `committed`, are
-refused at create (`vcix_cp_base.hpp:264-292`). Counters live in the model, so a squash's copy takes back what the
+refused at create (`vcix_cp_base.hpp:250-278`). Counters live in the model, so a squash's copy takes back what the
 squashed instructions counted and a reset keeps them.
 
 As gem5's `stats.txt` prints it (markers window 1):
@@ -213,7 +213,7 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows_in_flight          84
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_pop            3
 ```
 
-What `tests/stats/run.sh` pins: `beyond_units` stays 0; `listed` finds exactly the eight counters of
+What `tests/stats/run.sh` pins: `listed` finds exactly the eight counters of
 `SFU, MISC, SYSTOLIC, XLU, MSA`; `counts` keep their values.
 
 ## 7. Trace hook for `tpu::Coprocessor`
@@ -272,7 +272,7 @@ Additions (each needed by something FACT in the repo or a review finding):
 
 Decisions 1-5 are final (DESIGN.md §8):
 1. No `Pipeline::hold()`: the MinorFU rule stands; systolic.sv's bubble freeze is a known, untested difference
-   (`tests/rtl/run.sh:66-69` passes without it, FACT `verify`).
+   (`tests/rtl/run.sh:71-74` passes without it, FACT `verify`).
 2. A pop whose rows are still to come is accepted and waits at the head of `insns()`; the `ports.cc` drivers are to
    offer instructions in program order.
 3. The Spike progress rule "waiting lives in a block" stays; no `moved()` hatch.

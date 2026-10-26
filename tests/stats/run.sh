@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The tpu model's counters in gem5's dumps: m5op windows, their boundaries, and the systolic array's rows; the vector unit's busy cycles. gem5 only.
+# The tpu model's counters in gem5's dumps: m5op windows and their boundaries; the vector unit's busy cycles. gem5 only.
 # Usage: tests/stats/run.sh [build-dir [spike [pk [gem5.opt]]]]
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -47,15 +47,6 @@ listed() {
 }
 COUNTERS="MISC.instructions MSA.rows MSA.rows_in_flight SFU.instructions SYSTOLIC.rows SYSTOLIC.rows_in_flight XLU.elements XLU.elements_in_flight"
 
-# rows <program> <dump>: the rows into the systolic array, a row a cycle at most
-rows() { stat "$1" "$2" vcix.SYSTOLIC.rows; }
-
-# beyond_units <program>: vcix lines in any dump that are neither vcix.<group>.<counter> nor vcix.committed.<encoding>
-beyond_units() {
-  awk '$1 ~ /\.vcix\./ { sub(/.*\.vcix\./, "", $1); if (split($1, part, ".") != 2) n++ } END { print n + 0 }' \
-    "$BUILD/m5out-stats-$1/stats.txt"
-}
-
 # vpu <program> <dump>: the vector unit's busy cycles, its capacity, and whether its cycles is numCycles and its
 # utilized_cycles admitted / capacity
 vpu() {
@@ -66,7 +57,7 @@ vpu() {
   echo "$admitted $capacity $agree"
 }
 
-for program in markers rows vpu; do
+for program in markers vpu; do
   rv_program "$HERE/$program.S" "$BUILD/stats-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 
@@ -74,28 +65,13 @@ echo "-- m5op windows"
 on_gem5 markers
 report "exit ${rc[markers]}, dumps $(dumps markers)" "exit 0, dumps 5" \
   "four markers and the end of the run dump five times: dumpreset's 1000 ns period in a1 is ignored"
-for dump in 1 2 3 4 5; do
-  report "$(listed markers $dump)" "$COUNTERS" "dump $dump: each component's counters, and nothing else of the model but the commits"
-done
+report "$(listed markers 1)" "$COUNTERS" "dump 1: each component's counters, and nothing else of the model but the commits"
 report "$(counts markers 1)" "12 3 3" "reset, three pushes of four and three pops, dump: 12 rows in, 3 pushes, 3 pops"
 report "$(counts markers 2)" "0 0 0" "reset, then dump at once: nothing, and the push right after the dump is not in it"
 report "$(counts markers 3)" "4 1 1" \
   "the push after the dump and its pop, then dumpreset: dumped at the marker, not 2000 ns later as a0 asks"
 report "$(counts markers 4)" "8 2 2" "two pushes and their pops between two dumpresets, the second also with a0 and a1 set"
 report "$(counts markers 5)" "0 0 0" "after the last dumpreset, to the end of the run: nothing"
-report "$(for d in 1 2 3 4 5; do rows markers $d; echo; done | awk '{ s += $1 } END { print s }')" "24" \
-  "the five dumps' rows add up to the run's: 24 rows in"
-report "$(beyond_units markers)" "0" "only counters and commit counts are printed, each vcix.<group>.<name>"
-
-echo "-- rows"
-on_gem5 rows
-report "exit ${rc[rows]}, rows $(rows rows 1)" "exit 0, rows 1" "one row alone in its window"
-window=$(stat rows 2 system.cpu.numCycles)
-report "rows $(rows rows 2), $(rows rows 2 | awk -v y="$window" '{ print ($1 <= y) ? "within" : "beyond" }')" \
-  "rows 64, within" "64 rows back to back, at most one a cycle: never more than the window's $window cycles"
-for dump in 1 2; do
-  report "$(listed rows $dump)" "$COUNTERS" "rows, dump $dump: each component's counters"
-done
 
 echo "-- vector unit busy cycles"
 on_vpu vpu

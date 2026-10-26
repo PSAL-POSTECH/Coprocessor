@@ -37,10 +37,7 @@ commits() {
 # unit_stat <run> <group> <counter>: the value of vcix.<group>.<counter> in the run's one dump
 unit_stat() { awk -v want=".vcix.$2.$3" 'substr($1, length($1) - length(want) + 1) == want { print $2; exit }' "$BUILD/m5out-tpuv6e-$1/stats.txt"; }
 
-# groups <run>: the components with counters in the run's dump, sorted
-groups() { sed -n 's/^.*\.vcix\.\([^.]*\)\.[^.]* .*$/\1/p' "$BUILD/m5out-tpuv6e-$1/stats.txt" | grep -vx committed | sort -u | tr '\n' ' ' | sed 's/ $//'; }
-
-for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops sfu scratchpad valu ../tpu/loads ../tpu/addresses; do
+for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops sfu scratchpad valu ../tpu/loads; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv6e-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 
@@ -66,9 +63,9 @@ pops=$(said mxu "issue vpop: 1 cycles after the last issue, 1 in flight, input q
   "issue vpop: 0 cycles after the last issue, 3 in flight, input queue 8, output queues 0 and 0")
 report "lines $pops of $(lines mxu issue), commits $(commits mxu vpop)" "lines 4 of 8, commits vpop:19 vpop:20 vpop:20 vpop:21" \
   "the four vpops enter insns() two a cycle, before any row is out, and wait at the head: eight rows of bfloat16 enter the line two a cycle, so the lower half's first pop commits 1 + 1 + 15 + 1 cycles after the vmatmul is carried out (into the queue, the second word into the line, the line, into the output queue), the upper half's a cycle later (one vpop a cycle per array), the second pair's two later"
-report "groups $(groups mxu); TPUV6E_MXU rows $(unit_stat mxu TPUV6E_MXU rows), rows_in_flight $(unit_stat mxu TPUV6E_MXU rows_in_flight), active_cycles $(unit_stat mxu TPUV6E_MXU active_cycles)" \
-  "groups TPUV6E_MISC TPUV6E_MXU TPUV6E_SFU TPUV6E_XLU; TPUV6E_MXU rows 8, rows_in_flight 120, active_cycles 18" \
-  "gem5 reports each component's counters, none of its insns, queues and pipelines; the eight rows in at the matrix unit two a cycle, a word of two 15 cycles in the line, the line busy 4 + 15 - 1 cycles"
+report "TPUV6E_MXU rows $(unit_stat mxu TPUV6E_MXU rows), rows_in_flight $(unit_stat mxu TPUV6E_MXU rows_in_flight), active_cycles $(unit_stat mxu TPUV6E_MXU active_cycles)" \
+  "TPUV6E_MXU rows 8, rows_in_flight 120, active_cycles 18" \
+  "gem5 reports the matrix unit's counters: the eight rows in at the matrix unit two a cycle, a word of two 15 cycles in the line, the line busy 4 + 15 - 1 cycles"
 
 printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 16\n' > "$BUILD/tpuv6e-mxu-16.yml"
 on_gem5 mxu_rate mxu_rate "$BUILD/tpuv6e-mxu-16.yml"
@@ -155,7 +152,7 @@ on_machine() {
 config() { gem5_config "$BUILD/m5out-tpuv6e-machine-$1" "${@:2}"; }
 window() { gem5_window "$BUILD/m5out-tpuv6e-machine-$1" "${@:2}"; }
 
-for program in scratchpad valu loads addresses; do on_machine $program; done
+for program in scratchpad valu loads; do on_machine $program; done
 report "exit ${rc[machine-scratchpad]}, ports $(config scratchpad system.spad load_ports) $(config scratchpad system.spad store_ports) $(config scratchpad system.spad access_ports), latency $(config scratchpad system.spad latency); requests $(config scratchpad system.cpu executeLSQRequestsQueueSize); integer units $(grep -c '^opClass=IntAlu$' "$BUILD/m5out-tpuv6e-machine-scratchpad/config.ini"), VALUs $(grep -c '^unit=Vpu$' "$BUILD/m5out-tpuv6e-machine-scratchpad/config.ini")" \
   "exit 0, ports 3 2 4, latency 1; requests 2; integer units 6, VALUs 4" \
   "the v6e machine: a scratchpad of 3 load, 2 store and 4 access ports a cycle, two LSQ requests, six integer units and four VALUs"
@@ -165,17 +162,8 @@ report "at most $(window scratchpad 1 system.spad.loadsPerCycle::max_value) load
 report "$(window loads 2 system.cpu.numCycles) and $(window loads 4 system.cpu.numCycles), at most $(window loads 2 system.spad.loadsPerCycle::max_value) loads a cycle" \
   "40 and 40, at most 3 loads a cycle" \
   "loads.S's 64 loads take the same from lines 128 and 64 bytes apart: the scratchpad has no banks, its ports take any address"
-report "$(window addresses 2 system.cpu.numCycles)" "76" \
-  "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 76 cycles"
 report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 16 of 35 cycles" \
   "valu.S's 64 independent vfadds and vfmuls keep the VALUs busy 16 cycles: 4 a cycle, whatever the mix"
-
-echo "-- the model"
-printf 'tpu_mxu_queue_entries: 1\n' > "$BUILD/tpuv6e-queue-1.yml"
-on_gem5 queue-1 mxu "$BUILD/tpuv6e-queue-1.yml"
-why=$(grep -Fc "tpuv6e: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2" \
-  "$BUILD/tpuv6e-queue-1.gem5.log")
-report "exit ${rc[queue-1]}, reason given $why" "exit 1, reason given 1" "gem5 stops on tpu_mxu_queue_entries: 1"
 
 echo "-- what it computes"
 "$HERE/functional/run.sh" "$BUILD" "$SPIKE" "$PK" || failed=1

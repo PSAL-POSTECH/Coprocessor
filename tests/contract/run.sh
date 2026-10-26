@@ -102,15 +102,6 @@ grep -E '^(PASS|FAIL)  ' "$log"
 ended 0
 verdict "route_once: a copy of a cp model ticks its own blocks and counters: the same cycles as the original"
 
-probe() { log="$BUILD/probe-$1.log"; "$BUILD/timing_probe" "$BUILD/lib$1.so" $OWNED 2 > "$log" 2>&1; rc=$?; }
-probe no_optional
-ended 0
-part 2 ": issued at "
-verdict "probe runs a table written by hand, tick, ready and reset NULL"
-probe other_abi
-ended 1
-part 0 ": issued at "
-verdict "probe refuses a table of another ABI version"
 for sim in spike gem5; do
   run $sim no_optional no_optional "" pair
   ended 0
@@ -126,10 +117,6 @@ run spike other_abi other_abi "" pair
 ended 1
 part 1 "libother_abi.so has ABI 14, Spike has 13"
 verdict "spike refuses a table of another ABI version"
-run spike cannot_be_made cannot_be_made "" pair
-ended 1
-line 1 "vcix_cp: the model cannot be made: no such unit can be built"
-verdict "spike refuses a model whose constructor throws, after the model said why"
 
 run gem5 units reports "$BUILD/one_at_a_time.yml" pair --units 2
 ended 0

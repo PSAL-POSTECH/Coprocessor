@@ -155,8 +155,8 @@ How to read it:
   instruction leaves the processor at its ready cycle or when the instructions
   before it have left, whichever is later.
 
-[`tests/print_args/run.sh`](tests/print_args/run.sh) asserts the config line
-on both simulators, nine `execute` lines, and the latencies 7, 14 and 7. The
+[`tests/print_args/run.sh`](tests/print_args/run.sh) asserts that it runs on
+both simulators, and the latencies 7, 14 and 7. The
 absolute cycles above come from one run of `examples/print_args/run.sh`.
 
 ## The C ABI and its two faces
@@ -183,7 +183,7 @@ vcix_model                                         who calls it
 
 `encodings` may be NULL when `num_encodings` is 0. A table written by hand may
 leave `tick`, `ready` and `reset` NULL. `tests/contract/by_hand.cc` is such a
-table, and both simulators run it ([`tests/contract/run.sh:105-118`](tests/contract/run.sh)).
+table, and both simulators run it ([`tests/contract/run.sh:105-109`](tests/contract/run.sh)).
 
 Most models use the C++ layer, [`include/vcix_cp_base.hpp`](include/vcix_cp_base.hpp)
 (namespace `cp`). You derive from `cp::Model` and add one line:
@@ -197,7 +197,7 @@ Most units do not write these methods themselves: a `cp::Coprocessor`
 derives all of them from its components' `cycle()`. The list is what a model
 written by hand implements, and what the engine does for you.
 
-The methods ([`vcix_cp_base.hpp:131-162`](include/vcix_cp_base.hpp)); "optional"
+The methods ([`vcix_cp_base.hpp:130-161`](include/vcix_cp_base.hpp)); "optional"
 ones have a default:
 
 - Both simulators
@@ -231,14 +231,14 @@ under: `vl`, SEW and LMUL. Both faces get the same `insn`, so a latency can
 depend on how much data the instruction moves. `execute` reaches the hart
 through `host`: `lanes()`, `vlen_bits()`, `vreg(lane, reg)`,
 `vreg_mut(lane, reg)`, `xreg`, `set_xreg`, `freg_bits`, `csr`, `mem_read` and
-`mem_write` ([`vcix_cp_base.hpp:80-102`](include/vcix_cp_base.hpp)).
+`mem_write` ([`vcix_cp_base.hpp:79-101`](include/vcix_cp_base.hpp)).
 
 **Instances.** A simulator makes one object per instance of the accelerator:
 Spike one per hart, gem5 one per `MinorCoprocessorFU`. Instances share nothing.
 A model's state belongs in the object's members: a static or a global is
 shared by every instance in the process. `tests/contract` runs gem5 with two
 units naming one library, and each instance sees only its own commit
-([`run.sh:134-139`](tests/contract/run.sh)).
+([`run.sh:121-126`](tests/contract/run.sh)).
 
 **Lifetimes.**
 
@@ -341,14 +341,14 @@ on gem5:
 ```
 
 The fifth waits for the first commit, and every one commits 10 cycles after
-its issue. [`tests/pipeline/run.sh`](tests/pipeline/run.sh) asserts "3 in
-flight" at least once, "4 in flight" never, and six commits at 10.
+its issue. [`tests/pipeline/run.sh`](tests/pipeline/run.sh) asserts the six
+commits at 10.
 
 gem5 also bounds the model: a unit that already has `coprocessorMaxInFlight`
 instructions in the processor (8192 unless the CPU config sets it) is issued
 no more, and its model is not asked. With `coprocessorMaxInFlight` 4, gem5 asks the
 model with three in flight and never with four
-([`tests/contract/run.sh:141-147`](tests/contract/run.sh); where gem5 checks it:
+([`tests/contract/run.sh:128-134`](tests/contract/run.sh); where gem5 checks it:
 [gem5 adapter, Issue](adapters/gem5/README.md#3-issue)).
 
 ### Example: a queue of two
@@ -399,13 +399,13 @@ queue  [0 1]  ... [1 2]  ...           [2 3]  ...           []
 - The wait issues in the cycle whose `tick` emptied the queue.
 - "0 ticks missing" on every line: no cycle passed without its `tick`.
 
-[`tests/contract/run.sh:156-168`](tests/contract/run.sh) asserts these lines.
+[`tests/contract/run.sh:143-155`](tests/contract/run.sh) asserts these lines.
 
 ### Squash: a copy, and the cycles since run again
 
 gem5 issues instructions before it knows they will run. After a mispredicted
 branch it takes them back. The model does not see this. The C++ layer keeps
-the rule for you ([`vcix_cp_base.hpp:164-182`](include/vcix_cp_base.hpp)):
+the rule for you ([`vcix_cp_base.hpp:163-181`](include/vcix_cp_base.hpp)):
 
 ```
 issue #1 ──► save a copy of the model ──► model.issue(#1)
@@ -435,7 +435,7 @@ construction; the rules its components keep are in
 
 The second and third lines are the wrong path. After the squash the model is
 back to "1 issued": the two never happened
-([`tests/contract/run.sh:170-178`](tests/contract/run.sh)).
+([`tests/contract/run.sh:157-165`](tests/contract/run.sh)).
 
 ### A result whose time is not known at issue
 
@@ -475,7 +475,7 @@ true stalls the program with no error. gem5 warns once after
 src/cpu/minor/execute.cc:636: warn: 0/26.18/107/661.661 pc: 0x102c4 (vcix): its accelerator model has not said its result is ready 100 cycles after its issue
 ```
 
-All of these are asserted in [`tests/contract/run.sh:180-205`](tests/contract/run.sh).
+All of these are asserted in [`tests/contract/run.sh:167-192`](tests/contract/run.sh).
 
 **Spike calls none of this.** When the program exits, the simulation ends,
 whatever the unit is still doing. `tick` moves the model's own time only; it
@@ -540,7 +540,7 @@ Most models want numbers. `config.uint("key", fallback)` reads an unsigned
 decimal; `config.hex("key", fallback)` reads `0x` and hex digits, for
 addresses. The fallback is for an absent key only. A present value that is
 not such a number is a configuration error, never 0 and never the fallback.
-These are the cases [`tests/contract/direct.cc:99-116`](tests/contract/direct.cc)
+These are the cases [`tests/contract/direct.cc:98-115`](tests/contract/direct.cc)
 checks, with the reason the model gives:
 
 - `uint`: `8` reads 8, `0` reads 0, absent reads the fallback.
@@ -564,7 +564,7 @@ gem5:   src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/libreports.so: re
 ([`tests/contract/run.sh:72-76`](tests/contract/run.sh).) A model that reads a
 value itself reports a bad one the same way: it throws
 `cp::ConfigError(key, value, why)` from `configure`
-([`vcix_cp_base.hpp:37-41`](include/vcix_cp_base.hpp)).
+([`vcix_cp_base.hpp:36-40`](include/vcix_cp_base.hpp)).
 
 A description whose top level is not a mapping is refused by both simulators
 ([`run.sh:78-83`](tests/contract/run.sh)).
@@ -595,7 +595,7 @@ One process can load more than one model. `tests/contract/same_name.cc`
 is built twice, both with a class named `Accel`. `direct` loads both and checks that each
 library keeps its own table and model, built hidden and built with the default
 visibility ([`direct.cc:61-69`](tests/contract/direct.cc)). The table is hidden
-whatever the flags ([`vcix_cp_base.hpp:317`](include/vcix_cp_base.hpp)).
+whatever the flags ([`vcix_cp_base.hpp:303`](include/vcix_cp_base.hpp)).
 
 The flag covers the code compiled with it. A static library linked into the
 model that was not built hidden also needs `-Wl,-Bsymbolic` on the model's
@@ -1102,7 +1102,7 @@ rules that keep it so:
   after `configure`: `vcix_cp: a block or counter of <component> lies outside the model object`.
 - No pointer or reference to model state in a member: in a copy it points at
   the original. A reference member does not compile
-  ([`vcix_cp_base.hpp:167-168`](include/vcix_cp_base.hpp)); a raw pointer
+  ([`vcix_cp_base.hpp:166-167`](include/vcix_cp_base.hpp)); a raw pointer
   compiles and is wrong.
 - Components never read each other. `cycle()` is a function of the
   component's own state and `now`.
@@ -1130,7 +1130,7 @@ Values only grow from create on: a reset keeps them, a squash takes back what
 the squashed instructions counted. Two groups, two counters of one group or two
 encodings whose names collide once `_` replaces other characters are refused
 at create, as is a group named `committed`
-([`vcix_cp_base.hpp:264-292`](include/vcix_cp_base.hpp)).
+([`vcix_cp_base.hpp:250-278`](include/vcix_cp_base.hpp)).
 
 ### Four rules keep the two faces together
 
@@ -1197,7 +1197,7 @@ Verilated module with standard ports (command, in and out beats, memory,
 module once a cycle for the timing. Spike clocks it only while an instruction
 needs it, for the values. So on Spike a copy with no wait after it copies
 nothing on the RTL copier, and everything on `libcopier.so`, which copies as
-the copy enters its queue ([`tests/rtl/run.sh:79-80,88-91`](tests/rtl/run.sh)). See
+the copy enters its queue ([`tests/rtl/run.sh:84-85,93-96`](tests/rtl/run.sh)). See
 [`examples/rtl/README.md`](examples/rtl/README.md).
 
 ## What you do not implement, and what you configure
@@ -1318,8 +1318,8 @@ tests/run.sh              every test below
 tests/contract/           the rules of the interface: ownership, the machine description,
                           the model table, instances, tick, squash, a late result,
                           processor state
-tests/pipeline/           a pipelined model overlaps instructions on gem5
-tests/print_args/         the example reaches the model once per instruction
+tests/pipeline/           a pipelined model commits each instruction its latency after its issue on gem5
+tests/print_args/         the example runs on both simulators; gem5's latency follows LMUL
 tests/tpu/                the tpu example's timing on gem5; functional/: its values on
                           Spike, against the Spike its units came from
 tests/tpuv6e/             the tpuv6e example's timing on gem5; functional/: its matrix

@@ -237,7 +237,7 @@ Docs to refresh (not tests):
    - `tpu::Component::trace_queues` must take `const vcix_insn &`, since the trace no longer has a `cp::Insn`.
      Sfu overrides it with that signature, matching the stub in `units/check/machine.hpp`.
    - Misc stays a plain `cp::Component`, so it prints nothing, as today.
-4. `Queue::available(now)` is now in the header; sfu_push does not need it (one row at a time while `!full(now)`).
+4. `Queue::available()` is now in the header; sfu_push does not need it (one row at a time while `!full(now)`).
 6. A memory trap inside Misc's DMA `values()` (an mvin or mvout to an untouched page) is restored by the framework
    (ENGINE §5), so a retried transfer is neither repeated nor falsely stuck.
 5. **Spike progress rule:** no time-only wait in these units lives in a plain member. Every wait is a Pipeline, a Queue,

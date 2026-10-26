@@ -46,15 +46,20 @@ same() { if cmp -s "$OUT/${2:-reference}.out" "$OUT/$1.out"; then echo same; els
   printf 'tpu_systolic_queue_entries: 64\ntpu_systolic_command_queue: 2\ntpu_systolic_in_rows_per_cycle: 1\n'
   printf 'tpu_systolic_pop_rows_per_cycle: 1\ntpu_systolic_weight_waits: 0\n'; } > "$OUT/rtl-nowait.yml"
 echo "-- systolic array: values, against libtpu.so"
-rc=$(values tpu "" reference)
-report "exit $rc, $(wc -c < "$OUT/reference.out") bytes" "exit 0, 1536 bytes" "libtpu.so runs values.c"
-for schedule in "" slow random:1:12 random:2:12 random:3:12 random:4:12 random:5:12 random:6:12 random:7:12 \
-  random:8:12 random:9:12 random:10:12; do
-  name=systolic-${schedule:-default}; name=${name//:/-}
+values tpu "" reference > /dev/null
+for schedule in "" slow; do
+  name=systolic-${schedule:-default}
   rc=$(values rtl_systolic "$schedule" "$name")
   report "exit $rc, $(same "$name")" "exit 0, same" \
     "rtl_systolic under ${schedule:-the default schedule}: values as libtpu.so's"
 done
+differing=
+for seed in 1 2 3 4 5 6 7 8 9 10; do
+  rc=$(values rtl_systolic "random:$seed:12" "systolic-random-$seed-12")
+  [ "$rc $(same "systolic-random-$seed-12")" = "0 same" ] || differing="$differing $seed"
+done
+report "seeds not exit 0 and same:${differing:- none}" "seeds not exit 0 and same: none" \
+  "rtl_systolic under random:1:12 to random:10:12: values as libtpu.so's"
 rc=$(values rtl_systolic_nowait "" systolic-nowait)
 report "exit $rc, $(same systolic-nowait)" "exit 0, differs" \
   "rtl_systolic_nowait (WEIGHT_WAITS=0) under the default schedule: a weight push overtakes older inputs, values differ"

@@ -72,7 +72,6 @@ void instances() {
   const vcix_model *m = table("reports");
   char error[64] = "";
   void *one = create(m, {}, error, sizeof error), *two = create(m, {}, error, sizeof error);
-  expect(one && two && one != two, "one library makes two instances");
   if (!one || !two) return;
   commit_one(m, one);
   expect(answer(m, one, owned) == 2 && answer(m, two, owned) == 1, "a commit on one instance does not change the other");

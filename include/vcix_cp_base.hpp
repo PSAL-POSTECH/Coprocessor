@@ -2,7 +2,6 @@
 #pragma once
 
 #include <charconv>
-#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -232,19 +231,6 @@ class Instance {
       values[i] = counters[i]->value();
     }
     for (size_t i = 0; i < committed_.size(); i++) values[counted_ + i] = committed_[i];
-  }
-  // The values as gem5 names them, vcix.<group>.<name>, each with its description.
-  void dump_stats(FILE *out) const {
-    std::vector<uint64_t> values(stats_.size());
-    read_stats(values.data());
-    for (size_t i = 0; i < stats_.size(); i++) {
-      const vcix_stat &s = stats_[i];
-      const std::string at = "vcix." + stat_name(s.group) + "." + stat_name(s.name);
-      if (s.capacity)
-        std::fprintf(out, "%-48s %" PRIu64 "  # %s, at most %" PRIu64 " a cycle\n", at.c_str(), values[i], s.name, s.capacity);
-      else
-        std::fprintf(out, "%-48s %" PRIu64 "  # %s\n", at.c_str(), values[i], s.name);
-    }
   }
   // A name as a gem5 statistic: each character outside [A-Za-z0-9_] becomes '_'.
   static std::string stat_name(const char *name) {
