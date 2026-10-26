@@ -594,7 +594,7 @@ v3.
 ```
   funcUnits  00-07   scalar unit A: FP, Int, Int, IntMul, IntDiv, Pred, Mem, Misc
              08-15   scalar unit B: the same
-             16      the VCIX accelerator: the model's statistics are under
+             16      the Coprocessor unit: the model's statistics are under
                      system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV3_*
              17-21   vector group A: Config, Config, LdSt, LdSt, VALU (21)
              22-26   vector group B: Config, Config, LdSt, LdSt, VALU (26)
