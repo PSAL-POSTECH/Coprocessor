@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -34,10 +35,16 @@ class Systolic : public Component {
     }
   };
   using Weights = std::vector<LaneWeights>;
-  // A row in the array (Spike; empty on gem5): element i of every lane, each output lane's sum so far, and with no
-  // command queue the weights its PEs hold for it: those pushed before it.
+  // A row (Spike; empty on gem5): element i of every lane, each output lane's sum, with no command queue the weights
+  // its PEs hold for it (those pushed before it), and the array advance it entered at.
   struct Row {
     std::vector<float> input, sums;
+    std::shared_ptr<const Weights> weights;
+    uint64_t entered = 0;
+  };
+  // Weights the PEs hold from array advance `from` on.
+  struct Landed {
+    uint64_t from;
     std::shared_ptr<const Weights> weights;
   };
 
@@ -52,7 +59,6 @@ class Systolic : public Component {
     register_insn(INPUT_PUSH);
     register_insn(WEIGHT_PUSH);
     register_insn(POP);
-    array_.on_stage(&Systolic::stage);
   }
   void configure(const cp::Config &config) override {
     const uint64_t lanes = config.uint(LANES_KEY, 128), entries = config.uint(QUEUE_KEY, 256);
@@ -74,7 +80,8 @@ class Systolic : public Component {
     pop_.set_width(config.uint(POP_KEY, entries));
   }
   void reset() override {
-    weights_.reset();
+    landed_.clear();
+    advances_ = 0;
     landing_.clear();
     weighted_ = false;
     done_ = 0;
@@ -85,7 +92,7 @@ class Systolic : public Component {
   }
   // Weights taken last cycle reach the PEs; the head instruction works (a wrong one faults as it reaches the head),
   // the pending one enters the command queue; then systolic.sv's array: while the output queue had room as the cycle
-  // began, a finished row leaves and a row enters.
+  // began, a finished row leaves (summed) and a row enters; the array advances unless its finished head waits.
   void cycle() override {
     values([&](const Host &) { land(); });
     const bool enable = !output_.full();
@@ -99,12 +106,20 @@ class Systolic : public Component {
         if (!wrong(in)) enter(in);
       }
     }
-    if (enable && array_.length() && output_.push(std::move(array_.front()))) array_.pop();
-    if (enable && input_.length() && array_.push(std::move(input_.front()))) {
-      input_.pop();
-      rows_.add(1);
+    if (enable && array_.length()) {
+      Row row = array_.pop();
+      values([&](const Host &) { sum(row); });
+      if (!output_.push(std::move(row))) std::abort();
+    }
+    if (enable && input_.length()) {
+      input_.front().entered = advances_;
+      if (array_.push(std::move(input_.front()))) {
+        input_.pop();
+        rows_.add(1);
+      }
     }
     rows_in_flight_.add(array_.size());
+    values([&](const Host &) { advances_ += array_.size() && !array_.length(); });
   }
   void trace_queues(const vcix_insn &) const override {
     std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(input_.size()), static_cast<uint32_t>(output_.size()));
@@ -180,46 +195,54 @@ class Systolic : public Component {
     complete(insn);
     return true;
   }
-  // Stage k: PE (lane, k - lane) adds input k - lane times the weight it holds now to lane's sum, so a lane sums
-  // k = 0.. in order; the last stage also does the anti-diagonals a hart of more lanes than the array has would need.
-  void stage(Row &row, uint32_t k) {
-    const Weights &weights = row.weights ? *row.weights : held();
+  // Stages k = 0.. of a leaving row: PE (lane, k - lane) adds input k - lane times the weight it held at stage k, the
+  // array's advance entered + k, to lane's sum; the last stage also does the anti-diagonals of a hart of more lanes.
+  void sum(Row &row) const {
     const uint32_t lanes = static_cast<uint32_t>(row.sums.size());
-    const uint32_t last = k + 1 == stages_ && 2 * lanes > stages_ + 1 ? 2 * lanes - 2 : k;
-    for (uint32_t d = k; d <= last; d++)
-      for (uint32_t lane = 0; lane < lanes && lane <= d; lane++) {
-        const uint32_t at = d - lane;
-        if (at < weights[lane].size()) row.sums[lane] = multiply_add(row.sums[lane], row.input[at], weights[lane][at]);
-      }
+    for (uint32_t k = 0; k < stages_; k++) {
+      const Weights &weights = row.weights ? *row.weights : met(row.entered + k);
+      const uint32_t last = k + 1 == stages_ && 2 * lanes > stages_ + 1 ? 2 * lanes - 2 : k;
+      for (uint32_t d = k; d <= last; d++)
+        for (uint32_t lane = 0; lane < lanes && lane <= d; lane++) {
+          const uint32_t at = d - lane;
+          if (at < weights[lane].size()) row.sums[lane] = multiply_add(row.sums[lane], row.input[at], weights[lane][at]);
+        }
+    }
   }
-  const Weights &held() const {
+  // The weights the PEs hold at array advance n: the last landed by then.
+  const Weights &met(uint64_t n) const {
     static const Weights none;
-    return weights_ ? *weights_ : none;
+    for (auto v = landed_.rbegin(); v != landed_.rend(); ++v)
+      if (v->from <= n) return *v->weights;
+    return none;
   }
   // Row i of an input push: element i of every lane, and sums of 0.
   Row pushed(const Host &host, const Insn &insn, uint64_t i) const {
     const uint32_t lanes = host.lanes();
-    Row row{std::vector<float>(lanes), std::vector<float>(lanes, 0.0f), whole_ ? weights_ : nullptr};
+    Row row{std::vector<float>(lanes), std::vector<float>(lanes, 0.0f), whole_ && landed_.size() ? landed_.back().weights : nullptr};
     for (uint32_t lane = 0; lane < lanes; lane++) row.input[lane] = element(host, insn, lane, static_cast<uint32_t>(i));
     return row;
   }
   // Beat i of a weight push, element i of every lane; it shifts into the lanes' weights in the next cycle, after the
-  // stages of this one, as systolic.sv's weight registers do at the clock edge.
+  // array's advance in this one, as systolic.sv's weight registers do at the clock edge.
   static std::vector<float> beat(const Host &host, const Insn &insn, uint64_t i) {
     std::vector<float> weights(host.lanes());
     for (uint32_t lane = 0; lane < host.lanes(); lane++) weights[lane] = element(host, insn, lane, static_cast<uint32_t>(i));
     return weights;
   }
-  // The beats taken last cycle into a lane's last `lanes` weights; rows that hold the old weights keep them.
+  // The beats taken last cycle into a lane's last `lanes` weights, held from this cycle's advance on; weights no row
+  // in the array can still meet are dropped.
   void land() {
     if (landing_.empty()) return;
-    if (!weights_ || weights_.use_count() > 1) weights_ = std::make_shared<Weights>(held());
-    Weights &weights = *weights_;
+    const std::shared_ptr<Weights> weights = std::make_shared<Weights>(met(advances_));
     for (const std::vector<float> &b : landing_) {
-      if (weights.empty()) weights.assign(b.size(), {});
-      for (size_t lane = 0; lane < b.size(); lane++) weights[lane].push(b[lane], b.size());
+      if (weights->empty()) weights->assign(b.size(), {});
+      for (size_t lane = 0; lane < b.size(); lane++) (*weights)[lane].push(b[lane], b.size());
     }
     landing_.clear();
+    if (landed_.size() && landed_.back().from == advances_) landed_.pop_back();
+    landed_.push_back({advances_, weights});
+    while (landed_.size() > 1 && landed_[1].from + stages_ <= advances_) landed_.pop_front();
   }
   // Row i a pop takes: each lane's sum to element i of vd.
   static void popped(const Host &host, const Insn &insn, uint64_t i, const Row &row) {
@@ -268,10 +291,10 @@ class Systolic : public Component {
   cp::Queue<Row> input_{*this, "input_queue"};
   cp::Pipeline<Row> array_{*this, "array"};
   cp::Queue<Row> output_{*this, "output_queue"};
-  std::shared_ptr<Weights> weights_;
+  std::deque<Landed> landed_;
   std::vector<std::vector<float>> landing_;
   uint32_t stages_ = 1;
-  uint64_t done_ = 0;
+  uint64_t done_ = 0, advances_ = 0;
   bool whole_ = true, weight_waits_ = false, weighted_ = false;
 };
 
