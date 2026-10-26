@@ -133,7 +133,7 @@ draw.
 ```
 
 The delay line's default length is `2 x REGISTERS x lanes - 1`
-(`examples/tpu/mxu.hpp:69`). A trace line shows the array's queues: one
+(`examples/tpu/mxu.hpp:71`). A trace line shows the array's queues: one
 output queue on the v3, two on the v6e (`mxu.hpp:99-109`):
 
 ```
@@ -178,7 +178,7 @@ the object that `run.sh` builds (`build/tpuv3-mxu.o`):
 ```
 
 The three forms are a `fault` as the instruction reaches the head of the
-unit's `insns()` (`mxu.hpp:214-215`, `218-219`, `226-227`). On Spike the model
+unit's `insns()` (`mxu.hpp:214-215`, `220-221`, `228-229`). On Spike the model
 ends the run with the reason, exit 1. `tests/tpuv3/functional/run.sh` asserts
 these three:
 
@@ -278,7 +278,8 @@ words of bfloat16 (8 rows):
 
 The input port's width is `(word_a_cycle ? 2 : 1) x tpu_mxu_units` rows: 1 on
 the v3, 2 on the v6e, or as a machine's `tpu_mxu_word_a_cycle` says
-(`mxu.hpp:65-70`, `73`). gem5 reports it as the unit's `capacity`.
+(`mxu.hpp:65-70`, `75-76`). It is the capacity of `TPUV3_MXU.rows`, which gem5
+prints in that counter's description (`rows, at most 1 a cycle`).
 
 The v3 still needs a queue of at least 2 rows. A `vmatmul` with `vl` = 1 of
 bfloat16 sends two rows, and both must fit the input queue. A queue of 1 is
@@ -286,7 +287,7 @@ refused when the model is made (`mxu.hpp:52-53`; `tests/tpuv3/run.sh`,
 asserted):
 
 ```
-src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/libtpuv3.so: tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
+src/cpu/minor/coprocessor_model.cc:174: fatal: <build>/libtpuv3.so: tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
 ```
 
 ## A walk through `tests/tpuv3/mxu.S`
@@ -615,7 +616,7 @@ the same reason.
 gem5 counts time in ticks of a picosecond. 940 MHz is not a whole number of
 picoseconds a cycle, so gem5 makes the cycle 1064 ticks (`config.ini`:
 `clock=1064`, asserted). Cycle counts do not depend on the clock. The same
-five programs on a copy of `script_systolic.py` with `clock="1GHz"`:
+four programs on a copy of `script_systolic.py` with `clock="1GHz"`:
 
 ```
                           system.cpu.numCycles, every dump      simTicks, every dump
@@ -625,8 +626,6 @@ five programs on a copy of `script_systolic.py` with `clock="1GHz"`:
                  1GHz     51 163                                51000 163000
   loads.S        940MHz   100 86 85 83 193                      106400 91504 90440 88312 205352
                  1GHz     100 86 85 83 193                      100000 86000 85000 83000 193000
-  addresses.S    940MHz   115 104 220                           122360 110656 234080
-                 1GHz     115 104 220                           115000 104000 220000
   mxu.S          940MHz   514                                   546896
                  1GHz     514                                   514000
 ```
@@ -639,7 +638,7 @@ Every 940 MHz tick count is the cycle count x 1064. The `[tpu]` trace of
 ```
 sed 's/clock="940MHz"/clock="1GHz"/' examples/tpuv3/gem5/script_systolic.py > examples/tpuv3/gem5/script_1ghz.py
 tests/tpuv3/run.sh build        # the 940MHz runs: build/m5out-tpuv3-machine-<program>
-for p in scratchpad valu loads addresses mxu; do
+for p in scratchpad valu loads mxu; do
   yml=(); [ $p = mxu ] && yml=(--machine-config tests/tpuv3/mxu.yml)
   gem5.opt -d m5out-1g-$p examples/tpuv3/gem5/script_1ghz.py -c build/tpuv3-$p --model build/libtpuv3.so "${yml[@]}" > 1g-$p.log
 done
@@ -653,9 +652,9 @@ beside itself, and the tpu machine from `../../tpu/gem5`.
 
 ### What the machine does to programs
 
-Four programs on the v6e machine and on this one. Each window is one
+Three programs on the v6e machine and on this one. Each window is one
 statistics dump. `tests/tpuv3/run.sh` asserts the v3's numbers,
-`tests/tpuv6e/run.sh` the v6e's, all but those of `addresses.S`.
+`tests/tpuv6e/run.sh` the v6e's.
 
 - `tests/tpuv6e/valu.S`: 64 independent `vfadd`s and `vfmul`s.
   - v6e: VALUs busy 16 of 35 cycles, 4 a cycle.
@@ -667,10 +666,6 @@ statistics dump. `tests/tpuv3/run.sh` asserts the v3's numbers,
     The scratchpad has no banks, so the spacing alone changes nothing. The 4
     extra reads are the instruction lines the 128-apart window still fetches,
     and they take the one load port.
-- `tests/tpu/addresses.S`: 64 vector loads, each with the `addi` that steps
-  its pointer.
-  - v6e: 76 cycles.
-  - v3: 104 cycles.
 - `tests/tpuv3/scratchpad.S`: independent loads and stores, one and one in
   turn.
   - v3: at most 1 load, 1 store and 2 accesses a cycle.
@@ -741,8 +736,7 @@ check proves what:
 - `tpu_mxu_registers`, `tpu_mxu_issue_slots`, `tpu_mxu_word_a_cycle`:
   `libtpuv6e.so` with the v3's values runs `mxu.S` and `mxu_rate.S` as
   `libtpuv3.so`; a value outside each key's range is refused.
-- The v3 machine: its `config.ini`, the programs of the list above but
-  `addresses.S`, and `mxu.S` timed as on `gem5_se.py`.
+- The v3 machine: its `config.ini`, the programs of the list above, and `mxu.S` timed as on `gem5_se.py`.
 - `tpu_mxu_queue_entries: 1` refused.
 - `functional/run.sh`, on Spike: `functional/mxu.c` against a formula on 4
   and 8 lanes (`mxu: 312 of 312 elements as the formula says` and `mxu: 720

@@ -38,7 +38,7 @@ if(VCIX_RTL AND verilator_FOUND)
     vcix_cp_add_model(${name} ${source})
     target_include_directories(${name} PRIVATE examples/rtl)
     verilate(${name} SOURCES ${sv} TOP_MODULE ${top} PREFIX V${top}
-             VERILATOR_ARGS --savable -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL ${ARGN})
+             VERILATOR_ARGS --savable -Wall ${ARGN})
   endfunction()
   foreach(variant rtl_systolic:1:0 rtl_systolic_nowait:0:0 rtl_systolic_badtag:1:1)
     string(REPLACE ":" ";" variant ${variant})
@@ -84,10 +84,10 @@ target_link_libraries(counters PRIVATE vcix_cp)
 add_executable(route_once tests/contract/route_once.cc)
 target_link_libraries(route_once PRIVATE vcix_cp)
 
-# tests/tpu: the tpu units' ports, read through the table with no simulator.
+# tests/tpu: the tpu units' counters, read through the table with no simulator.
 add_executable(tpu_ports tests/tpu/ports.cc)
 target_link_libraries(tpu_ports PRIVATE vcix_cp ${CMAKE_DL_LIBS})
-# tests/tpuv6e: the tpuv6e model's units as its statistics list them, with no simulator.
+# tests/tpuv6e: the tpuv6e model's counters as its statistics list them, with no simulator.
 add_executable(tpuv6e_ports tests/tpuv6e/ports.cc)
 target_link_libraries(tpuv6e_ports PRIVATE vcix_cp ${CMAKE_DL_LIBS})
 # tests/tpuv3: the same, of the tpuv3 model.

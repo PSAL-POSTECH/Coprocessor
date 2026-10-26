@@ -34,8 +34,8 @@ commit, `:1807` issue): `tick(t)`, then `ready`, `commit` and `squash`, then `ca
 | call | what the framework does |
 |---|---|
 | `tick(t)` | **(1)** `cycle()` of every component, in construction order. **(2)** `cycle()` of every block: a Pipeline advances one stage or holds; a Queue and a Port do nothing (their availability is kept per cycle number). Blocks never touch each other here. |
-| `can_accept(insn, t)` | `owner != null && owner.valid(Insn{insn}) && !owner.insns().full(t)`. `full` covers both the depth and the per-cycle limit. `valid()` is flow control only (an RTL ready), never a check of the program. Const, reads only. |
-| `issue(insn, id, t)` | `owner.insns().push(Insn{insn, id}, t)`; returns `Unknown`, always. |
+| `can_accept(insn, t)` | `owner != null && owner.valid(Insn{insn}) && !owner.insns().full()`. `full` covers both the depth and the per-cycle limit. `valid()` is flow control only (an RTL ready), never a check of the program. Const, reads only. |
+| `issue(insn, id, t)` | `owner.insns().push(Insn{insn, id})`; returns `Unknown`, always. |
 | `ready(id, t)` | `id ∈ done_`. `complete()` in `cycle()` makes it true in the same gem5 cycle. FACT (gem5 `execute.cc:858-859, 630-631`): the dependent instruction may then issue at t. |
 | `commit(insn, id, t)` | A faulted `id` prints its `why` and exits with its `exit_code` (a squashed one never commits); else erases `id` from `done_`. |
 | `squash(first, t)` | Unchanged `cp::Instance`: copy of the whole model before every issue, restore on squash, then the ticks `issued+1..t` and the commits since run again on the copy (FACT `vcix_cp_base.hpp.design:208-263`). |
@@ -61,8 +61,6 @@ Rules written on `Component` (OPINION, they follow from the squash copy and the 
   `create refused: vcix_cp: a block or counter of VEC lies outside the model object` (before: the copy's `ports()` segfaulted).
 - A reference member fails at compile time (FACT `vcix_cp_base.hpp.design:211` static_assert). A raw pointer to a sibling
   compiles and in a copy points at the original (review FACT P3): the rule above forbids it; no check can.
-- `Pipeline::on_stage(&D::fn)` keeps a `void (Component::*)(T&, uint32_t)`; it throws unless the owner is a `D`
-  (FACT `verify/probe2`: `vcix_cp: W.p: on_stage of another class`).
 - `Coprocessor::host_` is the one raw pointer: set only inside Spike's `execute` and cleared by a scope guard,
   also on a throw.
 - Names: component names and block names are interned in a set allocated once and never destroyed, so every
@@ -104,7 +102,7 @@ Consequences (DERIVED):
 | path | issue at t → ready |
 |---|---|
 | `cycle()` pops and completes at once | t+1 |
-| pops into a Pipeline of latency L, completes on `take` | t+1+L (FACT `verify/sm/units`: L=10 → 11) |
+| pops into a Pipeline of latency L, completes on `pop` | t+1+L (FACT `verify/sm/units`: L=10 → 11) |
 | a group of m registers one a cycle through that Pipeline, completes as the last leaves | t+m+L (FACT `verify/renamed2/sm_mix.out`: vexp m2 → 12, m8 → 18; m1 right after a push m8 → 19) |
 | … then into a user Queue, popped and completed by the next stage | t+2+L |
 | n beats through a 1-wide Port | t+n |
@@ -116,7 +114,6 @@ Consequences (DERIVED):
 
 - `available()` = width − utilized at `now`; `[[nodiscard]] utilize(n)` takes n and returns true, or, past
   `available()`, takes nothing and returns false: the work waits. No statistic.
-- No refill step and no stamp of its own: every call names its cycle (same as Queue and Pipeline).
 - `width()` / `set_width()` in configure (`UNLIMITED` allowed; 0 refused).
 
 ### `Queue<T>(c, name)`
@@ -136,8 +133,8 @@ Consequences (DERIVED):
   UNLIMITED is refused at create, where before it wrapped and issued every cycle).
 - `available() = !blocked && (!pushed || now − last_push ≥ interval)` (subtraction: no wrap).
 - `[[nodiscard]] push(row)` pushes `{row, age 0}`; when `!available` returns false and leaves the row with the caller.
-- the block's `cycle()`: unblocked and not empty → every row ages; a row reaching latency gets `done_at = t`; on
-  Spike `on_stage(row, age−1)`. Blocked → nothing moves.
+- the block's `cycle()`: unblocked and not empty → every row ages; a row reaching latency gets `done_at = t`.
+  Blocked → nothing moves.
 - `length() = blocked && head.done_at < now`; `front`/`pop` require it. Only the head can be finished.
 - FACT (`verify/eng/stall`): latency 3, rows pushed at 1–4, head unpopped at 5 and 6 → popped at 4, 7,
   8, 9.
@@ -149,7 +146,7 @@ execute(host, insn):                       # inside export_model: M saved = mode
   c = owner(insn), or abort "vcix_cp: instruction %08x has no unit"
   host_ = &host (cleared by a scope guard); executing_ = Insn{insn, ++spike_id_}
   until(c, can_accept(executing_, now_))     # a slot in insns(), and valid()
-  c.insns().push(executing_, now_)
+  c.insns().push(executing_)
   until(c, ready(executing_.id, now_))       # complete() or fault() in some cycle()
   commit(insn, id, now_)                     # a faulted id: print its why, exit(exit_code)
 until(c, done):
@@ -167,7 +164,7 @@ returns, gem5 when the instruction commits. The generic message above is what re
 - Spike calls the non-virtual `Coprocessor::can_accept/ready/commit`, so a trace never prints on Spike (as today).
 
 **Progress test (concrete, O(1)).** One `uint64_t motion_` per Component. Bumped by: Queue `push`/`pop`; Pipeline
-`issue`/`take`, a `cycle` that ages rows, a `cycle` while the interval still runs; Port `utilize(n > 0)`;
+`push`/`pop`, a `cycle` that ages rows, a `cycle` while the interval still runs; Port `utilize(n > 0)`;
 `complete()`. A tick that leaves `done()` false and the owner's `motion_` unchanged is stuck.
 
 Why sound (DERIVED): if nothing of component c moved in tick t+1, then at t+2 no new row of c is visible, no slot
@@ -229,7 +226,7 @@ What `tests/stats/run.sh` pins: `listed` finds exactly the eight counters of
 
 | test | old | new | why |
 |---|---|---|---|
-| `tests/contract/route_once.cc:59,63`: issue at 1, four beats one a cycle | done at 6 (FACT `vcix_cp.hpp:444,956`) | **5** for the copy, the assigned model and the original (FACT `verify/eng/check`) | no arrival stamp; rewrite "handler ran once" as "a copy's cycle() ticks its own blocks"; verdict text `tests/contract/run.sh:103` |
+| `tests/contract/route_once.cc:55,57,62`: issue at 1, four beats one a cycle | done at 6 (FACT `vcix_cp.hpp:444,956`) | **5** for the copy, the assigned model and the original (FACT `verify/eng/check`) | no arrival stamp; rewrite "handler ran once" as "a copy's cycle() ticks its own blocks"; verdict text `tests/contract/run.sh:103` |
 | `tests/tpu/run.sh:159-161` Misc "1 cycles after its issue" | 1 | **1** | pop and complete at t+1 |
 | issue → Pipeline of L → ready (e.g. `tests/tpu/run.sh:52-54`, L=10) | L | **L+1** (FACT `verify/sm/units`: 11) | the pop happens in `tick(t+1)` |
 
@@ -244,7 +241,7 @@ with `Unknown`; they must poll `ready()`, as `tests/rtl/stall.cc` does.
 | `cp::Port` as a `vcix_accel::Port` under the component's name (`:106-113`) | **reused**, now a `Block` with `available()/utilize(n)`, no statistic |
 | `ready_` list, `commit` erase, `ready` lookup (`:868-872`) | **reused** as `done_` |
 | stuck message + `exit(1)` (`:1034-1036`), "has no unit" (`:855`) | **reused** verbatim |
-| stage function, k = 0 on the entering cycle, Spike only (`:434-438`) | **reused** in `Pipeline::cycle` |
+| stage function, k = 0 on the entering cycle, Spike only (`:434-438`) | **deleted** |
 | `Slots` (`:149-348`), `AnyPipeline` (`:350-417`), `Stall` | **deleted**: `deque<T>` + two stamps; MinorFU stall |
 | `CmdQueue`, `Free`, `Done`, `arrival_cycles`, waiters (`:443-497`) | **deleted**: `insns()` + `cycle()` + `complete()` |
 | `Instr`, `handle()`, `Handler`, `Step`, `Move`, `Hooks`, `MAX_STEPS`, `Through*`, `Output`, `require/use/send/receive/transfer/on_*` (`:499-833`) | **deleted** |
@@ -272,7 +269,7 @@ Additions (each needed by something FACT in the repo or a review finding):
 
 Decisions 1-5 are final (DESIGN.md §8):
 1. No `Pipeline::hold()`: the MinorFU rule stands; systolic.sv's bubble freeze is a known, untested difference
-   (`tests/rtl/run.sh:71-74` passes without it, FACT `verify`).
+   (`tests/rtl/run.sh:62-66` passes without it, FACT `verify`).
 2. A pop whose rows are still to come is accepted and waits at the head of `insns()`; the `ports.cc` drivers are to
    offer instructions in program order.
 3. The Spike progress rule "waiting lives in a block" stays; no `moved()` hatch.

@@ -320,28 +320,22 @@ decides in `can_accept`, from its own state, how many it takes:
 - one at a time: `return !in_flight_ && now >= busy_until_;`
   ([`print_args.cc:88`](examples/print_args/print_args.cc));
 - a pipeline of depth 4: `return issued_.size() < DEPTH;`
-  ([`tests/pipeline/pipelined.cc:25`](tests/pipeline/pipelined.cc));
+  ([`tests/pipeline/pipelined.cc:22`](tests/pipeline/pipelined.cc));
 - a queue with room: see the next example.
 
 Six back-to-back instructions on the depth-4 model, `tests/pipeline/burst.S`
 on gem5:
 
 ```
-[model] issue, 0 in flight
-[model] issue, 1 in flight
-[model] issue, 2 in flight
-[model] issue, 3 in flight
-[model] commit, 10 cycles after its issue
-[model] issue, 3 in flight
 [model] commit, 10 cycles after its issue
 [model] commit, 10 cycles after its issue
-[model] issue, 2 in flight
 [model] commit, 10 cycles after its issue
-...
+[model] commit, 10 cycles after its issue
+[model] commit, 10 cycles after its issue
+[model] commit, 10 cycles after its issue
 ```
 
-The fifth waits for the first commit, and every one commits 10 cycles after
-its issue. [`tests/pipeline/run.sh`](tests/pipeline/run.sh) asserts the six
+Every one commits 10 cycles after its issue. [`tests/pipeline/run.sh`](tests/pipeline/run.sh) asserts the six
 commits at 10.
 
 gem5 also bounds the model: a unit that already has `coprocessorMaxInFlight`
@@ -558,7 +552,7 @@ message that names the model, the key and the value. With
 
 ```
 Spike:  coprocessor: reports: machine description: latency: '8 cycles' is not an unsigned decimal number
-gem5:   src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/libreports.so: reports: machine description: latency: '8 cycles' is not an unsigned decimal number
+gem5:   src/cpu/minor/coprocessor_model.cc:174: fatal: <build>/libreports.so: reports: machine description: latency: '8 cycles' is not an unsigned decimal number
 ```
 
 ([`tests/contract/run.sh:72-76`](tests/contract/run.sh).) A model that reads a
@@ -662,7 +656,7 @@ memory are touched:
  |                                                                               |
  |   +------------- cp::Component "SFU" --------------+   +-- "MISC" --+  ...    |
  |   | insns(): Queue<Insn>, 2 deep, 1 a cycle         |   | insns()    |        |
- |   | cycle(): pop / issue / take / push / complete|   | cycle() |        |
+ |   | cycle(): pop / push / complete                  |   | cycle()    |        |
  |   | blocks: Port  Queue<T>  Pipeline<T>  (behavior) |   | Port       |        |
  |   | Counter: the statistics                         |   +------------+        |
  |   | plain members: copyable values only             |                         |
@@ -677,8 +671,8 @@ Every tpu unit is written this way. The tpu units are described in
 
 ### A component's life
 
-([`vcix_cp.hpp:160-226`](include/vcix_cp.hpp); `complete` and `fault` at
-[`:477-484`](include/vcix_cp.hpp))
+([`vcix_cp.hpp:159-225`](include/vcix_cp.hpp); `complete` and `fault` at
+[`:465-472`](include/vcix_cp.hpp))
 
 - **The constructor** `Component(cp, name)`. `name` is the component as the
   statistics report it. Call `register_insn({match, mask, name})` here for
@@ -692,7 +686,7 @@ Every tpu unit is written this way. The tpu units are described in
   component cannot take the instruction *this cycle*. Never a check of the
   program: a wrong instruction is accepted, and ends in `fault`. Default
   `true`. `can_accept` is `valid(insn) && !insns().full()`
-  ([`vcix_cp.hpp:320-324`](include/vcix_cp.hpp)).
+  ([`vcix_cp.hpp:309-313`](include/vcix_cp.hpp)).
 - **`cycle()`**: everything that moves. The one function you must write.
 - **`insns()`**: the component's input queue, a `Queue<Insn>`. The engine
   pushes an issued instruction here, and nothing else happens at issue. Its
@@ -740,12 +734,10 @@ Pipeline<T>       latency L, a new row every `interval` cycles, as gem5's MinorF
 - **`Pipeline<T>`**: `configure(latency, interval)`, each 1 to `UINT32_MAX`.
   `push(row)` takes the row when `available()` (no finished head waiting, and
   `interval` cycles since the last push), else returns `false`. A row pushed
-  in t is finished from t+1+latency, once it is the head: `length()` is 1.
+  in t is finished from t+latency, once it is the head: `length()` is 1.
   `front()` reads it; `pop()` removes it, and the next row may be pushed in
   the same cycle. **While a finished head is not popped, nothing in the
-  pipeline moves** (MinorFU's stall). `idle()`: no row at all. On Spike,
-  `on_stage(&D::fn)` in the constructor runs `fn(row, k)` on each row in each
-  stage it passes.
+  pipeline moves** (MinorFU's stall). `idle()`: no row at all.
 
 A statistic is a **`cp::Counter`** `{*this, name, capacity = 0}`: `add(n)`
 counts, and the value only grows, through resets and squashes alike. A
@@ -763,7 +755,7 @@ cp::Counter rows_in_flight_{*this, "rows_in_flight"};   rows_in_flight_.add(arra
 In each cycle t gem5 calls `tick(t)`, then `ready`, `commit` and `squash`,
 then `can_accept` and `issue` ([the timing rules](#the-timing-rules)). The
 engine's `tick` is every component's `cycle()`, in construction order, then
-every block's own `cycle()` ([`vcix_cp.hpp:341-345`](include/vcix_cp.hpp)):
+every block's own `cycle()` ([`vcix_cp.hpp:330-334`](include/vcix_cp.hpp)):
 a `Pipeline` ages its rows one stage or holds; a `Queue` and a `Port` do
 nothing. What `cycle()` does is first seen here:
 
@@ -772,7 +764,7 @@ nothing. What `cycle()` does is first seen here:
 | an instruction issued at t lands in `insns()` | `tick(t+1)` |
 | `q.push(row)` at t | `length`, `front`, `pop` at t+1 |
 | `q.pop()` at t | the slot: `full()`, `available()` from `tick(t+1)`; for `insns()`, `can_accept(t+1)` |
-| `p.push(row)` at t | stage 0 at the block's `cycle()`; `length()` from `tick(t+1+L)` |
+| `p.push(row)` at t | stage 0 at the block's `cycle()`; `length()` from `tick(t+L)` |
 | `p.pop()` at t | `available()` is 1 at once |
 | `port.utilize(n)` at t | `available()` lower for the rest of t; the width again at t+1 |
 | `complete(insn)` | `ready(id, t)`; Spike's `execute` returns after `tick(t)` |
@@ -781,10 +773,10 @@ nothing. What `cycle()` does is first seen here:
 
 So an instruction issued at t is ready at t+1 when `cycle` pops and completes
 it at once; at t+1+L when it goes through a `Pipeline` of latency L and
-completes on `take`; at t+2+L when a `Queue` follows the pipeline.
+completes on `pop`; at t+2+L when a `Queue` follows the pipeline.
 
-Write `cycle` as the tpu units do: drain first (`take`, `pop` at the exits),
-then fill (`issue`, `push` at the entries), then the head of `insns()`. A full
+Write `cycle` as the tpu units do: drain first (`pop` at the exits),
+then fill (`push` at the entries), then the head of `insns()`. A full
 pipeline then passes one row a cycle.
 
 ### The smallest model: an SFU that computes vexp
@@ -896,8 +888,8 @@ table as gem5 does: A ready at 4, B at 5):
 | 1 | `eup.push(A)`, A counted and popped | A at age 1 | `insns().available(1)` = 2 − 0 − 1 = 1: B accepted and issued |
 | 2 | `eup.push(B)`, B counted and popped | A 2, B 1 | |
 | 3 | nothing to do | A 3 = L, finished; B 2 | |
-| 4 | `eup.take` A, `values`, `complete(A)` | B 3, finished | `ready(A, 4)` true |
-| 5 | `eup.take` B, `complete(B)` | empty | `ready(B, 5)` true |
+| 4 | `eup.pop` A, `values`, `complete(A)` | B 3, finished | `ready(A, 4)` true |
+| 5 | `eup.pop` B, `complete(B)` | empty | `ready(B, 5)` true |
 
 ### A pipeline, cycle by cycle
 
@@ -923,7 +915,7 @@ t+1    cycle: the head push puts its register into eup_input, and completes.
 t+2    cycle: the register enters the EUP, stage 0. The pop is the head; eup_output is empty, it waits.
  |     The register ages one stage a cycle; at tick(t+11) it reaches age 10 = L.
  v
-t+12   cycle: eup.done, take, eup_output.push; the row is visible from t+13.
+t+12   cycle: eup.pop, eup_output.push; the row is visible from t+13.
 t+13   cycle: the pop pops it, writes vd on Spike, completes. gem5: ready, and the pop commits:
        "12 cycles after its issue".
 ```
@@ -935,7 +927,7 @@ keys are in [tpu: keys](examples/tpu/README.md).
 
 Spike has no clock of its own for the unit. `Coprocessor::execute` keeps one
 per instance and moves it only inside `execute`
-([`vcix_cp.hpp:348-359`](include/vcix_cp.hpp)):
+([`vcix_cp.hpp:337-348`](include/vcix_cp.hpp)):
 
 1. Tick until `can_accept`: `valid`, and a slot in `insns()`.
 2. Push the instruction into `insns()`.
@@ -947,9 +939,9 @@ Between instructions the unit stands still. So on Spike an instruction that
 waits for something no instruction before it will ever make can never end.
 The engine sees this: a tick after which the instruction is still not complete
 and **nothing in its component moved** (no push or pop, no pipeline row
-issued, aged or taken, no interval still running, no port utilized, no
+aged, no interval still running, no port utilized, no
 `complete`) looks the same as every tick after it. The run ends with exit 1
-and ([`vcix_cp.hpp:420-430`](include/vcix_cp.hpp)):
+and ([`vcix_cp.hpp:409-419`](include/vcix_cp.hpp)):
 
 ```
 vcix_cp: <instruction> waits, and nothing in its unit moves any more: on Spike, which runs each instruction to its end before the next, it never ends
@@ -996,14 +988,14 @@ gem5 copies the whole model before each issue and puts the copy back on a
 squash ([above](#squash-a-copy-and-the-cycles-since-run-again)). A
 `Coprocessor` is copyable by construction: components and blocks find each
 other by byte offset inside the model object, never by pointer
-([`vcix_cp.hpp:455-474`](include/vcix_cp.hpp)), so a copy's `cycle()` ticks
+([`vcix_cp.hpp:444-463`](include/vcix_cp.hpp)), so a copy's `cycle()` ticks
 the copy's own blocks ([`tests/contract/route_once.cc`](tests/contract/route_once.cc):
 a copy, an assigned copy and the original each reach the same cycle). The
 rules that keep it so:
 
 - Blocks are members of the model object, directly or inside a
   `std::optional`; never in a `std::vector`, never behind a pointer.
-  `check_layout` ([`vcix_cp.hpp:388-398`](include/vcix_cp.hpp)) refuses a
+  `check_layout` ([`vcix_cp.hpp:377-387`](include/vcix_cp.hpp)) refuses a
   block, counter or component outside the model object at create, before and
   after `configure`: `vcix_cp: a block or counter of <component> lies outside the model object`.
 - No pointer or reference to model state in a member: in a copy it points at

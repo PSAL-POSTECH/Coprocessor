@@ -41,7 +41,7 @@ for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops sfu scratchpad valu ..
   rv_program "$HERE/$program.S" "$BUILD/tpuv6e-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 
-echo "-- the units' statistics, with no simulator"
+echo "-- the counters, with no simulator"
 "$BUILD/tpuv6e_ports" "$MODEL" > "$BUILD/tpuv6e-ports.log" 2>&1
 rc[ports]=$?
 report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpuv6e-ports.log") passed" "exit 0, 1 passed" \

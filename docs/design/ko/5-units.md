@@ -97,10 +97,10 @@
 
 | 유닛 | test | old → new |
 |---|---|---|
-| 프레임워크 | `tests/contract/route_once.cc:59,63` | 6 → **5** |
-| 프레임워크 | `tests/tpu/ports.cc` 외 드라이버, `tpuv3/run.sh:62`·`tpuv6e/run.sh:63` units | `now + latency` commit → `ready()` poll; 유닛 목록 **FAIL**, 블록 단위 추가 |
+| 프레임워크 | `tests/contract/route_once.cc:55,57,62` | 6 → **5** |
+| 프레임워크 | `tests/tpu/ports.cc` 외 드라이버 | `now + latency` commit → `ready()` poll |
 | Sfu/Misc | `tests/tpu/run.sh:52`, `:64`, `:66`, `:164`, `:186` | 10 → **11**, 10/10 → **11/11**, 4/4 → **5/5**, 10 → **11**, 10 → **11** |
-| Sfu | `ports.cc:180-190` 1000 vexp, `tests/tpuv6e/run.sh:126-128` push → pop ready | `SFU.instructions` 1000 → **999**; L=10: 19 → **20**, L=4: 13 → **14** |
+| Sfu | `ports.cc:191-203` 1000 vexp, `tests/tpuv6e/run.sh:126-128` push → pop ready | `SFU.instructions` 1000 → **999**; L=10: 19 → **20**, L=4: 13 → **14** |
 | Sfu (EUP 공유, 고정 테스트 없음) | push m8 다음 vexp m1 / vexp m2 / vexp m8 (L=10) | vexp ready−issue 11 → **19** / 11 → **12** / 11 → **18** |
 | Xlu | `tests/tpu/run.sh:114-131` fold / wide / issue / xlu | lines 2 / 1 / 1 / 2 → **1 / 0 / 0 / 1** |
 | Xlu | `run.sh:137-154` commits / eight pushes / 18원소 타일 | 2 and 2, 2 → **0 and 0, 0**; lines 8 → **5**; 3 of 13 → **0 of 13** |

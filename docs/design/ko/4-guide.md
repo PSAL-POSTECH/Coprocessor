@@ -29,8 +29,6 @@
 ```cpp
 // libexp_sfu.so: an SFU that computes only vexp (sf.vc.v.iv 0x3, vd, vs2, 0) on a pipelined EUP.
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 
 #include "vcix_cp.hpp"
 
@@ -442,22 +440,22 @@ class Coprocessor : public cp::Coprocessor {
 
 ## 3. 빌드하고 실행하기
 
-`CMakeLists.txt`에 `vcix_accel_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)` 한 줄을 더하면 `build/libexp_sfu.so`가 나옵니다.
+`CMakeLists.txt`의 `vcix_cp_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)` 줄이 `build/libexp_sfu.so`를 만듭니다.
 
 ```
 scripts/build.sh
-source scripts/sim.sh
-rv_program examples/exp_sfu/vexp2.S build/vexp2
-spike_run build/libexp_sfu.so examples/exp_sfu/machine.yml build/vexp2                  # values
-gem5_run build/m5out-exp build/libexp_sfu.so examples/exp_sfu/machine.yml build/vexp2   # time
+build/timing_probe build/libexp_sfu.so 2c00305b 3
 ```
 
-gem5의 `stats.txt` 줄은 카운터마다 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<component>.<counter>` 모양입니다. §1의 두 `vexp`라면 다음이 나와야 합니다.
+`timing_probe`는 명령을 하나씩 ready까지 tick합니다. L이 기본값 10이면 issue에서 ready까지 1 + L입니다.
 
 ```
-system.cpu.executeFuncUnits.funcUnits8.vcix.SFU.instructions           2
-system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vexp             2
+insn 0: issued at 0, committed at 11
+insn 1: issued at 11, committed at 22
+insn 2: issued at 22, committed at 33
 ```
+
+gem5의 `stats.txt` 줄은 카운터마다 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<component>.<counter>` 모양입니다.
 
 ## 4. 점검표
 

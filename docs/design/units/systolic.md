@@ -43,16 +43,17 @@ The component has two modes, selected by `tpu_systolic_command_queue`. Both are 
 
 ### `cycle()`, in this order (each step is pre-edge, as in systolic.sv)
 
-1. **Spike only.** The weight beats taken in t−1 land in `weights_` (`land()`). systolic.sv's weight registers change
-   at the clock edge, and old vcix_cp landed the beats after the stages (`vcix_cp.hpp:948`). The stages run in the
-   blocks' `cycle()`, after the components', so the landing has to wait a cycle.
-2. `enable = !output_.full(t)`: systolic.sv's `enable = out_count != Q` (`systolic.sv:67`).
+1. **Spike only.** The weight beats taken in t−1 land in `landed_` (`land()`), held from this cycle's array advance
+   on. systolic.sv's weight registers change at the clock edge, and old vcix_cp landed the beats after the stages
+   (`vcix_cp.hpp:948`).
+2. `enable = !output_.full()`: systolic.sv's `enable = out_count != Q` (`systolic.sv:67`).
 3. **Head work.**
    - Golden: `insns()` head; when it is done, the head is popped.
    - RTL: first `commands_` head, then the hop `insns()` → `commands_`.
    - A vl-0 instruction completes at the hop and never enters, as in the wrapper's `issue` (`rtl_model.hpp:263-267`).
-4. **Array step.** If `enable && array_.length(t)`, the finished row goes to `output_`. If `enable && input_.length(t) &&
-   array_.available(t)`, one row enters the array and `rows_.add(1)`; then `rows_in_flight_.add(array_.size())`.
+4. **Array step.** If `enable && array_.length()`, the finished row leaves the array, is summed on Spike (`sum()`)
+   and goes to `output_`. If `enable && input_.length()` and `array_.push` takes the row, it enters the array and
+   `rows_.add(1)`; then `rows_in_flight_.add(array_.size())`, and on Spike `advances_` counts the array's advance.
 
 ### Per instruction (head work)
 
@@ -61,7 +62,8 @@ The component has two modes, selected by `tpu_systolic_command_queue`. Both are 
   - It moves `n = min(vl − done, in_.available(), input_.available())` rows into `input_queue`. Each row's values
     are made on Spike with `values()`.
   - Golden: all vl rows or none.
-  - Golden rows carry `weights_` as a snapshot (a shared_ptr, copy-on-write). RTL rows read the current weights.
+  - Golden rows carry the last `landed_` weights (a shared_ptr, never changed). RTL rows carry the advance they
+    entered at, and stage k meets the weights held at advance `entered + k` (`met()`).
   - It is `complete()`d when vl rows have moved.
 - **weight push.** It sets `weighted_` as it leaves `insns()`.
   - Under `tpu_systolic_weight_waits` it waits while `input_queue` or the array holds a row. That is `weight_open`
@@ -69,14 +71,14 @@ The component has two modes, selected by `tpu_systolic_command_queue`. Both are 
   - It moves `n = min(vl − done, in_.available())` beats. Spike stores them in `landing_`, and they land next cycle.
   - It is `complete()`d at vl.
 - **pop.** At the head (`wrong()`), a format that names no element (vl 0 included) and a pop to bf16 are a `fault()`.
-  - It takes `n = min(vl − done, pop_.available(), output_.length(t))` rows. On Spike each row is written to element i
+  - It takes `n = min(vl − done, pop_.available(), output_.length())` rows. On Spike each row is written to element i
     of vd.
   - Golden: all vl rows or none.
   - It is `complete()`d at vl. Asking more rows than the unit holds anywhere (input queue empty, array idle, fewer
     than `vl − done` in the output queue: nothing behind it can add rows) is a `fault()`,
     `systolic pop: %u elements asked, %llu computed` with `done_ + output_queue.size()`, old `got`.
-- **Row path.** input_queue → array (Pipeline, latency 2·lanes−1, interval 1, `on_stage(&Systolic::stage)`, k=0 on the
-  issue cycle) → output_queue.
+- **Row path.** input_queue → array (Pipeline, latency 2·lanes−1, interval 1) → output_queue; `sum()` runs a row's
+  stages as it leaves the array.
   - A row that enters at t is taken at t+7 on 4 lanes and is visible to a pop at t+8. That is systolic.sv's
     `valid[SLOTS-1]` exit at E0+7.
 
@@ -92,9 +94,9 @@ The component has two modes, selected by `tpu_systolic_command_queue`. Both are 
    input push --in_ (rows/cycle)--> +-------------+  entry_ "input"  +-------------------------+
                                     | input_queue |---1 a cycle----->| array  Pipeline<Row>    |
                                     | entries     |  when enable     | 2L-1 stages, interval 1 |
-                                    +-------------+                  | stage(row, k) on Spike  |
-   weight push --in_--> landing_ --next cycle--> weights_ (plain)    +-------------------------+
-                        (Spike)                                                  | take when enable
+                                    +-------------+                  | sum() on Spike at exit  |
+   weight push --in_--> landing_ --next cycle--> landed_ (versions)  +-------------------------+
+                        (Spike)                                                  | pop when enable
    pop <--pop_ (rows/cycle)-- +--------------+ <---------------------------------+
                               | output_queue |   enable = output_queue not full as the cycle began
                               | entries      |
@@ -149,17 +151,17 @@ vcix.SYSTOLIC.rows_in_flight         84   # 12 rows x 7 stages
 
 | test | old | new | why |
 |---|---|---|---|
-| `tests/rtl/run.sh:71-74` rtl_stall, ready cycles | 6, 70, 79, 82, 85, 94, 158 | **6, 70, 79, 82, 85, 94, 158 (run)**, 7 PASS | the RTL keys path is the RTL plus the wrapper, and no bubble freeze occurs in that program (see R2) |
-| `tests/rtl/run.sh:49-68` values vs rtl_systolic / nowait | same, differs, same | **same, differs, same (derived; fakespike byte-equal run)** | golden snapshots weights; RTL mode lands beats at the edge |
+| `tests/rtl/run.sh:62-66` rtl_stall, ready cycles | 6, 70, 79, 82, 85, 94, 158 | **6, 70, 79, 82, 85, 94, 158 (run)**, 7 PASS | the RTL keys path is the RTL plus the wrapper, and no bubble freeze occurs in that program (see R2) |
+| `tests/rtl/run.sh:40-60` values vs rtl_systolic / nowait | same, differs, same | **same, differs, same (derived; fakespike byte-equal run)** | golden snapshots weights; RTL mode lands beats at the edge |
 | `tests/tpu/functional` systolic sha and refusals `:157-161` | match | **match (derived; fakespike run)** | values code unchanged; refusals via `fault()` at the head |
 | `tests/tpu/run.sh:73-77` systolic_full: pop delay | `pop: 11 cycles after the last issue, 0 in flight, input queue 0, output queue 4`; lines 3 | **`pop: 1 cycles after the last issue, 0 in flight, input queue 4, output queue 0`, then `commit systolic pop: 12 cycles after its issue` (derived, driver run)**; lines 2 | a pop is accepted into `insns()` and waits at its head (decision 3); rows enter one cycle later (head at t+1) |
 | `tests/tpu/run.sh:79-88` systolic_stream | iq 0, iq 1..6, then `2 cycles…0 in flight, input queue 6, output queue 1/3/5`; 10 of 11 | **iq 0; iq 2..7 (`1 cycles…0 in flight`); `1 cycles…1 in flight, input queue 6, output queue 0`; `2 cycles…1 in flight, input queue 6, output queue 1`; `…output queue 3`** (derived, driver run); the old list matches 6 of 11, the new list 10 of 11 | the queue counts are read after the head moved the previous push's rows; a waiting push is in flight |
 | `tests/tpu/run.sh:90-95` systolic_full, output full | 3 of 11; third `weight push … input queue 0, output queue 5` | **2 of 11 with the old text**; the new third line is `weight push: 1 cycles … input queue 1, output queue 4` (derived, driver run) | the pop of 4 takes its rows at the head one cycle after issue; the array refills next cycle |
 | `tests/tpu/run.sh:163-168` one_cycle: `weight push … input queue 0, output queue 0` | 1 | queue fields unchanged (derived); the gap of 10 is MISC's design | systolic is empty there |
-| `tests/tpu/ports.cc` list | PASS | PASS: SYSTOLIC stays one unit, its `input` port | queues and pipelines are no units |
+| `tests/tpu/ports.cc` list | PASS | PASS: SYSTOLIC lists its counters rows and rows_in_flight | ports, queues and pipelines are no statistics |
 | ports.cc one_row | 1, 1, 20, 7, 1 | **1, 1, 20, 7, 1 (run)** | 7 cycles in the stages, either way |
 | ports.cc continuous (>0.99) | 3999 of 4000 | **728 of 4000 (run)**, FAIL | the driver offers a pop first; it is now accepted before its rows exist and blocks the pushes behind it in order |
-| ports.cc squashed | same | **same (run, systolic-only)** | the whole model is plain or copy-on-write data |
+| ports.cc squashed | same | **same (run, systolic-only)** | the whole model is plain data or shared data never changed |
 | ports.cc fewer_pushed systolic | 100, 100 | **1, 1; the third pop's commit exits 1 (run)**, FAIL | an unsatisfiable pop is accepted and faults; `insns()` holds 2 |
 | ports.cc more_pushed systolic | stops after 10, refused 1000 | **11, 1000 (run)**, PASS | |
 | ports.cc interleaved (48+7+1) | 56 | **51 (run)**, FAIL | pops are issued ahead and wait at the head; they no longer wait for acceptance |
@@ -195,8 +197,8 @@ All of these are consequences of decisions 3 and 5, now final (DESIGN.md §8).
   head not taken. No current test hits the difference: values.c pops at most 40 of 64, and rtl_stall passes (FACT
   `verify/cs`: 7 PASS). The bubble difference is accepted.
 - **R3. `Queue::available()`: done.** The push uses `input_.available()`; no ordering dependence remains.
-- **R4.** A block a mode does not use costs nothing in the statistics: queues and pipelines are no units.
-- **R5.** `tests/tpu/ports.cc` `list()` keeps one unit per component.
+- **R4.** A block a mode does not use costs nothing in the statistics: queues and pipelines are no statistics.
+- **R5.** `tests/tpu/ports.cc` `list()` lists each component's counters.
 
 ## 5. Decisions (final, DESIGN.md §8)
 
