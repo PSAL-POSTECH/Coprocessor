@@ -30,3 +30,4 @@ if __name__ == "__main__":
     want = x.sum(dim=1, keepdim=True).expand(8, 128)
     print("vs x.sum(dim=1):", torch.allclose(y, want, atol=1e-4), "max abs err", (y - want).abs().max().item())
     print("vs torch.erf(x):", torch.allclose(y, torch.erf(x), atol=1e-4), "max abs err", (y - torch.erf(x)).abs().max().item())
+    raise SystemExit(0 if torch.allclose(y, want, atol=1e-4) else 1)
