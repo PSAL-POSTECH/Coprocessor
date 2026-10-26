@@ -34,11 +34,11 @@ commits() {
     tr '\n' ' ' | sed 's/ $//'
 }
 
-# unit_stat <run> <unit> <stat>: the value of vcix.<unit>.<stat> in the run's one dump
+# unit_stat <run> <group> <counter>: the value of vcix.<group>.<counter> in the run's one dump
 unit_stat() { awk -v want=".vcix.$2.$3" 'substr($1, length($1) - length(want) + 1) == want { print $2; exit }' "$BUILD/m5out-tpuv6e-$1/stats.txt"; }
 
-# units <run>: the units in the run's dump, as gem5 sorts them
-units() { sed -n 's/^.*\.vcix\.\([^.]*\)\.admitted .*$/\1/p' "$BUILD/m5out-tpuv6e-$1/stats.txt" | tr '\n' ' ' | sed 's/ $//'; }
+# groups <run>: the components with counters in the run's dump, sorted
+groups() { sed -n 's/^.*\.vcix\.\([^.]*\)\.[^.]* .*$/\1/p' "$BUILD/m5out-tpuv6e-$1/stats.txt" | grep -vx committed | sort -u | tr '\n' ' ' | sed 's/ $//'; }
 
 for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops sfu scratchpad valu ../tpu/loads ../tpu/addresses; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv6e-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
@@ -48,7 +48,7 @@ echo "-- the units' statistics, with no simulator"
 "$BUILD/tpuv6e_ports" "$MODEL" > "$BUILD/tpuv6e-ports.log" 2>&1
 rc[ports]=$?
 report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpuv6e-ports.log") passed" "exit 0, 1 passed" \
-  "tpuv6e_ports: a unit per component at its primary port, under the names the model gives them, in its order (tpuv6e-ports.log)"
+  "tpuv6e_ports: the model's counters under the names it gives them, in its order (tpuv6e-ports.log)"
 
 echo "-- matrix unit, 4 lanes: an array of 8 x 8, 15 slots, a word a cycle, queues of 8"
 on_gem5 mxu mxu "$HERE/mxu.yml"
@@ -66,9 +66,9 @@ pops=$(said mxu "issue vpop: 1 cycles after the last issue, 1 in flight, input q
   "issue vpop: 0 cycles after the last issue, 3 in flight, input queue 8, output queues 0 and 0")
 report "lines $pops of $(lines mxu issue), commits $(commits mxu vpop)" "lines 4 of 8, commits vpop:19 vpop:20 vpop:20 vpop:21" \
   "the four vpops enter insns() two a cycle, before any row is out, and wait at the head: eight rows of bfloat16 enter the line two a cycle, so the lower half's first pop commits 1 + 1 + 15 + 1 cycles after the vmatmul is carried out (into the queue, the second word into the line, the line, into the output queue), the upper half's a cycle later (one vpop a cycle per array), the second pair's two later"
-report "units $(units mxu); TPUV6E_MXU admitted $(unit_stat mxu TPUV6E_MXU admitted), capacity $(unit_stat mxu TPUV6E_MXU capacity), occupancy $(unit_stat mxu TPUV6E_MXU occupancy)" \
-  "units TPUV6E_MISC TPUV6E_MXU TPUV6E_SFU TPUV6E_XLU; TPUV6E_MXU admitted 8, capacity 2, occupancy 120" \
-  "gem5 reports one unit per component at its primary port, none of its insns, queues and pipelines; the eight rows in at the matrix unit two a cycle"
+report "groups $(groups mxu); TPUV6E_MXU rows $(unit_stat mxu TPUV6E_MXU rows), rows_in_flight $(unit_stat mxu TPUV6E_MXU rows_in_flight), active_cycles $(unit_stat mxu TPUV6E_MXU active_cycles)" \
+  "groups TPUV6E_MISC TPUV6E_MXU TPUV6E_SFU TPUV6E_XLU; TPUV6E_MXU rows 8, rows_in_flight 120, active_cycles 18" \
+  "gem5 reports each component's counters, none of its insns, queues and pipelines; the eight rows in at the matrix unit two a cycle, a word of two 15 cycles in the line, the line busy 4 + 15 - 1 cycles"
 
 printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 16\n' > "$BUILD/tpuv6e-mxu-16.yml"
 on_gem5 mxu_rate mxu_rate "$BUILD/tpuv6e-mxu-16.yml"
@@ -90,8 +90,8 @@ arrays=$(said mxu_arrays "issue vmatmul: 1 cycles after the last issue, 1 in fli
   "issue vpop: 0 cycles after the last issue, 2 in flight, array 1, input queue 0, output queues 0 and 0" \
   "issue vpop: 1 cycles after the last issue, 2 in flight, array 0, input queue 6, output queues 0 and 0" \
   "issue vpop: 0 cycles after the last issue, 3 in flight, array 1, input queue 8, output queues 0 and 0")
-report "exit ${rc[mxu_arrays]}, lines $arrays of $(lines mxu_arrays issue), commits $(commits mxu_arrays vmatmul) $(commits mxu_arrays vpop); TPUV6E_MXU capacity $(unit_stat mxu_arrays TPUV6E_MXU capacity)" \
-  "exit 0, lines 6 of 12, commits vmatmul:1 vmatmul:2 vpop:18 vpop:19 vpop:18 vpop:19; TPUV6E_MXU capacity 4" \
+report "exit ${rc[mxu_arrays]}, lines $arrays of $(lines mxu_arrays issue), commits $(commits mxu_arrays vmatmul) $(commits mxu_arrays vpop); TPUV6E_MXU rows $(unit_stat mxu_arrays TPUV6E_MXU rows), rows_in_flight $(unit_stat mxu_arrays TPUV6E_MXU rows_in_flight)" \
+  "exit 0, lines 6 of 12, commits vmatmul:1 vmatmul:2 vpop:18 vpop:19 vpop:18 vpop:19; TPUV6E_MXU rows 16, rows_in_flight 240" \
   "with tpu_mxu_units: 2, each array has its own queues, line and slots: the two vmatmuls enter insns() in one cycle and are carried out a cycle apart (array 1's behind its own inputs' vmatprep, so array 0's rows are in its queue a cycle before array 1's), each array's rows are out 1 + 1 + 15 + 1 cycles after its vmatmul, so array 0's pops commit 18 and array 1's 19 cycles after their issues, and the input port takes 2 x 2 rows a cycle"
 
 timeout 300 "$GEM5" -d "$BUILD/m5out-tpuv6e-mxu_arrays-script" "$MACHINE" \

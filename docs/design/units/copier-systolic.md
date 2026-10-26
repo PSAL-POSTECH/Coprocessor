@@ -46,7 +46,7 @@ Every instruction takes the same first steps:
 - `valid()` is `!insns().size() && commands_.size() < 4`, which is the wrapper's `can_accept`.
 - At t, `issue` pushes the instruction into `insns()`.
 - In `tick(t+1)` it enters `commands_`, if `!commands_.full(t+1)`; `full` there means the RTL's pre-edge `cmd_ready`.
-  This entry spends `issue_` (PRIMARY, 1 a cycle).
+  This entry counts in `instructions_` (a `cp::Counter` of capacity 1).
 
 Then each instruction does the following:
 - **copy source**: when it enters, Spike's values set `source_ = x[rs1]`, and it is `complete()`d at t+1. At the queue
@@ -64,7 +64,7 @@ Then each instruction does the following:
         v
  +------------------+   cycle(t+1): visible, and commands_ not full   +---------------------+
  | insns() (2, 1)   |------------------------------------------------>| commands_  depth 4  |
- | valid: empty and |   enter: issue_.utilize(1) [PRIMARY]            | Queue<Insn>         |
+ | valid: empty and |   enter: instructions_.add(1)                   | Queue<Insn>         |
  | commands_ < 4    |   Spike values: source / 256-byte copy          +---------------------+
  +------------------+   source, copy -> complete()                             |
                         wait -> waits_                                         | head popped while left_ == 0
@@ -78,8 +78,8 @@ Then each instruction does the following:
 ### Preserved
 
 All FACT unless marked:
-- The encodings and their names, and the unit `COPIER` with primary port `issue`.
-- REPORTING port `memory` (64 requests a copy).
+- The encodings and their names, and the counter `COPIER.instructions` (capacity 1).
+- The port `memory` (64 requests a copy, one a cycle): it is what Spike's progress test sees move while a copy runs.
 - `reset()` clears `source_`, `left_` and `waits_`.
 - On Spike, the copy writes memory inside its own `execute` (fakespike: 512 of 512 bytes before the wait). So
   `tests/rtl/run.sh:88-91` still expects `256 of 256` for both a plain copy and a copy with a wait (DERIVED).
@@ -114,8 +114,7 @@ The component has two modes, selected by `tpu_systolic_command_queue`. Both are 
    - RTL: first `commands_` head, then the hop `insns()` → `commands_`.
    - A vl-0 instruction completes at the hop and never enters, as the wrapper's `nothing()` (`rtl_model.hpp:254-257`).
 4. **Array step.** If `enable && array_.length(t)`, the finished row goes to `output_`. If `enable && input_.length(t) &&
-   array_.available(t)`, one row enters the array and `entry_.utilize(1, t)` (PRIMARY `input`).
-   `entry_.occupy(array_.size())`.
+   array_.available(t)`, one row enters the array and `rows_.add(1)`; then `rows_in_flight_.add(array_.size())`.
 
 ### Per instruction (head work)
 
@@ -190,22 +189,19 @@ The component has two modes, selected by `tpu_systolic_command_queue`. Both are 
 - **Trace.** `trace_queues` prints `, input queue N, output queue M` from `input_.size()` and `output_.size()`. Old: all
   rows of both, since every arrival is SEEN by issue time (`vcix_cp.hpp:407-411`). It derives from `tpu::Component`,
   with ENGINE §7's signature `const vcix_insn &`, as the sfu design does.
-- **Stats.** The `SYSTOLIC` unit keeps the primary port `input`: rows admitted into the array, capacity 1, occupancy =
-  rows in the stages per cycle (FACT: ports.cc one_row gives 1, 1, 20, 7, 1, as before).
-  - The REPORTING ports `issue` and `weight_push` are deleted (OPINION). They were never statistics (FACT
-    `vcix_cp_base.hpp.design:350`), and the one-head-a-cycle structure replaces their limit of one a cycle.
+- **Stats.** `SYSTOLIC.rows` (capacity 1): rows into the array; `SYSTOLIC.rows_in_flight`: rows in the stages per
+  cycle (FACT: ports.cc one_row gives rows 1, capacity 1, rows_in_flight 7, committed 1).
+  - No `issue` or `weight_push` port: the one-head-a-cycle structure is their limit of one a cycle.
 
 ### Statistics as gem5 prints them
 
-FACT: `Instance::dump_stats` after markers.S's window 1. gem5 prefixes each line with
-`system.cpu.executeFuncUnits.funcUnits8.` (FACT `README.md:837`).
+After markers.S's window 1 (`tests/stats/run.sh`); gem5 prefixes each line with
+`system.cpu.executeFuncUnits.funcUnits8.`.
 
 ```
-vcix.SYSTOLIC.admitted               12   # rows admitted at port input      <- tests/stats pins this unit
-vcix.SYSTOLIC.capacity                1
-vcix.SYSTOLIC.occupancy              84   # 12 rows x 7 stages
-vcix.SYSTOLIC.utilized_cycles        12
-vcix.COPIER.admitted                  3   # instructions admitted at port issue, as README.md:837
+vcix.SYSTOLIC.rows                   12   # rows, at most 1 a cycle      <- tests/stats pins this counter
+vcix.SYSTOLIC.rows_in_flight         84   # 12 rows x 7 stages
+vcix.COPIER.instructions              3   # the copier's run, README.md "The copier"
 ```
 
 ---
@@ -234,8 +230,8 @@ vcix.COPIER.admitted                  3   # instructions admitted at port issue,
 | ports.cc fewer_pushed systolic | 100, 100 | **1, 1; the third pop's commit exits 1 (run)**, FAIL | an unsatisfiable pop is accepted and faults; `insns()` holds 2 |
 | ports.cc more_pushed systolic | stops after 10, refused 1000 | **11, 1000 (run)**, PASS | |
 | ports.cc interleaved (48+7+1) | 56 | **51 (run)**, FAIL | pops are issued ahead and wait at the head; they no longer wait for acceptance |
-| `tests/stats/run.sh:90-108` counts, utilized, rows | 12 3 3 / 0 0 0 / 4 1 1 / 8 2 2 / 0 0 0; 12; 24; rows 1 and 64 | **unchanged (derived)** | an m5op commits after the pops before it, and a pop commits only after its rows entered the array |
-| `tests/stats` consistent, beyond_units | 5 of 5; 0 | **5 of 5; 0 (derived)** | SYSTOLIC keeps one primary port, and only that port is a unit |
+| `tests/stats/run.sh` counts, rows | 12 3 3 / 0 0 0 / 4 1 1 / 8 2 2 / 0 0 0; 24; rows 1 and 64 | **unchanged (derived)** | an m5op commits after the pops before it, and a pop commits only after its rows entered the array |
+| `tests/stats` listed, beyond_units | the eight counters; 0 | **the same** | blocks are no statistics |
 
 The ports.cc drivers commit at `now + latency`, which wraps with Unknown (ENGINE §8). Their numbers above are from my
 copy, which polls `ready()`.

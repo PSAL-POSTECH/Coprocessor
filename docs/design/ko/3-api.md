@@ -1,6 +1,6 @@
 # API 레퍼런스
 
-모델은 `cp::Coprocessor` 하나이고, 그 멤버가 `cp::Component`, 컴포넌트의 멤버가 블록(`cp::Port`, `cp::Queue<T>`, `cp::Pipeline<T>`)입니다. 이 설계는 아직 저장소에 구현되지 않았습니다.
+모델은 `cp::Coprocessor` 하나이고, 그 멤버가 `cp::Component`, 컴포넌트의 멤버가 블록(`cp::Port`, `cp::Queue<T>`, `cp::Pipeline<T>`)과 통계인 `cp::Counter`입니다.
 
 ## 한 화면에 보는 API
 
@@ -12,7 +12,8 @@
 | `cp::Component` | 모델의 한 부분. 인코딩, 블록, plain 멤버, `cycle()`를 가집니다 |
 | `cp::Encoding` | C ABI의 `vcix_encoding {match, mask, name}`. `(bits & mask) == match`로 소유자를 정하고, `name`은 통계 `committed.<name>`이 됩니다 |
 | `cp::Insn` | issue된 명령: `vcix_insn {bits, vl, sew_bits, lmul_log2}` + `id` |
-| `cp::Port` | 사이클당 대역폭. PRIMARY 포트가 컴포넌트의 통계 단위입니다 |
+| `cp::Port` | 사이클당 대역폭. 통계가 아닙니다 |
+| `cp::Counter` | 통계 하나. `add(n)`으로만 늘어나며, capacity > 0이면 TOGSim이 시간을 재는 단위입니다 |
 | `cp::Queue<T>` | 깊이와 사이클당 push 한도를 가진 FIFO. t에 넣은 행은 t+1부터 보입니다 |
 | `cp::Pipeline<T>` | gem5 MinorFU 모양의 파이프라인(latency, interval) |
 | `cp::Config`, `cp::Host`, `cp::Cycle`, `cp::Id`, `cp::UNLIMITED`, `cp::intern` | 공용 층(`vcix_cp_base.hpp`)의 타입, 한도 없음 상수(`UINT64_MAX`), 프로그램 끝까지 사는 이름 |
@@ -21,7 +22,7 @@
  MyModel : cp::Coprocessor                    exported by VCIX_CP_REGISTER(MyModel)
   +-- Component "SFU"
         insns()    : Queue<Insn>     (2 deep, 1 push a cycle)  -> no statistic
-        entry_     : Port  PRIMARY                             -> stats unit SFU
+        instructions_ : Counter (capacity 1)                   -> statistic SFU.instructions
         eup_       : Pipeline<Row>                             -> no statistic
 ```
 
@@ -59,9 +60,9 @@
 
 ```cpp
   void cycle() override {
-    while (insns().length() && issue_.available()) {
+    while (insns().length() && issue_.utilize(1)) {
       const Insn in = insns().pop();
-      issue_.utilize(1);
+      instructions_.add(1);
       values([&](const Host &host) { apply(host, in); });
       complete(in);
     }
@@ -72,13 +73,13 @@
 
 ## cp::Port
 
-`available()`는 매 사이클 width로 다시 차고 `utilize(n)`가 그만큼 쓰며, `cp::Port`를 가진 컴포넌트는 그 중 정확히 하나가 PRIMARY여야 합니다.
+`available()`는 매 사이클 width로 다시 차고 `utilize(n)`가 그만큼 씁니다. 통계는 갖지 않습니다.
 
 | 메서드 | 효과 |
 |---|---|
-| `Port(c, name, unit_of_work, width, role)` | role은 `REPORTING`(기본) 또는 `PRIMARY` |
-| `available()` / `utilize(n)` | width − 이번 cycle에 쓴 양 / `n > available()`이면 abort |
-| `set_width(w)`, `occupy(n)` | configure에서만 폭 설정, OCCUPANCY에 n을 더함 |
+| `Port(c, name, width)` | |
+| `available()` / `utilize(n)` | width − 이번 cycle에 쓴 양 / `n > available()`이면 아무것도 안 쓰고 `false` (`[[nodiscard]]`) |
+| `set_width(w)` | configure에서만 폭 설정 |
 
 ## `cp::Queue<T>`
 
@@ -88,12 +89,12 @@ t에 push한 행은 t+1부터 보이고, t에 pop으로 비운 칸은 t+1부터 
 |---|---|
 | `configure(capacity, per_cycle)` | configure에서. 큐를 비움 |
 | `size()` / `length()` / `available()` / `full()` | 든 행 모두 / 이번 cycle에 보이는 행 / 더 넣을 수 있는 수 / `available() == 0` |
-| `push(row)` | `tick(t+1)`부터 보임. `full()`이면 abort |
+| `push(row)` | `tick(t+1)`부터 보임. `full()`이면 행을 호출자에게 남기고 `false` (`[[nodiscard]]`) |
 | `front()` / `pop()` | 보이는 머리 / 머리를 꺼냄. `length() == 0`이면 abort |
 
 ```cpp
-    if (eup_.length() && !eup_output_.full()) eup_output_.push(eup_.pop());
-    if (eup_.available() && eup_input_.length()) eup_.push(eup_input_.pop());
+    if (eup_.length() && eup_output_.push(std::move(eup_.front()))) eup_.pop();
+    if (eup_input_.length() && eup_.push(eup_input_.front())) eup_input_.pop();
 ```
 
 ## `cp::Pipeline<T>`
@@ -103,16 +104,20 @@ t에 push한 행은 정지가 없으면 t+latency에 끝나고, 끝난 머리를
 | 메서드 | 효과 |
 |---|---|
 | `configure(latency, interval)` | 각 1 .. `UINT32_MAX`. 단계를 비움 |
-| `available()` / `push(row)` | 머리가 안 막혔고 interval이 지남 / 단계 k = 0에 넣음 |
+| `available()` / `push(row)` | 머리가 안 막혔고 interval이 지남 / 단계 k = 0에 넣음, 못 넣으면 `false` |
 | `length()` / `front()` / `pop()` | 머리가 끝남 / 끝난 머리 / 꺼냄, `available()`가 즉시 참이 될 수 있음 |
 | `on_stage(&D::fn)` | Spike에서만, 행이 나아갈 때마다 `fn(row, k)` |
 
-## 통계와 블록 없는 모델
+## `cp::Counter`와 통계
 
-컴포넌트마다 통계 단위가 하나(PRIMARY `cp::Port`) 생기고, 큐·파이프라인·REPORTING 포트·표준 컨테이너·plain 멤버는 통계에 나오지 않습니다.
+통계는 카운터뿐입니다. 큐·파이프라인·포트·표준 컨테이너·plain 멤버는 통계에 나오지 않습니다.
 
-| 단위 | 조건 | ADMITTED | CAPACITY | OCCUPANCY |
-|---|---|---|---|---|
-| `<C>` | PRIMARY `cp::Port` | `utilize` 합 | width | `occupy` 합 |
+| 메서드 | 효과 |
+|---|---|
+| `Counter(c, name, capacity = 0)` | 컴포넌트 `c`의 카운터. C 표에 `{c.name(), name, capacity}`로 오르고 gem5는 `vcix.<C>.<name>`으로 냅니다. 이름은 컴포넌트 안에서 유일 |
+| `add(n)` | 값에 n을 더함. 값은 create 이후 늘기만 합니다(reset이 지우지 않고, squash는 squash된 명령이 센 것을 되돌림) |
+| `set_capacity(c)` | configure에서만 |
 
-Spike 진행으로 세는 것은 Queue `push`/`pop`, Pipeline `push`/`pop`/나이 듦/interval, Port `utilize(n > 0)`, `complete()`뿐입니다.
+capacity > 0인 카운터는 사이클당 최대 capacity만큼 일하는 단위(TOGSim의 `<COMPONENT>.<name>`)이고, 0이면 그냥 개수입니다. 예: `rows`(capacity 1)와 `rows_in_flight`(0).
+
+Spike 진행으로 세는 것은 Queue `push`/`pop`, Pipeline `push`/`pop`/나이 듦/interval, Port `utilize(n > 0)`, `complete()`뿐이며, 카운터는 세지 않습니다.

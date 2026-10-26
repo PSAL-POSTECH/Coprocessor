@@ -36,7 +36,7 @@ std::string run(const vcix_model *const m[2], uint64_t seed, uint64_t cycles, ui
   for (size_t i = 0; i < m[0]->num_stats(s[0]); i++)
     for (size_t j = 0; j < m[1]->num_stats(s[1]); j++) {
       const vcix_stat *x = m[0]->stat(s[0], i), *y = m[1]->stat(s[1], j);
-      if (!strcmp(x->unit, y->unit) && !strcmp(x->name, y->name) && x->kind == y->kind) stats.push_back({i, j});
+      if (!strcmp(x->group, y->group) && !strcmp(x->name, y->name) && x->capacity == y->capacity) stats.push_back({i, j});
     }
   std::mt19937_64 rng(seed);
   const auto draw = [&](uint64_t n) { return n ? rng() % n : 0; };

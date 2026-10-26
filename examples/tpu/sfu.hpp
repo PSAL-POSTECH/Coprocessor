@@ -68,14 +68,14 @@ class Sfu : public Component {
           values([&](const Host &host) { special_function(host, row.insn); });
           complete(row.insn);
         }
-      } else if (!eup_output_.full()) {
-        eup_output_.push(eup_.pop().pushed);
+      } else if (eup_output_.push(std::move(eup_.front().pushed))) {
+        eup_.pop();
       }
     }
-    if (eup_.available() && eup_input_.length()) eup_.push({Insn{}, 0, false, eup_input_.pop()});
+    if (eup_input_.length() && eup_.push(Row{Insn{}, 0, false, eup_input_.front()})) eup_input_.pop();
     if (insns().length() && head(insns().front())) {
       insns().pop();
-      entry_.utilize(1);
+      instructions_.add(1);
       moved_ = 0;
     }
   }
@@ -97,10 +97,10 @@ class Sfu : public Component {
       return true;
     }
     if (form(in) == SFU_PUSH.match) {
-      for (; moved_ < registers && !eup_input_.full(); moved_++) {
+      for (; moved_ < registers; moved_++) {
         Register row;
         values([&](const Host &host) { row = pushed(host, in, moved_); });
-        eup_input_.push(std::move(row));
+        if (!eup_input_.push(std::move(row))) break;
       }
       if (moved_ == registers) complete(in);
       return moved_ == registers;
@@ -117,9 +117,8 @@ class Sfu : public Component {
       }
       return moved_ == registers;
     }
-    if (!eup_.available()) return false;
-    eup_.push({in, moved_++, true, {}});
-    return moved_ == registers;
+    if (!eup_.push(Row{in, moved_, true, {}})) return false;
+    return ++moved_ == registers;
   }
   // sfu_push's register j of vs2's group: 2^x of its elements per lane.
   static Register pushed(const Host &host, const Insn &in, uint32_t j) {
@@ -166,10 +165,10 @@ class Sfu : public Component {
   static constexpr uint64_t DEFAULT_ENTRIES = 16;
   static constexpr const char *QUEUE_KEY = "tpu_sfu_queue_registers";
 
-  cp::Port entry_{*this, "entry", "instructions", 1, cp::Port::PRIMARY};
-  cp::Queue<Register> eup_input_{*this, "eup_input", "registers"};
-  cp::Pipeline<Row> eup_{*this, "eup", "registers"};
-  cp::Queue<Register> eup_output_{*this, "eup_output", "registers"};
+  cp::Counter instructions_{*this, "instructions", 1};
+  cp::Queue<Register> eup_input_{*this, "eup_input"};
+  cp::Pipeline<Row> eup_{*this, "eup"};
+  cp::Queue<Register> eup_output_{*this, "eup_output"};
   uint32_t moved_ = 0;
 };
 

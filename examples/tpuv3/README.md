@@ -93,11 +93,11 @@ file holds the shape the compiler and the model both read. `libtpuv6e.so` with
 `1`, `1` and `0` runs `mxu.S` and `mxu_rate.S` as `libtpuv3.so` does
 (`tests/tpuv3/run.sh`, asserted, with the values each key refuses).
 
-gem5 reports one unit per component ([tpu: statistics](../tpu/README.md#statistics-one-unit-per-component)),
-counted at its primary port; a component's `insns()`, queues and pipelines are
-no unit. The model lists them in the order of `tpuv3.cc`: SFU, MISC, XLU, MXU
+gem5 reports each component's counters ([tpu: statistics](../tpu/README.md#statistics-each-components-counters));
+a component's ports, `insns()`, queues and pipelines are no statistic. The
+model lists them in the order of `tpuv3.cc`: SFU, MISC, XLU, MXU
 (`tests/tpuv3/ports.cc` reads the C table with no simulator); gem5's
-`stats.txt` sorts them by name:
+`stats.txt` sorts the groups by name:
 
 ```
 TPUV3_MISC TPUV3_MXU TPUV3_SFU TPUV3_XLU
@@ -134,7 +134,7 @@ draw.
 
 The delay line's default length is `2 x REGISTERS x lanes - 1`
 (`examples/tpu/mxu.hpp:69`). A trace line shows the array's queues: one
-output queue on the v3, two on the v6e (`mxu.hpp:95-105`):
+output queue on the v3, two on the v6e (`mxu.hpp:99-109`):
 
 ```
 [tpu] issue vpop: 1 cycles after the last issue, 1 in flight, input queue 0, output queue 0          <- tpuv3
@@ -150,7 +150,7 @@ from `tests/tpuv6e/mxu.S` on the v6e at 4 lanes
 ## One register an operand
 
 An operand is one register, so there is no upper half anywhere. The field at
-19:15 of an MXU instruction (`mxu.hpp:37-40`) has three forms the v3 never
+19:15 of an MXU instruction (`mxu.hpp:39-42`) has three forms the v3 never
 carries out:
 
 ```
@@ -178,7 +178,7 @@ the object that `run.sh` builds (`build/tpuv3-mxu.o`):
 ```
 
 The three forms are a `fault` as the instruction reaches the head of the
-unit's `insns()` (`mxu.hpp:212-213`, `218-219`, `226-227`). On Spike the model
+unit's `insns()` (`mxu.hpp:214-215`, `218-219`, `226-227`). On Spike the model
 ends the run with the reason, exit 1. `tests/tpuv3/functional/run.sh` asserts
 these three:
 
@@ -255,7 +255,7 @@ A `vmatmul` operand is `vl` words of 32 bits. A word holds one single, or two
 16-bit rows ([tpuv6e: words and rows](../tpuv6e/README.md#words-and-rows)).
 
 `vmatmul` puts its rows in the array's input queue, the first row of each
-word tagged with the rows that enter the line with it (`mxu.hpp:303-313`):
+word tagged with the rows that enter the line with it (`mxu.hpp:302-312`):
 
 ```cpp
 const uint32_t field = cp::rs1(insn), word = word_a_cycle_ ? rows_in_word(field) : 1;
@@ -263,12 +263,12 @@ const uint32_t field = cp::rs1(insn), word = word_a_cycle_ ? rows_in_word(field)
 for (uint64_t row = 0; row < rows; row++) {
   Input in{row % word ? 0 : word, {}};
   ...
-  a.input.push(std::move(in));
+  if (!a.input.push(std::move(in))) std::abort();   // room for all `rows` was checked
 }
 ```
 
 One word a cycle leaves the queue into the line, when the unit's input port
-has room for its rows (`Array::flow`, `mxu.hpp:173-178`). So for `vl` = 4
+has room for its rows (`Array::flow`, `mxu.hpp:175-180`). So for `vl` = 4
 words of bfloat16 (8 rows):
 
 ```
@@ -278,11 +278,11 @@ words of bfloat16 (8 rows):
 
 The input port's width is `(word_a_cycle ? 2 : 1) x tpu_mxu_units` rows: 1 on
 the v3, 2 on the v6e, or as a machine's `tpu_mxu_word_a_cycle` says
-(`mxu.hpp:63-68`, `73`). gem5 reports it as the unit's `capacity`.
+(`mxu.hpp:65-70`, `73`). gem5 reports it as the unit's `capacity`.
 
 The v3 still needs a queue of at least 2 rows. A `vmatmul` with `vl` = 1 of
 bfloat16 sends two rows, and both must fit the input queue. A queue of 1 is
-refused when the model is made (`mxu.hpp:50-51`; `tests/tpuv3/run.sh`,
+refused when the model is made (`mxu.hpp:52-53`; `tests/tpuv3/run.sh`,
 asserted):
 
 ```
@@ -328,13 +328,12 @@ Cycle by cycle, counting from the `vmatpush`:
   cycle 18   the second vpop takes the next 4, which came out one a cycle: 17 after its issue.
 ```
 
-The unit's statistics (`stats.txt`, under `...vcix.TPUV3_MXU`):
+The matrix unit's counters (`stats.txt`, under `...vcix.TPUV3_MXU`):
 
 ```
-admitted          8    rows in at the input port
-capacity          1    rows a cycle the port admits
-occupancy        56    = 8 rows x 7 cycles each in the line
-utilized_cycles   8    = admitted / capacity
+rows              8    rows in, at most 1 a cycle: 8 cycles of pure streaming
+rows_in_flight   56    = 8 rows x 7 cycles each in the line
+active_cycles    14    cycles the line holds a row: 8 + 7 - 1
 ```
 
 ### The same program with the v6e's SLOTS and WORD_A_CYCLE
@@ -349,15 +348,15 @@ array and 7 stages, so `mxu.S` runs on it unchanged. Only `SLOTS` and
   commit vmatmul: 2 cycles after its issue     commit vmatmul: 1 cycles after its issue
   commit vpop: 13 cycles after its issue       commit vpop: 10 cycles after its issue
   commit vpop: 17 cycles after its issue       commit vpop: 12 cycles after its issue
-  capacity 1, occupancy 56                     capacity 2, occupancy 56
-  utilized_cycles 8                            utilized_cycles 4
+  rows 8 of capacity 1, rows_in_flight 56      rows 8 of capacity 2, rows_in_flight 56
+  active_cycles 14                             active_cycles 10
 ```
 
 - With 2 slots, the `vmatmul` is carried out in the cycle of the `vmatpush`:
   its rows are in the queue a cycle earlier.
 - With a word a cycle, the 4 rows of the first pop are 2 words: 2 cycles to
   enter, not 4; the second pop's 4 rows follow 2 cycles later, not 4.
-- Occupancy is 56 in both: 8 rows, 7 cycles each.
+- rows_in_flight is 56 in both: 8 rows, 7 cycles each.
 
 <details><summary>Reproduce</summary>
 
@@ -398,7 +397,7 @@ With queues of 8 (`tests/tpuv3/mxu.yml`):
 - The first `vpop` commits 13 cycles after its issue: the singles' 4 cycles to
   enter and 7 stages, as in `mxu.S`. The second takes the first 4 bfloat16
   rows, which entered from 8: 17. The third, the last 4: 20.
-- 12 rows are admitted; occupancy is 84 = 12 x 7.
+- 12 rows go in; rows_in_flight is 84 = 12 x 7.
 
 With queues of 16 the second `vmatmul` does not wait for room. It waits one
 cycle for the MXU slot:
@@ -425,7 +424,7 @@ second and third `vpop` commit 16 and 19.
 
 `mxu_rate.S` on `tests/tpuv3/mxu.yml`, and on that file with
 `tpu_mxu_queue_entries: 16` (`tests/tpuv3/run.sh`, its runs `mxu_rate` and
-`mxu_rate-16`); the occupancy from the first run's `stats.txt`.
+`mxu_rate-16`); rows_in_flight from the first run's `stats.txt`.
 </details>
 
 ### Lanes set the delay
@@ -443,14 +442,14 @@ asserted by `run.sh`:
   128 (default)   128 x 128  255          261
 ```
 
-At 128 lanes the occupancy is 2040 = 8 x 255.
+At 128 lanes rows_in_flight is 2040 = 8 x 255.
 
 `tpu_mxu_delay_cycles` sets the line's length directly. The walk's run, with
 one key more:
 
 ```
-  tpu_mxu_delay_cycles absent (7):  commit vpop: 13 cycles after its issue   occupancy 56
-  tpu_mxu_delay_cycles: 3        :  commit vpop:  9 cycles after its issue   occupancy 24
+  tpu_mxu_delay_cycles absent (7):  commit vpop: 13 cycles after its issue   rows_in_flight 56
+  tpu_mxu_delay_cycles: 3        :  commit vpop:  9 cycles after its issue   rows_in_flight 24
 ```
 
 <details><summary>Reproduce: the delay of 3</summary>
@@ -459,13 +458,13 @@ one key more:
 source scripts/sim.sh build
 printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 8\ntpu_mxu_delay_cycles: 3\n' > delay-3.yml
 gem5_run m5out-delay-3 build/libtpuv3.so delay-3.yml build/tpuv3-mxu --max-ticks 100000000 | grep '^\[tpu\]'
-grep -E 'TPUV3_MXU\.(admitted|occupancy)' m5out-delay-3/stats.txt
+grep -E 'TPUV3_MXU\.(rows|rows_in_flight)' m5out-delay-3/stats.txt
 ```
 </details>
 
 ### Not modelled
 
-- An array larger than the lanes: `REGISTERS` is 1 or 2 (`mxu.hpp:22`), and
+- An array larger than the lanes: `REGISTERS` is 1 or 2 (`mxu.hpp:23`), and
   the field at 19:15 cannot name more of an operand's registers.
 - The v3 TensorCore's second MXU. The model has one array (`tpu_mxu_units`
   1); TOGSim's array split models the second (`tpuv3.cc:1-2`). Whether the
@@ -730,9 +729,9 @@ tests/tpuv3/run.sh [build-dir [spike [pk [gem5.opt]]]]
 Each check prints `PASS` or `FAIL`, its text and the values it read. Which
 check proves what:
 
-- `ports.cc`: the unit names and their order, with no simulator.
-- `mxu.S`, 4 lanes: one MXU slot, a row a cycle, `6 + 7`; the unit names in
-  gem5's dump; `admitted 8, capacity 1, occupancy 56`.
+- `ports.cc`: the counters, their capacities and their order, with no simulator.
+- `mxu.S`, 4 lanes: one MXU slot, a row a cycle, `6 + 7`; the groups in
+  gem5's dump; `rows 8, rows_in_flight 56, active_cycles 14`.
 - `mxu_rate.S`, queues of 8 and 16: a `vmatmul` waits for room for all its
   rows.
 - `mxu.S`, 8 and 128 lanes: the delay is `2 x lanes - 1`.

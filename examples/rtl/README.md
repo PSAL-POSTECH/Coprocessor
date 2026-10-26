@@ -194,7 +194,7 @@ clocked again, so no byte moved. Add a copy wait (`-DWAIT`), and the wait's
 The `[rtl]` line is printed at exit by every process that used an RTL unit
 (`rtl_model.hpp:76-86`): clocks; copies, each a whole Verilator save (one
 before each gem5 issue; on Spike one before every execute, the base layer's
-copy of the model that undoes a trap, `include/vcix_cp_base.hpp:416-425`,
+copy of the model that undoes a trap, `include/vcix_cp_base.hpp:344-353`,
 and one more before each execute of a `MEM` unit, the wrapper's own,
 `rtl_model.hpp:226-241`); and executes undone by a trap. The two copier
 runs: 2 and 3 instructions, two copies each.
@@ -237,7 +237,7 @@ things fire.
   prints nothing.
 - A squash is undone by the copy the generic `Instance` makes before each
   issue. It puts the copy back and runs the ticks and commits since again
-  (`include/vcix_cp_base.hpp:208-263`); the commits run again print nothing
+  (`include/vcix_cp_base.hpp:164-182`); the commits run again print nothing
   (`rtl_model.hpp:316`).
 - An out beat whose `out_tag` is not the oldest draining command's tag ends
   the run. So do more than 2^22 cycles in a row in which commands are left,
@@ -271,8 +271,8 @@ How to read it:
   array (`systolic.sv:56-57`).
 - P1 comes after W2, and it is ready 7 cycles later too (6234 against 6227).
 
-gem5 also reports each encoding's commits, and no port statistics (the
-wrapper declares no `ports()`):
+gem5 also reports each encoding's commits, and no counters (the wrapper
+declares no `counters()`):
 
 ```
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_input_push        2
@@ -586,7 +586,7 @@ pending command (`valid`: nothing pending and a slot in the unit's queue,
 `copier.cc:32`); a command enters its `commands` queue of 4 the cycle after
 its issue, spending the `issue` port; a copy at the queue's head makes 64
 memory requests, one a cycle on the `memory` port; a wait completes once
-nothing is queued or copying (`copier.cc:35-46`). It owns the same three
+nothing is queued or copying (`copier.cc:35-45`). It owns the same three
 encodings. Driven as gem5 drives them, the two give the same answers. On Spike
 they differ when a program breaks rule 1.
 
@@ -594,7 +594,7 @@ they differ when a program breaks rule 1.
                        librtl_copier.so                  libcopier.so
 written as             copier.sv, Verilated              a cp::Component's cycle()
 memory moves           only while Spike clocks the       as the copy enters the unit's queue, inside
-                       unit                              its own Spike execute (copier.cc:52-68)
+                       unit                              its own Spike execute (copier.cc:51-66)
 Spike, copy, no wait   0 of 256 bytes copied, exit 1     256 of 256 bytes copied, exit 0
 Spike, copy + wait     256 of 256, exit 0                256 of 256, exit 0
 gem5's calls           the same answer to every can_accept, latency and ready
@@ -622,13 +622,14 @@ memory traffic: 32 words, a read and a write each, one request a cycle
 (`copier.sv:64-70`). gem5 moves no data, so `-DTIMING` exits 0 whatever it
 reads.
 
-The statistics differ: the wrapper declares no `ports()`, so `librtl_copier.so`
-reports only its commits, while `libcopier.so` reports its one unit, `COPIER` at its `issue` port, as
-every cp component does ([tpu: statistics](../tpu/README.md#statistics-one-unit-per-component)).
+The statistics differ: the wrapper declares no `counters()`, so
+`librtl_copier.so` reports only its commits, while `libcopier.so` reports its
+component's counter, `COPIER.instructions`
+([tpu: statistics](../tpu/README.md#statistics-each-components-counters)).
 The same program on `libcopier.so`:
 
 ```
-vcix.COPIER.admitted                         3     # instructions admitted at port issue
+vcix.COPIER.instructions                     3     # instructions, at most 1 a cycle
 vcix.committed.copy_source                   1
 vcix.committed.copy                          1
 vcix.committed.copy_wait                     1

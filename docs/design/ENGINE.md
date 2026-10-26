@@ -3,7 +3,7 @@
 Headers (design only, nothing in the repo edited):
 - `vcix_cp.hpp.design` (about 470 lines; today's `include/vcix_cp.hpp` has 1093), namespace `cp`;
 - `vcix_cp_base.hpp.design`, today's `include/vcix_accel.hpp` renamed and moved to namespace `cp` (diff:
-  `vcix_cp_base.hpp.diff`): `vcix_accel::Port` becomes `cp::Stats`, plus the Spike trap restore and the layout check.
+  `vcix_cp_base.hpp.diff`): the Spike trap restore and the layout check. Statistics are now `cp::Counter`s (section 6).
   The C ABI (`vcix_accel.h`) and the symbol `vcix_accel_model` are unchanged; `VCIX_ACCEL_REGISTER` is
   `VCIX_CP_REGISTER`. Repo citations `vcix_accel.hpp:N` below are today's file, before the rename.
 
@@ -33,7 +33,7 @@ commit, `:1807` issue): `tick(t)`, then `ready`, `commit` and `squash`, then `ca
 
 | call | what the framework does |
 |---|---|
-| `tick(t)` | **(1)** `cycle()` of every component, in construction order. **(2)** `cycle()` of every block: a Pipeline advances one stage or holds; a Queue adds its occupancy; a Port does nothing (its availability is kept per cycle number). Blocks never touch each other here. |
+| `tick(t)` | **(1)** `cycle()` of every component, in construction order. **(2)** `cycle()` of every block: a Pipeline advances one stage or holds; a Queue and a Port do nothing (their availability is kept per cycle number). Blocks never touch each other here. |
 | `can_accept(insn, t)` | `owner != null && owner.valid(Insn{insn}) && !owner.insns().full(t)`. `full` covers both the depth and the per-cycle limit. `valid()` is flow control only (an RTL ready), never a check of the program. Const, reads only. |
 | `issue(insn, id, t)` | `owner.insns().push(Insn{insn, id}, t)`; returns `Unknown`, always. |
 | `ready(id, t)` | `id ∈ done_`. `complete()` in `cycle()` makes it true in the same gem5 cycle. FACT (gem5 `execute.cc:858-859, 630-631`): the dependent instruction may then issue at t. |
@@ -58,7 +58,7 @@ Rules written on `Component` (OPINION, they follow from the squash copy and the 
   `model.configure` (blocks made in configure, e.g. MXU arrays in `std::optional`, are checked too).
   `cp::Coprocessor::check_layout` throws if a component or a block offset lies outside `[this, this + sizeof(M))`;
   create reports it. FACT (`verify/probe2`): blocks in a `std::vector` member →
-  `create refused: vcix_cp: a block of VEC lies outside the model object` (before: the copy's `ports()` segfaulted).
+  `create refused: vcix_cp: a block or counter of VEC lies outside the model object` (before: the copy's `ports()` segfaulted).
 - A reference member fails at compile time (FACT `vcix_cp_base.hpp.design:211` static_assert). A raw pointer to a sibling
   compiles and in a copy points at the original (review FACT P3): the rule above forbids it; no check can.
 - `Pipeline::on_stage(&D::fn)` keeps a `void (Component::*)(T&, uint32_t)`; it throws unless the owner is a `D`
@@ -66,7 +66,7 @@ Rules written on `Component` (OPINION, they follow from the squash copy and the 
 - `Coprocessor::host_` is the one raw pointer: set only inside Spike's `execute` and cleared by a scope guard,
   also on a throw.
 - Names: component names and block names are interned in a set allocated once and never destroyed, so every
-  `const char *` that a stats Port or gem5 holds stays valid, in every copy and at exit.
+  `const char *` that a Counter or gem5 holds stays valid, in every copy and at exit.
 
 ## 3. Per-cycle order and the visibility table
 
@@ -112,34 +112,32 @@ Consequences (DERIVED):
 
 ## 4. The blocks: exact semantics
 
-### `Port(c, name, unit_of_work, width, role = REPORTING)`
+### `Port(c, name, width)`
 
-- Holds a `cp::Stats` member (no inheritance) with unit = the component's name: stats exactly today's.
-- `available()` = width − utilized at `now` (`Stats::available(now)`); `utilize(n)` = `Stats::admit(n, now)`;
-  more than `available()` aborts: `vcix_cp: port U.N admitted …` (FACT `vcix_cp_base.hpp.design:121-127`).
+- `available()` = width − utilized at `now`; `[[nodiscard]] utilize(n)` takes n and returns true, or, past
+  `available()`, takes nothing and returns false: the work waits. No statistic.
 - No refill step and no stamp of its own: every call names its cycle (same as Queue and Pipeline).
-- `width()` / `set_width()` in configure (`UNLIMITED` allowed); `occupy(n)` adds to OCCUPANCY (nothing adds
-  implicitly).
+- `width()` / `set_width()` in configure (`UNLIMITED` allowed; 0 refused).
 
-### `Queue<T>(c, name, unit_of_work = "rows")`
+### `Queue<T>(c, name)`
 
 - `configure(capacity, per_cycle = UNLIMITED)`: both at least 1 (else `std::invalid_argument`, reported by create);
-  empties the queue. Stats CAPACITY = `min(capacity, per_cycle)`, what it can admit in one cycle.
+  empties the queue.
 - `length()` = size − pushed at now. `available()` = `min(capacity − size − freed at now, per_cycle − pushed
   at now)` (UNLIMITED-safe). `full()` = `available() == 0`. `size()` counts every row held.
-- Aborts: `push` when full → `vcix_cp: C.N pushed to while full in cycle T`; `front`/`pop` with `length() == 0`
-  → `vcix_cp: C.N read with no visible row in cycle T`.
-- `insns()` is a `Queue<Insn>` named `insns`, unit of work `instructions`, configured `(2, 1)` by the Component
-  constructor; a component overrides it in `configure`.
+- `[[nodiscard]] push(row)` when full returns false and leaves the row with the caller. Aborts: `front`/`pop` with
+  `length() == 0` → `vcix_cp: C.N read with no visible row in cycle T`.
+- `insns()` is a `Queue<Insn>` named `insns`, configured `(2, 1)` by the Component constructor; a component overrides
+  it in `configure`. The engine's own push into it after `can_accept` aborts if it ever fails.
 
-### `Pipeline<T>(c, name, unit_of_work = "rows")`, gem5 MinorFU (opLat = latency, issueLat = interval)
+### `Pipeline<T>(c, name)`, gem5 MinorFU (opLat = latency, issueLat = interval)
 
 - `configure(latency, interval)`, each 1 … UINT32_MAX (else `std::invalid_argument`; FACT `verify/probe2`: interval
   UNLIMITED is refused at create, where before it wrapped and issued every cycle).
 - `available() = !blocked && (!pushed || now − last_push ≥ interval)` (subtraction: no wrap).
-- `push(row)` pushes `{row, age 0}`, counts 1 ADMITTED; aborts when `!available`.
+- `[[nodiscard]] push(row)` pushes `{row, age 0}`; when `!available` returns false and leaves the row with the caller.
 - the block's `cycle()`: unblocked and not empty → every row ages; a row reaching latency gets `done_at = t`; on
-  Spike `on_stage(row, age−1)`. Blocked → nothing moves. OCCUPANCY += rows held.
+  Spike `on_stage(row, age−1)`. Blocked → nothing moves.
 - `length() = blocked && head.done_at < now`; `front`/`pop` require it. Only the head can be finished.
 - FACT (`verify/eng/stall`): latency 3, rows pushed at 1–4, head unpopped at 5 and 6 → popped at 4, 7,
   8, 9.
@@ -199,27 +197,24 @@ trap is re-read after its write, the same hazard as before.
 
 ## 6. Statistics
 
-**Mechanism (no ABI change).** Every block has a `stat()`, a `cp::Stats`: a `cp::Port` holds one as a member; a
-Queue or Pipeline a REPORTING one under its component's unit, so the table lists only the component's PRIMARY
-`cp::Port` (FACT `vcix_cp_base.hpp:326-363`). Only the C ABI's kinds are used (FACT `vcix_accel.h:60-63`).
-`Instance::describe/read_stats` unchanged; gem5 turns `.` into `_` (FACT gem5 `vcix_accel_model.cc:22-33,117-151`).
+**Mechanism (ABI 13).** Blocks hold no statistic. A statistic is a `cp::Counter(component, name, capacity = 0)`
+whose `add(n)` only grows it; the C table lists every counter as `{group = component, name, capacity}`, then each
+encoding as `{"committed", name, 0}` (`include/coprocessor.h:57-64`). A counter of capacity > 0 is a unit TOGSim
+times as `<COMPONENT>.<name>`; capacity 0 is a plain count. gem5 prints one scalar `vcix.<group>.<name>` per entry,
+turning characters outside `[A-Za-z0-9_]` into `_`; names that collide that way, and a group named `committed`, are
+refused at create (`vcix_cp_base.hpp:264-292`). Counters live in the model, so a squash's copy takes back what the
+squashed instructions counted and a reset keeps them.
 
-| unit | ADMITTED | CAPACITY | CYCLES | OCCUPANCY |
-|---|---|---|---|---|
-| `<C>` (its one PRIMARY `cp::Port`) | `utilize`s | width | ticks + reopened | `occupy`s |
-
-As gem5's `stats.txt` prints it (prefix FACT `README.md:837`; values FACT `verify/cs/dump`, markers window 1):
+As gem5's `stats.txt` prints it (markers window 1):
 
 ```
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.admitted                12   # rows admitted at port input
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.capacity                 1
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.occupancy               84
+system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows                    12
+system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows_in_flight          84
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_pop            3
 ```
 
-What `tests/stats/run.sh` pins (DERIVED): `beyond_units` stays 0; `consistent` finds `vcix.{SFU,MISC,SYSTOLIC,XLU,MSA}.*`,
-each component keeps one PRIMARY `cp::Port`; `counts` keep their values. Two units whose names collide once `_`
-replaces other characters are refused at create (FACT `vcix_cp_base.hpp:326-363`).
+What `tests/stats/run.sh` pins: `beyond_units` stays 0; `listed` finds exactly the eight counters of
+`SFU, MISC, SYSTOLIC, XLU, MSA`; `counts` keep their values.
 
 ## 7. Trace hook for `tpu::Coprocessor`
 
@@ -246,7 +241,7 @@ with `Unknown`; they must poll `ready()`, as `tests/rtl/stall.cc` does.
 | today | fate |
 |---|---|
 | Offset registration, `components_` shared_ptr, `Layout` COW (`:46-104, 1079-1089`) | **reused**; Layout holds encodings + blocks; plus `check_layout` |
-| `cp::Port` as a `vcix_accel::Port` under the component's name (`:106-113`) | **reused**, now a `Block` holding a `cp::Stats` member, with `available()/utilize(n)/occupy(n)` |
+| `cp::Port` as a `vcix_accel::Port` under the component's name (`:106-113`) | **reused**, now a `Block` with `available()/utilize(n)`, no statistic |
 | `ready_` list, `commit` erase, `ready` lookup (`:868-872`) | **reused** as `done_` |
 | stuck message + `exit(1)` (`:1034-1036`), "has no unit" (`:855`) | **reused** verbatim |
 | stage function, k = 0 on the entering cycle, Spike only (`:434-438`) | **reused** in `Pipeline::cycle` |
@@ -267,8 +262,8 @@ Additions (each needed by something FACT in the repo or a review finding):
   `why_stuck()` and `executing()` are gone: a wrong program is faulted at the head of `insns()`, not explained at
   the stall.
 - `Queue::configure(capacity, per_cycle)`, `available()`, `capacity()`, `size()`; `Pipeline::size()`;
-  `Port::occupy/width/set_width`; optional `unit_of_work` on Queue and Pipeline.
-- `vcix_cp_base.hpp`: namespace `cp`, `Stats` in place of `vcix_accel::Port`, `Model::check_layout(size_t)`
+  `Port::width/set_width`; `cp::Counter` for the statistics.
+- `vcix_cp_base.hpp`: namespace `cp`, `Counter` in place of `vcix_accel::Port`, `Model::check_layout(size_t)`
   (virtual, default empty) and the trap restore in `export_model`.
 - SFU: the special functions and `sfu_push` share the one `eup` Pipeline (no separate function pipeline): a special
   function takes one EUP slot per register of its group and completes when the last leaves; queued push registers

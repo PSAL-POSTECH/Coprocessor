@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 
@@ -98,12 +99,12 @@ class Systolic : public Component {
         if (!wrong(in)) enter(in);
       }
     }
-    if (enable && array_.length()) output_.push(array_.pop());
-    if (enable && input_.length() && array_.available()) {
-      array_.push(input_.pop());
-      entry_.utilize(1);
+    if (enable && array_.length() && output_.push(std::move(array_.front()))) array_.pop();
+    if (enable && input_.length() && array_.push(std::move(input_.front()))) {
+      input_.pop();
+      rows_.add(1);
     }
-    entry_.occupy(array_.size());
+    rows_in_flight_.add(array_.size());
   }
   void trace_queues(const vcix_insn &) const override {
     std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(input_.size()), static_cast<uint32_t>(output_.size()));
@@ -136,8 +137,8 @@ class Systolic : public Component {
   // Into the command queue as systolic.sv's cmd port takes it; with vl 0 it is ready at once and never enters.
   void enter(const Insn &insn) {
     weigh(insn);
-    if (insn.vl) commands_.push(insn);
-    else complete(insn);
+    if (!insn.vl) complete(insn);
+    else if (!commands_.push(insn)) std::abort();
   }
   // One cycle of the head: as many rows or beats as its port, the queues and the array allow (all vl or none when
   // whole); true and complete() once it has moved vl. A weight push under tpu_systolic_weight_waits waits for an empty
@@ -147,20 +148,19 @@ class Systolic : public Component {
     uint64_t n = 0;
     if (is(INPUT_PUSH, insn)) {
       n = std::min({left, in_.available(), input_.available()});
-      if (whole_ && n < left) return false;
+      if ((whole_ && n < left) || !in_.utilize(n)) return false;
       for (uint64_t k = 0; k < n; k++) {
         Row row;
         values([&](const Host &host) { row = pushed(host, insn, done_ + k); });
-        input_.push(std::move(row));
+        if (!input_.push(std::move(row))) std::abort();
       }
-      in_.utilize(n);
     } else if (is(WEIGHT_PUSH, insn)) {
       if (weight_waits_ && (input_.size() || !array_.idle())) return false;
       n = std::min(left, in_.available());
+      if (!in_.utilize(n)) return false;
       values([&](const Host &host) {
         for (uint64_t k = 0; k < n; k++) landing_.push_back(beat(host, insn, done_ + k));
       });
-      in_.utilize(n);
     } else {
       n = std::min({left, pop_.available(), output_.length()});
       if (n < left && !input_.size() && array_.idle() && output_.size() < left) {
@@ -168,12 +168,11 @@ class Systolic : public Component {
         done_ = 0;
         return true;
       }
-      if (whole_ && n < left) return false;
+      if ((whole_ && n < left) || !pop_.utilize(n)) return false;
       for (uint64_t k = 0; k < n; k++) {
         const Row row = output_.pop();
         values([&](const Host &host) { popped(host, insn, done_ + k, row); });
       }
-      pop_.utilize(n);
     }
     done_ += n;
     if (done_ < insn.vl) return false;
@@ -261,10 +260,11 @@ class Systolic : public Component {
   static constexpr const char *POP_KEY = "tpu_systolic_pop_rows_per_cycle";
   static constexpr const char *WAITS_KEY = "tpu_systolic_weight_waits";
 
-  cp::Port entry_{*this, "input", "rows", 1, cp::Port::PRIMARY};
-  cp::Port in_{*this, "in", "rows", cp::UNLIMITED};
-  cp::Port pop_{*this, "pop", "rows", 256};
-  cp::Queue<Insn> commands_{*this, "commands", "commands"};
+  cp::Counter rows_{*this, "rows", 1};
+  cp::Counter rows_in_flight_{*this, "rows_in_flight"};
+  cp::Port in_{*this, "in", cp::UNLIMITED};
+  cp::Port pop_{*this, "pop", 256};
+  cp::Queue<Insn> commands_{*this, "commands"};
   cp::Queue<Row> input_{*this, "input_queue"};
   cp::Pipeline<Row> array_{*this, "array"};
   cp::Queue<Row> output_{*this, "output_queue"};

@@ -1,4 +1,4 @@
-// The tpu units' ports, read through the C table with no simulator: cases whose counts can be worked out by hand.
+// The tpu units' counters, read through the C table with no simulator: cases whose counts can be worked out by hand.
 // A 4 x 4 array (7 slots, queues of 8; input pushes after a weight push in cycle 0), a cross-lane unit of 3 slots, a
 // special-function unit of depth 4, misc 2 wide with a scratchpad. Usage: tpu_ports libtpu.so
 #include <dlfcn.h>
@@ -77,17 +77,13 @@ class Run {
     m->squash(self_, flight_.back().id, now_);
     flight_.pop_back();
   }
-  // The value of a unit's statistic at its primary port `name`, or of a commit count with unit "committed".
-  uint64_t stat(const char *unit, const char *name, uint32_t kind) const {
+  // The value of counter `name` of component `group`, or of a commit count with group "committed".
+  uint64_t stat(const char *group, const char *name) const {
     std::vector<uint64_t> values(m->num_stats(self_));
     m->read_stats(self_, values.data());
-    for (size_t i = 0; i < values.size(); i++) {
-      const vcix_stat *s = m->stat(self_, i);
-      if (!strcmp(s->unit, unit) && !strcmp(s->name, name) && s->kind == kind) return values[i];
-    }
-    fprintf(stderr, "no statistic %s.%s of kind %u\n", unit, name, kind);
-    exit(1);
+    return values[entry(group, name)];
   }
+  uint64_t capacity(const char *group, const char *name) const { return m->stat(self_, entry(group, name))->capacity; }
   std::vector<uint64_t> all() const {
     std::vector<uint64_t> values(m->num_stats(self_));
     m->read_stats(self_, values.data());
@@ -96,6 +92,14 @@ class Run {
   void *self() const { return self_; }
 
  private:
+  size_t entry(const char *group, const char *name) const {
+    for (size_t i = 0; i < m->num_stats(self_); i++) {
+      const vcix_stat *s = m->stat(self_, i);
+      if (!strcmp(s->group, group) && !strcmp(s->name, name)) return i;
+    }
+    fprintf(stderr, "no statistic %s.%s\n", group, name);
+    exit(1);
+  }
   struct Flight {
     vcix_id_t id;
     vcix_insn insn;
@@ -108,29 +112,30 @@ class Run {
 
 std::string n(uint64_t v) { return std::to_string(v); }
 
-// The list: four entries per unit, a unit being a component at its primary port, in the order the model holds
-// them; no other port, none of a component's queues and pipelines; then the commits.
+// The list: each component's counters in the order the model holds them, none of its ports, queues and pipelines;
+// then the commits.
 void list() {
   Run run;
-  const char *expected[][2] = {{"SFU", "entry"}, {"MISC", "issue"}, {"SYSTOLIC", "input"}, {"XLU", "input"}, {"MSA", "input"}};
-  const size_t units = sizeof expected / sizeof expected[0];
+  const vcix_stat expected[] = {{"SFU", "instructions", 1}, {"MISC", "instructions", 2},  {"SYSTOLIC", "rows", 1},
+                                {"SYSTOLIC", "rows_in_flight", 0}, {"XLU", "elements", 1},  {"XLU", "elements_in_flight", 0},
+                                {"MSA", "rows", 1},               {"MSA", "rows_in_flight", 0}};
+  const size_t counters = sizeof expected / sizeof expected[0];
   const size_t stats = m->num_stats(run.self());
   std::string differs;
-  if (stats != 4 * units + m->num_encodings) differs = n(stats) + " entries, not " + n(4 * units + m->num_encodings);
-  for (size_t u = 0; differs.empty() && u < units; u++)
-    for (uint32_t kind = 0; differs.empty() && kind < 4; kind++) {
-      const vcix_stat *s = m->stat(run.self(), 4 * u + kind);
-      if (strcmp(s->unit, expected[u][0]) || strcmp(s->name, expected[u][1]) || s->kind != kind)
-        differs = std::string("entry ") + n(4 * u + kind) + " is " + s->unit + "." + s->name + " kind " + n(s->kind);
-    }
-  for (size_t e = 0; differs.empty() && e < m->num_encodings; e++) {
-    const vcix_stat *s = m->stat(run.self(), 4 * units + e);
-    if (strcmp(s->unit, "committed") || strcmp(s->name, m->encodings[e].name) || s->kind != VCIX_STAT_COUNT)
-      differs = std::string("commit entry ") + n(e) + " is " + s->unit + "." + s->name;
+  if (stats != counters + m->num_encodings) differs = n(stats) + " entries, not " + n(counters + m->num_encodings);
+  for (size_t i = 0; differs.empty() && i < counters; i++) {
+    const vcix_stat *s = m->stat(run.self(), i);
+    if (strcmp(s->group, expected[i].group) || strcmp(s->name, expected[i].name) || s->capacity != expected[i].capacity)
+      differs = std::string("entry ") + n(i) + " is " + s->group + "." + s->name + " capacity " + n(s->capacity);
   }
-  check(differs.empty(), n(units) + " units: each component at its primary port (SFU.entry, MISC.issue, SYSTOLIC/XLU/MSA.input), "
-                         "no other port and none of its queues and pipelines, then one commit count per encoding" +
-                             (differs.empty() ? "" : "; but " + differs));
+  for (size_t e = 0; differs.empty() && e < m->num_encodings; e++) {
+    const vcix_stat *s = m->stat(run.self(), counters + e);
+    if (strcmp(s->group, "committed") || strcmp(s->name, m->encodings[e].name) || s->capacity)
+      differs = std::string("commit entry ") + n(e) + " is " + s->group + "." + s->name;
+  }
+  check(differs.empty(), n(counters) + " counters (SFU/MISC.instructions, SYSTOLIC/MSA.rows, XLU.elements, each "
+                         "with its _in_flight but SFU and MISC), none of the ports, queues and pipelines, then one "
+                         "commit count per encoding" + (differs.empty() ? "" : "; but " + differs));
 }
 
 // One row through a 7-slot array: it is in the input queue the tick after its push, enters the array in the tick after
@@ -141,24 +146,21 @@ void one_row() {
   run.next();
   run.issue(INPUT_PUSH, 1);
   for (int c = 2; c <= 20; c++) run.next();
-  const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
-  const uint64_t cycles = run.stat("SYSTOLIC", "input", VCIX_STAT_CYCLES);
-  const uint64_t occupancy = run.stat("SYSTOLIC", "input", VCIX_STAT_OCCUPANCY);
-  const uint64_t capacity = run.stat("SYSTOLIC", "input", VCIX_STAT_CAPACITY);
-  const uint64_t committed = run.stat("committed", "systolic input push", VCIX_STAT_COUNT);
-  check(admitted == 1 && capacity == 1 && cycles == 20 && occupancy == 7 && committed == 1,
-        "one input row over 20 cycles: admitted " + n(admitted) + " of capacity " + n(capacity) + " x cycles " +
-            n(cycles) + ", occupancy " + n(occupancy) + " (7 slots), committed " + n(committed) +
-            "; expected 1, 1, 20, 7, 1");
+  const uint64_t rows = run.stat("SYSTOLIC", "rows"), capacity = run.capacity("SYSTOLIC", "rows");
+  const uint64_t in_flight = run.stat("SYSTOLIC", "rows_in_flight");
+  const uint64_t committed = run.stat("committed", "systolic input push");
+  check(rows == 1 && capacity == 1 && in_flight == 7 && committed == 1,
+        "one input row over 20 cycles: rows " + n(rows) + " of capacity " + n(capacity) + ", rows_in_flight " +
+            n(in_flight) + " (7 slots), committed " + n(committed) + "; expected 1, 1, 7, 1");
   run.issue(POP, 1);
   for (int c = 0; c < 20; c++) run.next();
-  const uint64_t popped = run.stat("committed", "systolic pop", VCIX_STAT_COUNT);
-  const uint64_t still = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
-  const uint64_t others = run.stat("SFU", "entry", VCIX_STAT_ADMITTED) + run.stat("XLU", "input", VCIX_STAT_ADMITTED) +
-                          run.stat("MSA", "input", VCIX_STAT_ADMITTED) + run.stat("MISC", "issue", VCIX_STAT_ADMITTED);
+  const uint64_t popped = run.stat("committed", "systolic pop");
+  const uint64_t still = run.stat("SYSTOLIC", "rows");
+  const uint64_t others = run.stat("SFU", "instructions") + run.stat("XLU", "elements") + run.stat("MSA", "rows") +
+                          run.stat("MISC", "instructions");
   check(popped == 1 && still == 1 && others == 0,
-        "its pop commits (" + n(popped) + ") and admits nothing at the input (" + n(still) +
-            "), and no other unit admitted anything (" + n(others) + ")");
+        "its pop commits (" + n(popped) + ") and adds no row (" + n(still) +
+            "), and no other component counted anything (" + n(others) + ")");
 }
 
 // Pushes and pops of two in program order, as a compiler schedules them: six pushes run ahead (12 rows: the input
@@ -174,15 +176,15 @@ void continuous() {
   for (int c = 1; c <= cycles; c++) {
     run.next();
     if (run.issue(at < ahead || (at - ahead) % 2 ? INPUT_PUSH : POP, 2)) at++;
-    const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
-    bounded = bounded && admitted <= uint64_t(c);
-    short_by = uint64_t(c) - admitted;
+    const uint64_t rows = run.stat("SYSTOLIC", "rows");
+    bounded = bounded && rows <= uint64_t(c);
+    short_by = uint64_t(c) - rows;
   }
-  const uint64_t admitted = run.stat("SYSTOLIC", "input", VCIX_STAT_ADMITTED);
-  const double utilization = double(admitted) / double(cycles);
+  const uint64_t rows = run.stat("SYSTOLIC", "rows");
+  const double utilization = double(rows) / double(cycles);
   check(bounded && utilization > 0.99,
-        "pushes and pops of two in program order, six pushes ahead, for " + n(cycles) + " cycles: input admitted " +
-            n(admitted) + ", never above the cycles, utilization " + std::to_string(utilization) + " (" + n(short_by) +
+        "pushes and pops of two in program order, six pushes ahead, for " + n(cycles) + " cycles: rows " +
+            n(rows) + ", never above the cycles, utilization " + std::to_string(utilization) + " (" + n(short_by) +
             " rows short of capacity: the first row enters in cycle 3)");
 }
 
@@ -195,20 +197,19 @@ void sfu_and_xlu() {
     run.next();
     all = run.issue(VEXP, 4) && all;
   }
-  const uint64_t admitted = run.stat("SFU", "entry", VCIX_STAT_ADMITTED);
-  const uint64_t cycles = run.stat("SFU", "entry", VCIX_STAT_CYCLES);
-  check(all && admitted == 999 && cycles == 1000,
-        "a vexp each of 1000 cycles, all accepted: SFU.entry admitted " + n(admitted) + " in " + n(cycles) +
-            " cycles, each in the cycle after its issue; the 1000th is issued in the last cycle: expected 999, 1000");
+  const uint64_t counted = run.stat("SFU", "instructions");
+  check(all && counted == 999,
+        "a vexp each of 1000 cycles, all accepted: SFU.instructions " + n(counted) +
+            ", each in the cycle after its issue; the 1000th is issued in the last cycle: expected 999");
 
   Run xlu;
   xlu.next();
   xlu.issue(XLU_PUSH, 5);
   for (int c = 2; c <= 30; c++) xlu.next();
-  const uint64_t elements = xlu.stat("XLU", "input", VCIX_STAT_ADMITTED);
-  const uint64_t held = xlu.stat("XLU", "input", VCIX_STAT_OCCUPANCY);
+  const uint64_t elements = xlu.stat("XLU", "elements");
+  const uint64_t held = xlu.stat("XLU", "elements_in_flight");
   check(elements == 5 && held == 15,
-        "a push of 5 through 3 slots: XLU.input admitted " + n(elements) + ", occupancy " + n(held) + " (5 x 3)");
+        "a push of 5 through 3 slots: XLU.elements " + n(elements) + ", elements_in_flight " + n(held) + " (5 x 3)");
 
   Run msa;
   msa.next();
@@ -219,8 +220,7 @@ void sfu_and_xlu() {
   msa.issue(MSA_POP, 3);
   msa.next();
   for (int c = 0; c < 20; c++) msa.next();
-  check(msa.stat("MSA", "input", VCIX_STAT_ADMITTED) == 3 && msa.stat("committed", "msa push", VCIX_STAT_COUNT) == 2 &&
-            msa.stat("committed", "msa pop", VCIX_STAT_COUNT) == 1,
+  check(msa.stat("MSA", "rows") == 3 && msa.stat("committed", "msa push") == 2 && msa.stat("committed", "msa pop") == 1,
         "msa: a weight push enters nothing, an input push of 3 enters 3 rows, and both pushes and the pop commit");
 }
 
@@ -240,12 +240,11 @@ void misc() {
     two_a_cycle = two_a_cycle && now == 2;
   }
   for (int c = 0; c < 5; c++) run.next();
-  const uint64_t admitted = run.stat("MISC", "issue", VCIX_STAT_ADMITTED);
-  const uint64_t capacity = run.stat("MISC", "issue", VCIX_STAT_CAPACITY);
-  const uint64_t committed = run.stat("committed", "mvin", VCIX_STAT_COUNT) + run.stat("committed", "vlane_idx", VCIX_STAT_COUNT);
-  check(two_a_cycle && cycles == 5 && admitted == 10 && capacity == 2 && committed == 10,
-        "10 independent misc instructions: 2 a cycle for " + n(cycles) + " cycles, MISC.issue admitted " + n(admitted) +
-            " of capacity " + n(capacity) + " (utilized cycles " + n(admitted / capacity) + "), committed " +
+  const uint64_t counted = run.stat("MISC", "instructions"), capacity = run.capacity("MISC", "instructions");
+  const uint64_t committed = run.stat("committed", "mvin") + run.stat("committed", "vlane_idx");
+  check(two_a_cycle && cycles == 5 && counted == 10 && capacity == 2 && committed == 10,
+        "10 independent misc instructions: 2 a cycle for " + n(cycles) + " cycles, MISC.instructions " + n(counted) +
+            " of capacity " + n(capacity) + " (" + n(counted / capacity) + " cycles of streaming), committed " +
             n(committed) + "; expected 5, 10, 2 (5), 10");
 }
 

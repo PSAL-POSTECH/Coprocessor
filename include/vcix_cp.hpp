@@ -1,7 +1,6 @@
 // vcix_cp: a model is a cp::Coprocessor whose members are cp::Components. Each component writes cycle(), its timing
-// and (through values()) Spike's values, over optional blocks the framework advances: Port, Queue<T>, Pipeline<T>.
-// The model keeps the cycle, now(); blocks and components are found by byte offset, so a copy (gem5's squash) reaches
-// its own.
+// and (through values()) Spike's values, over blocks the framework advances (Port, Queue<T>, Pipeline<T>) and the
+// Counters its statistics are. Blocks, counters and components are found by byte offset, so a copy reaches its own.
 #pragma once
 
 #include <algorithm>
@@ -23,7 +22,7 @@ namespace cp {
 
 constexpr uint64_t UNLIMITED = UINT64_MAX;
 
-// A name kept for the life of the program (never destroyed): gem5 and Stats hold it as a const char *.
+// A name kept for the life of the program (never destroyed): gem5 and Counter hold it as a const char *.
 inline const char *intern(const std::string &name) {
   static auto *names = new std::set<std::string>;
   return names->insert(name).first->c_str();
@@ -38,8 +37,7 @@ class Coprocessor;
 class Component;
 
 // A component's part, a member of it, kept as an offset to its component; label_ "<component>.<name>" names it in
-// messages. Its port counts under the component's unit; only a PRIMARY Port is a statistic. The framework calls
-// cycle() after every component's cycle(), clear() at reset, and stat() for the statistics.
+// messages. Behavior only, no statistic: the framework calls cycle() after every component's cycle(), clear() at reset.
 class Block {
  public:
   virtual ~Block() = default;
@@ -60,48 +58,50 @@ class Block {
   friend class Coprocessor;
   virtual void cycle() {}
   virtual void clear() = 0;
-  virtual const Stats *stat() const = 0;
   ptrdiff_t to_owner_;
 };
 
-// Per-cycle bandwidth: utilize(n) takes available(), which is width() again in every new cycle. The component's one
-// PRIMARY port is the component's unit in gem5's stats; a REPORTING port only times.
+// Per-cycle bandwidth: utilize(n) takes n of available(), which is width() again in every new cycle.
 class Port : public Block {
  public:
-  using Role = Stats::Role;
-  static constexpr Role REPORTING = Stats::REPORTING, PRIMARY = Stats::PRIMARY;
-  Port(Component &c, const char *name, const char *unit_of_work, uint64_t width, Role role = REPORTING);
+  Port(Component &c, const char *name, uint64_t width) : Block(c, name) { set_width(width); }
   // In configure only.
-  void set_width(uint64_t width) { stats_.set_capacity(width); }
-  uint64_t width() const { return stats_.capacity(); }
-  uint64_t available() const { return stats_.available(now()); }
-  // More than available() stops the run (Stats::admit).
-  void utilize(uint64_t n) {
-    if (!n) return;
-    stats_.admit(n, now());
-    moved();
+  void set_width(uint64_t width) {
+    if (!width) throw std::invalid_argument(std::string("vcix_cp: port ") + label_ + ": width 0");
+    width_ = width;
   }
-  // Adds n to its OCCUPANCY statistic.
-  void occupy(uint64_t n) { stats_.hold(n); }
+  uint64_t width() const { return width_; }
+  uint64_t available() const { return now() == cycle_ ? width_ - used_ : width_; }
+  // More than available() takes nothing and returns false: the work waits for a later cycle.
+  [[nodiscard]] bool utilize(uint64_t n) {
+    if (n > available()) return false;
+    if (!n) return true;
+    if (now() != cycle_) cycle_ = now(), used_ = 0;
+    used_ += n;
+    moved();
+    return true;
+  }
 
  private:
-  void clear() override { stats_.reset(); }
-  const Stats *stat() const override { return &stats_; }
-  Stats stats_;
+  // A reset gives this cycle's room back.
+  void clear() override {
+    cycle_ = Unknown;
+    used_ = 0;
+  }
+  uint64_t width_ = 1, used_ = 0;
+  Cycle cycle_ = Unknown;
 };
 
 // A FIFO of at most capacity() rows, at most per_cycle pushes a cycle. A row pushed in cycle t is visible (length,
-// front, pop) from t + 1; a slot a pop frees in t is free from t + 1. A push when full(), or a read past the visible
-// rows, stops the run. Depth 2W with W a cycle sustains W pushes a cycle under one pop of each visible row a cycle.
+// front, pop) from t + 1; a slot a pop frees in t is free from t + 1. A push when full() returns false and keeps the
+// row with the caller; a read past the visible rows stops the run. Depth 2W sustains W pushes and W pops a cycle.
 template <class T>
 class Queue : public Block {
  public:
-  Queue(Component &c, const char *name, const char *unit_of_work = "rows")
-      : Block(c, name), stats_(c.name(), name_, unit_of_work, 1) {}
+  Queue(Component &c, const char *name) : Block(c, name) {}
   // In configure: the capacity, at least 1, and the pushes a cycle (UNLIMITED: no bound); empties the queue.
   void configure(uint64_t capacity, uint64_t per_cycle = UNLIMITED) {
     if (!capacity || !per_cycle) throw std::invalid_argument(std::string("vcix_cp: queue ") + label_ + ": capacity or per-cycle limit 0");
-    stats_.set_capacity(std::min(capacity, per_cycle));
     capacity_ = capacity, per_cycle_ = per_cycle;
     clear();
   }
@@ -115,13 +115,14 @@ class Queue : public Block {
     return std::min(slots, per_cycle_ == UNLIMITED ? UNLIMITED : per_cycle_ - pushed());
   }
   bool full() const { return !available(); }
-  void push(T row) {
-    if (full()) broken("pushed to while full");
+  template <class U = T>
+  [[nodiscard]] bool push(U &&row) {
+    if (full()) return false;
     if (pushed_at_ != now()) pushed_at_ = now(), pushed_ = 0;
-    rows_.push_back(std::move(row));
+    rows_.push_back(std::forward<U>(row));
     pushed_++;
-    stats_.admit(1, now());
     moved();
+    return true;
   }
   const T &front() const { return visible(), rows_.front(); }
   T &front() { return visible(), rows_.front(); }
@@ -141,20 +142,15 @@ class Queue : public Block {
   void visible() const {
     if (!length()) broken("read with no visible row");
   }
-  // OCCUPANCY: the rows held as this cycle began.
-  void cycle() override { stats_.hold(length() + freed()); }
   void clear() override {
     rows_.clear();
     pushed_ = freed_ = 0;
     pushed_at_ = freed_at_ = Unknown;
-    stats_.reset();
   }
-  const Stats *stat() const override { return &stats_; }
   std::deque<T> rows_;
   uint64_t capacity_ = 1, per_cycle_ = UNLIMITED;
   Cycle pushed_at_ = Unknown, freed_at_ = Unknown;
   uint64_t pushed_ = 0, freed_ = 0;
-  Stats stats_;
 };
 
 // A part of the model: encodings, blocks, plain copyable members (all state copied by value: no pointer to state, no
@@ -199,10 +195,11 @@ class Component {
 
  private:
   friend class Block;
+  friend class Counter;
   friend class Coprocessor;
   struct Layout {
     std::vector<Encoding> encodings;
-    std::vector<ptrdiff_t> blocks;
+    std::vector<ptrdiff_t> blocks, counters;
   };
   Layout &layout() {
     if (layout_.use_count() > 1) layout_ = std::make_shared<Layout>(*layout_);
@@ -225,18 +222,17 @@ class Component {
   ptrdiff_t to_cp_;
   std::shared_ptr<Layout> layout_ = std::make_shared<Layout>();
   uint64_t motion_ = 0;
-  Queue<Insn> insns_{*this, "insns", "instructions"};
+  Queue<Insn> insns_{*this, "insns"};
 };
 
-// A pipelined unit, as gem5's MinorFU: push(row) when available() (interval cycles since the last push, and the
-// finished head popped); a row pushed in cycle t is at the head, length() == 1, from t + latency unless the pipeline
-// stalled. After each cycle() it advances one stage, or holds still entirely while its finished head is not popped.
+// A pipelined unit, as gem5's MinorFU: push(row) takes it when available() (interval cycles since the last push, the
+// finished head popped), else returns false and keeps it with the caller. A row pushed in t is at the head, length()
+// 1, from t + latency unless stalled. Each cycle() advances a stage, or holds still while the finished head waits.
 template <class T>
 class Pipeline : public Block {
  public:
   using Stage = void (Component::*)(T &, uint32_t);
-  Pipeline(Component &c, const char *name, const char *unit_of_work = "rows")
-      : Block(c, name), stats_(c.name(), name_, unit_of_work, 1) {}
+  Pipeline(Component &c, const char *name) : Block(c, name) {}
   // In D's constructor: on Spike, fn(row, k) for each row each cycle it advances, k = 0 the stage it was pushed to.
   template <class D>
   void on_stage(void (D::*fn)(T &, uint32_t)) {
@@ -252,15 +248,17 @@ class Pipeline : public Block {
     clear();
   }
   uint64_t available() const { return !blocked() && (!pushed_ || now() - last_ >= interval_); }
-  void push(T row) {
-    if (!available()) broken("pushed to while it cannot take a row");
-    rows_.push_back({std::move(row), 0, Unknown});
+  template <class U = T>
+  [[nodiscard]] bool push(U &&row) {
+    if (!available()) return false;
+    rows_.push_back({std::forward<U>(row), 0, Unknown});
     pushed_ = true, last_ = now();
-    stats_.admit(1, now());
     moved();
+    return true;
   }
   uint64_t length() const { return blocked() && rows_.front().done_at < now(); }
   const T &front() const { return finished(), rows_.front().row; }
+  T &front() { return finished(), rows_.front().row; }
   T pop() {
     finished();
     T row = std::move(rows_.front().row);
@@ -291,21 +289,17 @@ class Pipeline : public Block {
       moved();
     }
     if (pushed_ && now() - last_ < interval_) moved();
-    stats_.hold(rows_.size());
   }
   void clear() override {
     rows_.clear();
     pushed_ = false;
-    stats_.reset();
   }
-  const Stats *stat() const override { return &stats_; }
   std::deque<Slot> rows_;
   uint32_t latency_ = 1;
   uint64_t interval_ = 1;
   bool pushed_ = false;
   Cycle last_ = 0;
   Stage stage_ = nullptr;
-  Stats stats_;
 };
 
 // The model: routes each instruction by encoding to its component's insns(), ticks every cycle() then every block,
@@ -330,7 +324,7 @@ class Coprocessor : public Model {
   }
   Cycle issue(const vcix_insn &insn, Id id, Cycle now) override {
     now_ = now;
-    unit(insn).insns_.push(Insn{insn, id});
+    enter(unit(insn), Insn{insn, id});
     return Unknown;
   }
   void commit(const vcix_insn &, Id id, Cycle now) override {
@@ -359,7 +353,7 @@ class Coprocessor : public Model {
     Component &c = unit(insn);
     executing_ = Insn{insn, ++spike_id_};
     until(c, [&] { return Coprocessor::can_accept(executing_, now_); });
-    c.insns_.push(executing_);
+    enter(c, executing_);
     until(c, [&] { return Coprocessor::ready(executing_.id, now_); });
     Coprocessor::commit(insn, executing_.id, now_);
   }
@@ -372,9 +366,11 @@ class Coprocessor : public Model {
     faults_.clear();
     now_ = spike_id_ = 0;
   }
-  std::vector<const Stats *> ports() const override {
-    std::vector<const Stats *> all;
-    each([&](const Component &c) { c.each_block([&](const Block &b) { all.push_back(b.stat()); }); });
+  std::vector<const Counter *> counters() const override {
+    std::vector<const Counter *> all;
+    each([&](const Component &c) {
+      for (ptrdiff_t at : c.layout_->counters) all.push_back(reinterpret_cast<const Counter *>(reinterpret_cast<const char *>(&c) + at));
+    });
     return all;
   }
 
@@ -388,15 +384,16 @@ class Coprocessor : public Model {
     });
     return found;
   }
-  // Every component and block lies in [this, this + bytes): a copy of the model then reaches its own.
+  // Every component, block and counter lies in [this, this + bytes): a copy of the model then reaches its own.
   void check_layout(size_t bytes) const override {
     const auto outside = [&](ptrdiff_t at) { return at < 0 || static_cast<size_t>(at) >= bytes; };
     for (ptrdiff_t at : *components_) {
       const Component &c = *reinterpret_cast<const Component *>(reinterpret_cast<const char *>(this) + at);
       if (outside(at)) throw std::invalid_argument(std::string("vcix_cp: component ") + c.name_ + " is not a member of the model");
-      for (ptrdiff_t b : c.layout_->blocks)
-        if (outside(at + b))
-          throw std::invalid_argument(std::string("vcix_cp: a block of ") + c.name_ + " lies outside the model object");
+      for (const std::vector<ptrdiff_t> *parts : {&c.layout_->blocks, &c.layout_->counters})
+        for (ptrdiff_t b : *parts)
+          if (outside(at + b))
+            throw std::invalid_argument(std::string("vcix_cp: a block or counter of ") + c.name_ + " lies outside the model object");
     }
   }
 
@@ -411,6 +408,12 @@ class Coprocessor : public Model {
   Component &unit(const vcix_insn &insn) const {
     if (const Component *c = owner(insn)) return const_cast<Component &>(*c);
     std::fprintf(stderr, "vcix_cp: instruction %08x has no unit\n", insn.bits);
+    std::abort();
+  }
+  // can_accept said insns() has room in this cycle: a full one means the simulator issued without asking.
+  static void enter(Component &c, const Insn &insn) {
+    if (c.insns_.push(insn)) return;
+    std::fprintf(stderr, "vcix_cp: instruction %08x issued to %s while its insns() was full\n", insn.bits, c.name_);
     std::abort();
   }
   // Ticks the clock until done(); a tick after which done() is false and c moved nothing repeats forever.
@@ -461,8 +464,9 @@ inline Cycle Block::now() const { return owner().now(); }
 inline bool Block::functional_model() const { return owner().functional_model(); }
 inline void Block::moved() const { owner().motion_++; }
 
-inline Port::Port(Component &c, const char *name, const char *unit_of_work, uint64_t width, Role role)
-    : Block(c, name), stats_(c.name(), Block::name_, unit_of_work, width, role) {}
+inline Counter::Counter(Component &c, const char *name, uint64_t capacity) : Counter(c.name(), intern(name), capacity) {
+  c.layout().counters.push_back(reinterpret_cast<char *>(this) - reinterpret_cast<char *>(&c));
+}
 
 inline Component::Component(Coprocessor &cp, const char *name)
     : name_(intern(name)), to_cp_(reinterpret_cast<char *>(&cp) - reinterpret_cast<char *>(this)) {

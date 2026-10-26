@@ -70,7 +70,7 @@ print_args prints the same split on Spike:
 
 A model says which instructions are its own with `{match, mask}` pairs. It
 owns an instruction when `(bits & mask) == match`
-([`include/coprocessor.h:117-123`](include/coprocessor.h)).
+([`include/coprocessor.h:108-114`](include/coprocessor.h)).
 
 - print_args owns `{0x5B, 0x7F}` and `{0x2B, 0x7F}`: the whole custom-2 and
   custom-1 opcodes
@@ -197,7 +197,7 @@ Most units do not write these methods themselves: a `cp::Coprocessor`
 derives all of them from its components' `cycle()`. The list is what a model
 written by hand implements, and what the engine does for you.
 
-The methods ([`vcix_cp_base.hpp:171-206`](include/vcix_cp_base.hpp)); "optional"
+The methods ([`vcix_cp_base.hpp:131-162`](include/vcix_cp_base.hpp)); "optional"
 ones have a default:
 
 - Both simulators
@@ -218,10 +218,9 @@ ones have a default:
   - `tick(now)`: one cycle of the unit's own time. Optional.
   - `ready(id, now)`: whether a result issued as `Unknown` is ready now. Must
     not change state. Optional.
-  - `ports()`: the `cp::Stats` counters that time the unit, one `PRIMARY`
-    per unit. gem5 reports each primary one as `vcix.<unit>.admitted`,
-    `capacity`, `cycles`, `occupancy` and `utilized_cycles`, and each
-    encoding's commits as `vcix.committed.<encoding>`. Optional.
+  - `counters()`: the model's `cp::Counter`s, its only statistics. gem5
+    reports each as `vcix.<group>.<name>`, and each encoding's commits as
+    `vcix.committed.<encoding>`. Optional.
 - `reset()`: back to the state `configure` left; statistics stay. Optional.
 - `check_layout(bytes)`: throws if the model keeps state outside its own
   object; asked before and after `configure`. Optional; the cp engine
@@ -272,14 +271,14 @@ refuses a table of another ABI version:
 
 ```
 $ build/timing_probe build/libother_abi.so 062541db 2
-.../libother_abi.so has ABI 13, the probe has 12
+.../libother_abi.so has ABI 14, the probe has 13
 ```
 
 ## The timing rules
 
 gem5 keeps these rules. The model can rely on them.
 
-**One cycle, in this order** ([`include/coprocessor.h:99`](include/coprocessor.h)):
+**One cycle, in this order** ([`include/coprocessor.h:90`](include/coprocessor.h)):
 
 ```mermaid
 sequenceDiagram
@@ -406,7 +405,7 @@ queue  [0 1]  ... [1 2]  ...           [2 3]  ...           []
 
 gem5 issues instructions before it knows they will run. After a mispredicted
 branch it takes them back. The model does not see this. The C++ layer keeps
-the rule for you ([`vcix_cp_base.hpp:208-263`](include/vcix_cp_base.hpp)):
+the rule for you ([`vcix_cp_base.hpp:164-182`](include/vcix_cp_base.hpp)):
 
 ```
 issue #1 ──► save a copy of the model ──► model.issue(#1)
@@ -596,7 +595,7 @@ One process can load more than one model. `tests/contract/same_name.cc`
 is built twice, both with a class named `Accel`. `direct` loads both and checks that each
 library keeps its own table and model, built hidden and built with the default
 visibility ([`direct.cc:61-69`](tests/contract/direct.cc)). The table is hidden
-whatever the flags ([`vcix_cp_base.hpp:389`](include/vcix_cp_base.hpp)).
+whatever the flags ([`vcix_cp_base.hpp:317`](include/vcix_cp_base.hpp)).
 
 The flag covers the code compiled with it. A static library linked into the
 model that was not built hidden also needs `-Wl,-Bsymbolic` on the model's
@@ -644,7 +643,8 @@ descriptions. Both are yours to keep in step.
 [`include/vcix_cp.hpp`](include/vcix_cp.hpp) derives both faces from one. A
 model is a `cp::Coprocessor`. Its members are `cp::Component`s, one per
 hardware block. A component writes one function, `cycle()`, over the blocks
-it holds (`cp::Port`, `cp::Queue<T>`, `cp::Pipeline<T>`). The engine routes
+it holds (`cp::Port`, `cp::Queue<T>`, `cp::Pipeline<T>`), and counts its
+statistics in `cp::Counter`s. The engine routes
 each instruction to its owner's input queue, ticks every component and every
 block once a cycle, and answers gem5's `ready` from the component's
 `complete`. On Spike it ticks the same cycles until the instruction completes,
@@ -663,8 +663,8 @@ memory are touched:
  |   +------------- cp::Component "SFU" --------------+   +-- "MISC" --+  ...    |
  |   | insns(): Queue<Insn>, 2 deep, 1 a cycle         |   | insns()    |        |
  |   | cycle(): pop / issue / take / push / complete|   | cycle() |        |
- |   | blocks: Port  Queue<T>  Pipeline<T>             |   | Port       |        |
- |   |         each one a unit in gem5's statistics    |   +------------+        |
+ |   | blocks: Port  Queue<T>  Pipeline<T>  (behavior) |   | Port       |        |
+ |   | Counter: the statistics                         |   +------------+        |
  |   | plain members: copyable values only             |                         |
  |   +-------------------------------------------------+                         |
  |                                                                               |
@@ -678,8 +678,8 @@ this way. The tpu units are described in
 
 ### A component's life
 
-([`vcix_cp.hpp:164-229`](include/vcix_cp.hpp); `complete` and `fault` at
-[`:459-466`](include/vcix_cp.hpp))
+([`vcix_cp.hpp:160-226`](include/vcix_cp.hpp); `complete` and `fault` at
+[`:477-484`](include/vcix_cp.hpp))
 
 - **The constructor** `Component(cp, name)`. `name` is the component as the
   statistics report it. Call `register_insn({match, mask, name})` here for
@@ -693,7 +693,7 @@ this way. The tpu units are described in
   component cannot take the instruction *this cycle*. Never a check of the
   program: a wrong instruction is accepted, and ends in `fault`. Default
   `true`. `can_accept` is `valid(insn) && !insns().full()`
-  ([`vcix_cp.hpp:326-330`](include/vcix_cp.hpp)).
+  ([`vcix_cp.hpp:320-324`](include/vcix_cp.hpp)).
 - **`cycle()`**: everything that moves. The one function you must write.
 - **`insns()`**: the component's input queue, a `Queue<Insn>`. The engine
   pushes an issued instruction here, and nothing else happens at issue. Its
@@ -711,56 +711,62 @@ this way. The tpu units are described in
   Spike's registers and memory, and aborts the run on gem5.
 
 `cp::Insn` is the simulator's `vcix_insn` (bits, `vl`, SEW, LMUL) with the
-`id` gem5 named it by ([`vcix_cp.hpp:33-35`](include/vcix_cp.hpp)).
+`id` gem5 named it by ([`vcix_cp.hpp:32-34`](include/vcix_cp.hpp)).
 
 ### The three blocks
 
 A block is a member of its component, constructed with the component
-(`*this`) and a name. Only the component's `PRIMARY` `Port` is a unit in gem5's
-statistics; the other blocks count inside the model.
+(`*this`) and a name. Blocks are behavior only: none is a statistic.
 
 ```
-Port              N per cycle pass; what passes is counted
-   ──►|N|──►        cp::Port entry_{*this, "entry", "instructions", 1, cp::Port::PRIMARY};
+Port              N per cycle pass
+   ──►|N|──►        cp::Port issue_{*this, "issue", 2};
 
 Queue<T>          a FIFO; a row pushed in t is visible from t+1
-  ─►[r0][r1][r2]─►  cp::Queue<Row> input_{*this, "input", "rows"};   input_.configure(capacity, per_cycle);
+  ─►[r0][r1][r2]─►  cp::Queue<Row> input_{*this, "input"};   input_.configure(capacity, per_cycle);
 
 Pipeline<T>       latency L, a new row every `interval` cycles, as gem5's MinorFU
-  ─►[s0]..[sL-1]─►  cp::Pipeline<Row> array_{*this, "array", "rows"};   array_.configure(L, 1);
+  ─►[s0]..[sL-1]─►  cp::Pipeline<Row> array_{*this, "array"};   array_.configure(L, 1);
 ```
 
-- **`Port`** ([`vcix_cp.hpp:69-91`](include/vcix_cp.hpp)): `available()`
-  is the width again in every new cycle, less what `utilize(n)` took in
-  this one. More than `available()` is a broken model: the run stops.
-  `occupy(n)` adds to its OCCUPANCY statistic; `set_width` is for `configure`
-  only. One port of a component is `PRIMARY`: its counts are the component's
-  own statistics. A component with any `Port` has exactly one `PRIMARY`.
-- **`Queue<T>`** ([`vcix_cp.hpp:97-158`](include/vcix_cp.hpp)):
-  `configure(capacity, per_cycle = UNLIMITED)`, both at least 1. `push(row)` when
-  `!full()`; `length()`, `front()` and `pop()` see
-  the row from the next cycle. A slot `pop` frees in t is free from t+1, so a
-  queue of depth 2W with W pushes a cycle sustains W a cycle. `size()` counts
-  every row, visible or not. A push when full, or a read with no visible row,
-  stops the run.
-- **`Pipeline<T>`** ([`vcix_cp.hpp:235-309`](include/vcix_cp.hpp)):
-  `configure(latency, interval)`, each 1 to `UINT32_MAX`. `push(row)`
-  when `available()`: no finished head waiting, and `interval` cycles
-  since the last push. A row pushed in t is finished from t+1+latency, once it
-  is the head: `length()` is 1. `front()` reads it; `pop()` removes
-  it, and the next row may be pushed in the same cycle. **While a finished head is not popped, nothing
-  in the pipeline moves** (MinorFU's stall). `idle()`: no row at all. On
-  Spike, `on_stage(&D::fn)` in the constructor runs `fn(row, k)` on each row
-  in each stage it passes.
+- **`Port`**: `available()` is the width again in every new cycle, less what
+  `utilize(n)` took in this one. `utilize(n)` past `available()` takes nothing
+  and returns `false`: the work waits. `set_width` is for `configure` only.
+- **`Queue<T>`**: `configure(capacity, per_cycle = UNLIMITED)`, both at least
+  1. `push(row)` returns `false` and leaves the row with the caller when
+  `full()`; `length()`, `front()` and `pop()` see the row from the next cycle.
+  A slot `pop` frees in t is free from t+1, so a queue of depth 2W with W
+  pushes a cycle sustains W a cycle. `size()` counts every row, visible or
+  not. A read with no visible row stops the run.
+- **`Pipeline<T>`**: `configure(latency, interval)`, each 1 to `UINT32_MAX`.
+  `push(row)` takes the row when `available()` (no finished head waiting, and
+  `interval` cycles since the last push), else returns `false`. A row pushed
+  in t is finished from t+1+latency, once it is the head: `length()` is 1.
+  `front()` reads it; `pop()` removes it, and the next row may be pushed in
+  the same cycle. **While a finished head is not popped, nothing in the
+  pipeline moves** (MinorFU's stall). `idle()`: no row at all. On Spike,
+  `on_stage(&D::fn)` in the constructor runs `fn(row, k)` on each row in each
+  stage it passes.
+
+A statistic is a **`cp::Counter`** `{*this, name, capacity = 0}`: `add(n)`
+counts, and the value only grows, through resets and squashes alike. A
+counter of capacity > 0 is a unit that does at most that much a cycle
+(TOGSim times it as `<COMPONENT>.<name>`); capacity 0 is a plain count.
+A component has any number; names are unique within it.
+
+```
+cp::Counter rows_{*this, "rows", 1};              rows_.add(1) where a row enters
+cp::Counter rows_in_flight_{*this, "rows_in_flight"};   rows_in_flight_.add(array_.size()) each cycle
+```
 
 ### One cycle, in this order
 
 In each cycle t gem5 calls `tick(t)`, then `ready`, `commit` and `squash`,
 then `can_accept` and `issue` ([the timing rules](#the-timing-rules)). The
 engine's `tick` is every component's `cycle()`, in construction order, then
-every block's own `cycle()` ([`vcix_cp.hpp:347-351`](include/vcix_cp.hpp)):
-a `Pipeline` ages its rows one stage or holds, a `Queue` adds its occupancy,
-a `Port` does nothing. What `cycle()` does is first seen here:
+every block's own `cycle()` ([`vcix_cp.hpp:341-345`](include/vcix_cp.hpp)):
+a `Pipeline` ages its rows one stage or holds; a `Queue` and a `Port` do
+nothing. What `cycle()` does is first seen here:
 
 | in `cycle()` | first seen |
 |---|---|
@@ -790,8 +796,8 @@ registration. `vcix_cp_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)` in
 
 ```
  insns()  Queue (2, 1)       in order, one accepted per cycle
-            | head, when eup.available()
- entry    Port (1)           PRIMARY -> the unit "SFU" in the statistics
+            | head, when eup.push() takes it
+ instructions  Counter (1)   counts it: the unit "SFU.instructions" in the statistics
             v
  eup      Pipeline (L, 1)    stage 0 -> stage 1 -> ... -> stage L-1
             | length() -> pop()
@@ -824,12 +830,15 @@ class ExpSfu : public cp::Component {
       values([&](const cp::Host &host) { exp_of(host, in); });
       complete(in);
     }
-    // 2. Then fill: the head instruction enters the EUP when it can take a row; a wrong one is a fault.
-    if (insns().length() && eup_.available()) {
-      const cp::Insn in = insns().pop();
-      entry_.utilize(1);
-      if (supported(in)) eup_.push(in);
-      else fault(in, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
+    // 2. Then fill: the head instruction enters the EUP when it takes a row; a wrong one is a fault there instead.
+    if (insns().length()) {
+      const cp::Insn &head = insns().front();
+      const bool wrong = !supported(head);
+      if (wrong ? eup_.available() : eup_.push(head)) {
+        if (wrong) fault(head, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
+        instructions_.add(1);
+        insns().pop();
+      }
     }
   }
 
@@ -843,8 +852,8 @@ class ExpSfu : public cp::Component {
     }
   }
 
-  cp::Port entry_{*this, "entry", "instructions", 1, cp::Port::PRIMARY};
-  cp::Pipeline<cp::Insn> eup_{*this, "eup", "instructions"};
+  cp::Counter instructions_{*this, "instructions", 1};
+  cp::Pipeline<cp::Insn> eup_{*this, "eup"};
 };
 
 class ExpSfuCP final : public cp::Coprocessor {
@@ -863,7 +872,7 @@ VCIX_CP_REGISTER(ExpSfuCP)
 Two things to notice. The order inside `cycle`: a finished `vexp` leaves the
 EUP before the next enters, so the pipeline never holds. And the wrong
 instruction: `supported` is asked at the head of `insns()`, not in `valid`.
-The instruction is accepted, spends the entry port, and ends in `fault`; both
+The instruction is accepted, takes the EUP's entry for its cycle, and ends in `fault`; both
 simulators then print its `why` and exit 1, gem5 as it commits, Spike as its
 `execute` returns.
 
@@ -885,8 +894,8 @@ table as gem5 does: A ready at 4, B at 5):
 | t | in `cycle()` | the EUP after `cycle()` | gem5 at t |
 |---|---|---|---|
 | 0 | nothing to do | empty | A accepted and issued; B refused, one a cycle |
-| 1 | A popped, `eup.push(A)`, `entry.utilize(1)` | A at age 1 | `insns().available(1)` = 2 − 0 − 1 = 1: B accepted and issued |
-| 2 | B popped, `eup.push(B)` | A 2, B 1 | |
+| 1 | `eup.push(A)`, A counted and popped | A at age 1 | `insns().available(1)` = 2 − 0 − 1 = 1: B accepted and issued |
+| 2 | `eup.push(B)`, B counted and popped | A 2, B 1 | |
 | 3 | nothing to do | A 3 = L, finished; B 2 | |
 | 4 | `eup.take` A, `values`, `complete(A)` | B 3, finished | `ready(A, 4)` true |
 | 5 | `eup.take` B, `complete(B)` | empty | `ready(B, 5)` true |
@@ -898,7 +907,7 @@ RTL copier in [`examples/rtl/copier`](examples/rtl/copier) as one component,
 87 lines. Copy it to start a unit that moves memory.
 
 ```cpp
-// examples/copier/copier.cc:19-32: three encodings; two ports and a queue of four; valid as the RTL wrapper's can_accept
+// examples/copier/copier.cc:19-32: three encodings; a counter, a port and a queue of four; valid as the RTL wrapper's can_accept
 explicit Copier(cp::Coprocessor &cp) : Component(cp, "COPIER") {
   register_insn(COPY_SOURCE); register_insn(COPY); register_insn(COPY_WAIT);
 }
@@ -906,17 +915,17 @@ void configure(const cp::Config &) override { commands_.configure(DEPTH); }     
 void reset() override { source_ = left_ = 0; waits_.clear(); }
 bool valid(const cp::Insn &) const override { return !insns().size() && commands_.size() < DEPTH; }
 
-// :35-46: one clock edge: a request of the running copy, or the head taken; the pending command in; then the waits
+// :35-45: one clock edge: a request of the running copy, or the head taken; the pending command in; then the waits
 void cycle() override {
-  if (left_) { memory_.utilize(1); left_--; }
+  if (left_) left_ -= memory_.utilize(1);
   else if (commands_.length() && is(COPY, commands_.pop())) left_ = 2 * BYTES / 8;           // 64 requests
-  if (insns().length() && !commands_.full()) enter(insns().pop());
+  if (insns().length() && commands_.push(insns().front())) enter(insns().pop());
   if (left_ || commands_.size()) return;
   for (const cp::Insn &wait : waits_) complete(wait);
   waits_.clear();
 }
 
-// :52-68: a source or a copy is ready as it enters the queue; on Spike its values happen then
+// :51-66: a source or a copy is ready as it enters the queue; on Spike its values happen then
 void enter(const cp::Insn &insn) {
   values([&](const cp::Host &host) {
     if (is(COPY_SOURCE, insn)) source_ = host.xreg(cp::rs1(insn));
@@ -925,15 +934,14 @@ void enter(const cp::Insn &insn) {
     for (uint64_t i = 0; i < BYTES; i += 8) { /* host.mem_read(source_ + i, ...), host.mem_write(to + i, ...) */ }
     source_ += BYTES;
   });
-  issue_.utilize(1);
-  commands_.push(insn);
+  instructions_.add(1);
   if (is(COPY_WAIT, insn)) waits_.push_back(insn); else complete(insn);
 }
 
-// :70-74: the blocks, then plain members
-cp::Port issue_{*this, "issue", "instructions", 1, cp::Port::PRIMARY};
-cp::Port memory_{*this, "memory", "requests", 1};
-cp::Queue<cp::Insn> commands_{*this, "commands", "commands"};
+// :68-72: the counter and the blocks, then plain members
+cp::Counter instructions_{*this, "instructions", 1};
+cp::Port memory_{*this, "memory", 1};
+cp::Queue<cp::Insn> commands_{*this, "commands"};
 uint64_t source_ = 0, left_ = 0;
 std::vector<cp::Insn> waits_;
 ```
@@ -975,29 +983,24 @@ the destination) prints `256 of 256 bytes copied` and exits 0. On gem5,
 makes that exit 0) and gives these statistics (gem5's descriptions cut):
 
 ```
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.admitted                3
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.capacity                1
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.cycles             111444
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.occupancy               0
-system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.utilized_cycles         3
+system.cpu.executeFuncUnits.funcUnits8.vcix.COPIER.instructions           3
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy_source          1
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy                 1
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.copy_wait            1
 ```
 
-One unit from the component: `COPIER` is its `PRIMARY` port `issue`. Its
-input queue, its queue of commands and the `REPORTING` port `memory_` count
-inside the model and are no statistic. How the units are counted is in
-[Statistics](#statistics) below.
+One counter from the component, `COPIER.instructions`. Its input queue, its
+queue of commands and the port `memory_` are behavior, no statistic. How the
+counters are reported is in [Statistics](#statistics) below.
 
 ### A pipeline, cycle by cycle
 
 The EUP of the tpu model's special-function unit is one `Pipeline` of
 `tpu_sfu_latency_cycles` (10) stages, with a `Queue` before it and one after
-([`examples/tpu/sfu.hpp:55-57,169-172`](examples/tpu/sfu.hpp)). At the head
+([`examples/tpu/sfu.hpp:55-57,168-171`](examples/tpu/sfu.hpp)). At the head
 of `insns()`, `sfu_push` pushes its register into `eup_input`; the component
 issues queued registers into the EUP one a cycle and moves finished ones into
-`eup_output`; `sfu_pop` pops one back ([`sfu.hpp:62-81,93-123`](examples/tpu/sfu.hpp)).
+`eup_output`; `sfu_pop` pops one back ([`sfu.hpp:62-81,93-122`](examples/tpu/sfu.hpp)).
 A push, then the pop that takes it, on gem5 with `tpu_trace: 1`:
 
 ```
@@ -1026,7 +1029,7 @@ keys are in [tpu: keys](examples/tpu/README.md).
 
 Spike has no clock of its own for the unit. `Coprocessor::execute` keeps one
 per instance and moves it only inside `execute`
-([`vcix_cp.hpp:354-365`](include/vcix_cp.hpp)):
+([`vcix_cp.hpp:348-359`](include/vcix_cp.hpp)):
 
 1. Tick until `can_accept`: `valid`, and a slot in `insns()`.
 2. Push the instruction into `insns()`.
@@ -1040,7 +1043,7 @@ The engine sees this: a tick after which the instruction is still not complete
 and **nothing in its component moved** (no push or pop, no pipeline row
 issued, aged or taken, no interval still running, no port utilized, no
 `complete`) looks the same as every tick after it. The run ends with exit 1
-and ([`vcix_cp.hpp:417-427`](include/vcix_cp.hpp)):
+and ([`vcix_cp.hpp:420-430`](include/vcix_cp.hpp)):
 
 ```
 vcix_cp: <instruction> waits, and nothing in its unit moves any more: on Spike, which runs each instruction to its end before the next, it never ends
@@ -1087,19 +1090,19 @@ gem5 copies the whole model before each issue and puts the copy back on a
 squash ([above](#squash-a-copy-and-the-cycles-since-run-again)). A
 `Coprocessor` is copyable by construction: components and blocks find each
 other by byte offset inside the model object, never by pointer
-([`vcix_cp.hpp:452-470`](include/vcix_cp.hpp)), so a copy's `cycle()` ticks
+([`vcix_cp.hpp:455-474`](include/vcix_cp.hpp)), so a copy's `cycle()` ticks
 the copy's own blocks ([`tests/contract/route_once.cc`](tests/contract/route_once.cc):
 a copy, an assigned copy and the original each reach the same cycle). The
 rules that keep it so:
 
 - Blocks are members of the model object, directly or inside a
   `std::optional`; never in a `std::vector`, never behind a pointer.
-  `check_layout` ([`vcix_cp.hpp:392-401`](include/vcix_cp.hpp)) refuses a
-  block or component outside the model object at create, before and after
-  `configure`: `vcix_cp: a block of <component> lies outside the model object`.
+  `check_layout` ([`vcix_cp.hpp:388-398`](include/vcix_cp.hpp)) refuses a
+  block, counter or component outside the model object at create, before and
+  after `configure`: `vcix_cp: a block or counter of <component> lies outside the model object`.
 - No pointer or reference to model state in a member: in a copy it points at
   the original. A reference member does not compile
-  ([`vcix_cp_base.hpp:211-212`](include/vcix_cp_base.hpp)); a raw pointer
+  ([`vcix_cp_base.hpp:167-168`](include/vcix_cp_base.hpp)); a raw pointer
   compiles and is wrong.
 - Components never read each other. `cycle()` is a function of the
   component's own state and `now`.
@@ -1110,24 +1113,24 @@ rules that keep it so:
 
 ### Statistics
 
-Every component is a unit in gem5's statistics, counted at its `PRIMARY`
-`Port`. The four kinds are the C ABI's ([`coprocessor.h:57-73`](include/coprocessor.h));
-gem5 adds `utilized_cycles` (`admitted / capacity`) to each unit and
-`vcix.committed.<encoding>` for each encoding, with every character outside
-`[A-Za-z0-9_]` turned into `_` ("copy source" is `copy_source`). The full name is
-`system.cpu.executeFuncUnits.funcUnits<N>.vcix.<unit>.<stat>`, `N` the
-accelerator unit's place in the pool (8 in the fixture).
+A model's statistics are its `cp::Counter`s, and nothing else: one C ABI
+entry `{group, name, capacity}` each ([`coprocessor.h:57-64`](include/coprocessor.h)),
+`group` the component's name, then one entry per encoding in group
+`committed` with capacity 0, its commits. gem5 prints each as one scalar,
+`system.cpu.executeFuncUnits.funcUnits<N>.vcix.<group>.<name>`, every character
+outside `[A-Za-z0-9_]` turned into `_` ("copy source" is `copy_source`), `N`
+the accelerator unit's place in the pool (8 in the fixture).
 
-| unit | ADMITTED | CAPACITY | CYCLES | OCCUPANCY |
-|---|---|---|---|---|
-| `<COMPONENT>`, its `PRIMARY` `Port` | `utilize`d | width | ticks | `occupy`d |
+| counter | capacity | read as |
+|---|---|---|
+| `rows`, `instructions`, `elements` | > 0: at most that much a cycle | value / capacity = cycles of pure streaming; TOGSim's unit `<COMPONENT>.<name>` |
+| `rows_in_flight`, `active_cycles` | 0 | a plain count |
 
-A `REPORTING` port, and a component's `insns()`, queues and pipelines, are no
-statistics: they count inside the model, and the table lists one unit per
-component. `cycles` is the ticks: the whole run, which for the copier exited at
-cycle 111444. Two units whose names collide once `_` replaces other characters
-are refused at create, as are two `PRIMARY` ports in one component
-([`vcix_cp_base.hpp:326-363`](include/vcix_cp_base.hpp)).
+Values only grow from create on: a reset keeps them, a squash takes back what
+the squashed instructions counted. Two groups, two counters of one group or two
+encodings whose names collide once `_` replaces other characters are refused
+at create, as is a group named `committed`
+([`vcix_cp_base.hpp:264-292`](include/vcix_cp_base.hpp)).
 
 ### Four rules keep the two faces together
 
@@ -1283,10 +1286,10 @@ Not goals:
 ```
 include/coprocessor.h      the C ABI: vcix_model, vcix_insn, vcix_config, vcix_host,
                           vcix_encoding, vcix_stat
-include/vcix_cp_base.hpp  the C++ layer, namespace cp: Model, Config, Host, Stats, Instance,
+include/vcix_cp_base.hpp  the C++ layer, namespace cp: Model, Config, Host, Counter, Instance,
                           VCIX_CP_REGISTER
-include/vcix_cp.hpp       the cp engine: Coprocessor, Component, and the blocks Port,
-                          Queue<T>, Pipeline<T>; a component's cycle() derives both faces
+include/vcix_cp.hpp       the cp engine: Coprocessor, Component, the blocks Port, Queue<T>,
+                          Pipeline<T>, and Counter; a component's cycle() derives both faces
 adapters/spike/           what the Spike branch does; its code is in the Spike repository
 adapters/gem5/            what the gem5 branch does; its code is in the gem5 repository
 examples/print_args/      the first example: a model, a program, a machine description,
@@ -1322,7 +1325,7 @@ tests/tpu/                the tpu example's timing on gem5; functional/: its val
 tests/tpuv6e/             the tpuv6e example's timing on gem5; functional/: its matrix
                           unit's values on Spike, against a formula
 tests/tpuv3/              the same, of the tpuv3 example
-tests/stats/              the tpu model's unit statistics in gem5's dumps
+tests/stats/              the tpu model's counters in gem5's dumps
 tests/rtl/                the examples/rtl models on both simulators; skipped when not built
 setup/                    the pinned environment: versions.env, the scripts that build it,
                           and the image
@@ -1402,7 +1405,7 @@ run it. The "Reproduce" sections above use them.
 
 ## Status
 
-- Interface: ABI version 12 (`COPROCESSOR_ABI_VERSION`). A simulator refuses a
+- Interface: ABI version 13 (`COPROCESSOR_ABI_VERSION`). A simulator refuses a
   model of another version. Each simulator carries a copy of
   `include/coprocessor.h` (Spike `riscv/coprocessor.h`, gem5
   `src/cpu/minor/coprocessor.h`) that must stay identical to this one;

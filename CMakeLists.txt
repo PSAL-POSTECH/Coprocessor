@@ -82,8 +82,8 @@ target_compile_definitions(cannot_be_made PRIVATE WHICH=3)
 # tests/contract: the checks that need no simulator.
 add_executable(direct tests/contract/direct.cc)
 target_link_libraries(direct PRIVATE vcix_cp ${CMAKE_DL_LIBS})
-add_executable(port_stats tests/contract/port_stats.cc)
-target_link_libraries(port_stats PRIVATE vcix_cp)
+add_executable(counters tests/contract/counters.cc)
+target_link_libraries(counters PRIVATE vcix_cp)
 add_executable(route_once tests/contract/route_once.cc)
 target_link_libraries(route_once PRIVATE vcix_cp)
 
