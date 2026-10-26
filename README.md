@@ -1256,7 +1256,7 @@ sudo setup/system.sh       # system packages
 setup/setup.sh -j 16       # toolchain, pk, spike, gem5, verilator, then this repository
 ```
 
-Everything lands under `/opt/vcix-env`. Set `VCIX_ENV_ROOT` to put it
+Everything lands under `/opt/coprocessor-env`. Set `COPROCESSOR_ENV_ROOT` to put it
 elsewhere, and keep it set when running. `setup/setup.sh spike repo` runs only
 those steps.
 

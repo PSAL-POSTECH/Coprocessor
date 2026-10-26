@@ -47,7 +47,7 @@ case "${1:-}" in
     [ "$OUTPUT" = --push ] || TAGS+=(-t "$REF")
     "$DOCKER" buildx build "$OUTPUT" "${TAGS[@]}" -f "$HERE/Dockerfile" \
       --build-arg BASE_IMAGE="$BASE_IMAGE" \
-      --build-arg VCIX_ENV_ROOT="$VCIX_ENV_ROOT" \
+      --build-arg COPROCESSOR_ENV_ROOT="$COPROCESSOR_ENV_ROOT" \
       --build-arg JOBS="$JOBS" \
       "$HERE"
     echo "$REF-$ARCH"

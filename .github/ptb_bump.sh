@@ -138,7 +138,7 @@ BODY="Moves \`$SUBMODULE\` from ${OLD:0:7} to $LABEL main $S ([compare]($COMPARE
 $LABEL commits in the range, oldest first:
 $LOG
 
-$ENV PTB's setup/versions.env derives VCIX_ENV_IMAGE from the submodule's setup/ tree, so nothing else in PTB moves with it.
+$ENV PTB's setup/versions.env derives COPROCESSOR_ENV_IMAGE from the submodule's setup/ tree, so nothing else in PTB moves with it.
 
 PTB-side changes the new $LABEL needs, if any, are not included.
 

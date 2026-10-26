@@ -37,4 +37,4 @@ strip_tree() {
 strip_tree "$SPIKE_PREFIX" "$TOOLCHAIN_ROOT/bin" "$TOOLCHAIN_ROOT/libexec" "$VERILATOR_PREFIX/bin"
 strip --strip-debug "$SPIKE_PREFIX"/lib/*.a
 
-du -sh "$VCIX_ENV_ROOT"/*
+du -sh "$COPROCESSOR_ENV_ROOT"/*
