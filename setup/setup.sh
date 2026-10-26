@@ -120,7 +120,7 @@ if want verilator; then
 fi
 
 if want repo; then
-  log "coprocessor"
+  log "Coprocessor"
   "$REPO/scripts/build.sh" -j "$JOBS"
 fi
 

@@ -1,4 +1,4 @@
-# coprocessor
+# Coprocessor
 
 You describe an accelerator once, as one shared library (a *model*). Spike runs
 it to get the values. gem5 runs the same library to get the time. Neither

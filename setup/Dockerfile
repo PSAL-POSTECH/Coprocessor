@@ -18,5 +18,5 @@ RUN /opt/vcix-setup/slim.sh
 
 FROM system
 COPY --from=slim ${VCIX_ENV_ROOT} ${VCIX_ENV_ROOT}
-LABEL org.opencontainers.image.source=https://github.com/PSAL-POSTECH/coprocessor
-LABEL org.opencontainers.image.description="Build and run environment for coprocessor: RISC-V toolchain, pk, Spike, gem5 and Verilator"
+LABEL org.opencontainers.image.source=https://github.com/PSAL-POSTECH/Coprocessor
+LABEL org.opencontainers.image.description="Build and run environment for Coprocessor: RISC-V toolchain, pk, Spike, gem5 and Verilator"
