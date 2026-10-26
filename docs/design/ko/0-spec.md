@@ -287,8 +287,7 @@ commit될 때(squash된 것은 commit되지 않습니다) `why`를 찍고 종료
 
 **Spike trap.** `values()` 안의 `mem_write`가 throw하면(pk demand paging) 모델은 반쯤 tick된 상태가 됩니다. 이제
 `export_model`이 실행 전 복사본으로 되돌리므로, Spike가 다시 실행하면 처음부터 한 번만 돕니다 [사실] `verify/probe2`:
-`effects after trap + one re-execute: 1 (1 expected)`(고치기 전 2). RTL wrapper도 같은 일을 합니다 [사실]
-`examples/rtl/rtl_model.hpp:226-238`. 비용은 Spike 명령마다 모델 복사 한 번입니다 [의견].
+`effects after trap + one re-execute: 1 (1 expected)`(고치기 전 2). 비용은 Spike 명령마다 모델 복사 한 번입니다 [의견].
 
 **테스트가 grep하는 Spike 메시지.** 모두 그대로 나옵니다. 아래에서 "verify"라고 적은 것은 일회용 가짜 Spike로 확인했습니다
 [사실].

@@ -50,7 +50,7 @@ The component has two modes, selected by `tpu_systolic_command_queue`. Both are 
 3. **Head work.**
    - Golden: `insns()` head; when it is done, the head is popped.
    - RTL: first `commands_` head, then the hop `insns()` → `commands_`.
-   - A vl-0 instruction completes at the hop and never enters, as the wrapper's `nothing()` (`rtl_model.hpp:254-257`).
+   - A vl-0 instruction completes at the hop and never enters, as in the wrapper's `issue` (`rtl_model.hpp:263-267`).
 4. **Array step.** If `enable && array_.length(t)`, the finished row goes to `output_`. If `enable && input_.length(t) &&
    array_.available(t)`, one row enters the array and `rows_.add(1)`; then `rows_in_flight_.add(array_.size())`.
 

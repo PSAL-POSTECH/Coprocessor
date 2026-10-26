@@ -54,7 +54,7 @@ assembler writes them:
 ```
 
 `cmd_op` is the number the module sees on its `cmd_op` port. It is a column
-of the table, not a field of the instruction (`systolic/systolic.cc:16-20`).
+of the table, not a field of the instruction (`systolic/systolic.cc:14-18`).
 
 <details><summary>Reproduce</summary>
 
@@ -71,22 +71,18 @@ riscv64-unknown-elf-objdump -d /tmp/timing.o | grep '5b\s'
 
 ## The ports
 
-A module has the ports it needs from this list. The table says which groups
-it has with three flags: `BEATS`, `SCALAR`, `MEM`.
+A module has these ports (`rtl_model.hpp:168-169`), besides `clk` and `rst`:
 
-- **command** (always): `cmd_valid` / `cmd_ready`, `cmd_op`. With `BEATS`
-  also `cmd_vl` and `cmd_tag`. With `SCALAR` also `cmd_x`, which is `x[rs1]`.
-- **in beats** (`BEATS`): `in_valid` / `in_ready`, `in_data`.
-- **out beats** (`BEATS`): `out_valid` / `out_ready`, `out_data`, `out_tag`,
+- **command**: `cmd_valid` / `cmd_ready`, `cmd_op`, `cmd_vl`, `cmd_tag`.
+- **in beats**: `in_valid` / `in_ready`, `in_data`.
+- **out beats**: `out_valid` / `out_ready`, `out_data`, `out_tag`,
   `out_last`.
-- **memory** (`MEM`): `mem_valid` / `mem_ready`, `mem_we`, `mem_addr`,
-  `mem_wdata`, `mem_rdata`. One request of 8 bytes at a time.
-- **busy** (always): the unit's state can still change without new input.
+- **busy**: the unit's state can still change without new input.
 
 The array's ports:
 
 ```
-systolic.sv  (BEATS)
+systolic.sv
   cmd_valid, cmd_ready
   cmd_op[1:0], cmd_vl[15:0], cmd_tag[7:0]
   in_valid, in_ready, in_data[L*8-1:0]
@@ -103,7 +99,7 @@ taken in order.
 
 The machine has `vpu_num_lanes` lanes, and each lane has its own vector
 registers. Beat `i` carries element `i` of every lane, lane `j` in byte `j`
-of the port (`rtl_model.hpp:350-353,366-367`, `put_byte` at `:152-158`).
+of the port (`rtl_model.hpp:212-215,226-227`, `put_byte` at `:144-150`).
 With `L=4` and a VLEN of 256 bits (32 bytes a register,
 `tests/tpu/functional/machine.yml`):
 
@@ -116,24 +112,22 @@ beat i on in_data[31:0] =  [31:24] d_i | [23:16] c_i | [15:8] b_i | [7:0] a_i
 ```
 
 A pop goes the other way: out beat `i`, byte `j`, lands in element `i` of
-`vd` in lane `j` (`rtl_model.hpp:387-389`). Only SEW 8 with format 0 (the
+`vd` in lane `j` (`rtl_model.hpp:248-250`). Only SEW 8 with format 0 (the
 `rs1` field) is accepted; anything else
 [ends the run](#messages-that-end-a-run).
 
 ### One clock
 
 Both simulators move the unit with the same function, `cycle()`
-(`rtl_model.hpp:394-428`):
+(`rtl_model.hpp:339-353`):
 
 ```
  set the inputs (cmd_*, in_*, out_ready)
  clk = 0, eval                      settle: outputs follow the inputs
- mem_valid?  serve 8 bytes           Spike: from host memory; gem5: zeros, at once
-             mem_ready = 1, eval
  sample: cmd fired = cmd_valid && cmd_ready
          in fired, out fired (+ out_data, out_tag, out_last), busy
  clk = 1, eval                      the edge: registers move
- clk = 0, eval, sample busy again    (busy_after)
+ clk = 0, eval                      settle again
 ```
 
 Ready, valid and `busy` depend only on registers, not on this cycle's inputs
@@ -147,22 +141,20 @@ Ready, valid and `busy` depend only on registers, not on this cycle's inputs
   ([an example](#the-limits)).
 - **Build `--savable` and keep no state outside what Verilator saves.** A
   copy of the unit is a Verilator save restored into a new instance
-  (`rtl_model.hpp:90-124`). gem5 needs copies to undo a squash, Spike to undo
+  (`rtl_model.hpp:88-116`). gem5 needs copies to undo a squash, Spike to undo
   a trap.
 
 ## Spike: a core infinitely faster than the unit
 
 Spike calls `execute` once per instruction. `execute` clocks the unit only
 until this instruction's command, beats and results are through, then writes
-`vd` and returns (`rtl_model.hpp:344-390`). Between two instructions nobody
+`vd` and returns (`rtl_model.hpp:207-251`). Between two instructions nobody
 clocks the unit. It does not move.
 
 The `[rtl]` line is printed at exit by every process that used an RTL unit
-(`rtl_model.hpp:76-86`): clocks; copies, each a whole Verilator save (one
+(`rtl_model.hpp:76-84`): clocks, and copies, each a whole Verilator save (one
 before each gem5 issue; on Spike one before every execute, the base layer's
-copy of the model that undoes a trap, `include/vcix_cp_base.hpp:330-339`,
-and one more before each execute of a `MEM` unit, the wrapper's own,
-`rtl_model.hpp:226-241`); and executes undone by a trap.
+copy of the model that undoes a trap, `include/vcix_cp_base.hpp:330-339`).
 
 A push returns once its beats are in the unit, before anything is computed.
 A later pop clocks the array until its results come out.
@@ -170,30 +162,26 @@ A later pop clocks the array until its results come out.
 ## gem5: one clock a cycle, no data
 
 gem5 calls `tick` every cycle, and `tick` clocks the unit once
-(`rtl_model.hpp:266-309`). No data moves: `in_data` is not set, `cmd_x` is 0,
-and a memory request is answered at once with zeros. gem5 learns only *when*
-things fire.
+(`rtl_model.hpp:273-305`). No data moves: `in_data` is not set. gem5 learns
+only *when* things fire.
 
 - `issue` returns `Unknown` for every instruction and queues its command.
   The instruction becomes `ready` in the cycle its last step fires:
   - with out beats (a pop): at its last out beat;
   - with only in beats (a push): when its last in beat fires;
-  - one that waits (an `Op` with `waits`): when `busy` falls and no older
-    beats are left;
-  - any other: when its command is taken;
-  - with beats but `vl` 0: at issue, without the unit.
+  - with `vl` 0: at issue, without the unit.
 - `can_accept` is true only when nothing else issued this cycle, no command
   is still waiting to be taken (one command is presented at a time),
-  `cmd_ready` is high, and a tag is free (`rtl_model.hpp:246-248`).
+  `cmd_ready` is high, and a tag is free (`rtl_model.hpp:255-257`).
 - `commit` prints one `[rtl]` line per instruction, so a squashed instruction
   prints nothing.
 - A squash is undone by the copy the generic `Instance` makes before each
   issue. It puts the copy back and runs the ticks and commits since again
   (`include/vcix_cp_base.hpp:163-181`); the commits run again print nothing
-  (`rtl_model.hpp:316`).
+  (`rtl_model.hpp:312`).
 - An out beat whose `out_tag` is not the oldest draining command's tag ends
   the run. So do more than 2^22 cycles in a row in which commands are left,
-  nothing fires and the unit is not busy (`rtl_model.hpp:285-308`).
+  nothing fires and the unit is not busy (`rtl_model.hpp:287-304`).
 
 ### A worked trace: `timing.S` on gem5
 
@@ -291,8 +279,8 @@ Spike runs one instruction to its end before the next, and clocks the unit
 only inside it. gem5 clocks the unit every cycle. For both to give the same
 values, a unit follows two rules:
 
-1. **Synchronize only by an instruction that waits by handshake**: a pop, or
-   an `Op` with `waits`. Polling a status scalar in a loop never ends on
+1. **Synchronize only by an instruction that waits by handshake**: a pop.
+   Polling a status scalar in a loop never ends on
    Spike, because no instruction of the loop clocks the unit.
 2. **Every state change that affects results goes through the ordered
    command and in streams.** The array's weight push waits in hardware for
@@ -376,7 +364,7 @@ spike_run build/libtpu.so /tmp/rtl-nowait.yml /tmp/overtake --kernel-addr=200000
 
 The default schedule clocks a unit as little as possible. `RTL_SCHEDULE`
 adds clocks after each instruction's beats, before `vd` is written
-(`rtl_model.hpp:380-386`):
+(`rtl_model.hpp:241-247`):
 
 ```
 one execute:  [ command | in beats | out beats ] [ gap ] write vd
@@ -384,7 +372,6 @@ one execute:  [ command | in beats | out beats ] [ gap ] write vd
   gap under the default            0 clocks
             slow                   until busy falls (at most 2^22)
             random:<seed>:<max>    the next xorshift value % (max + 1) clocks
-  an Op with waits                 until busy falls, whatever the schedule
 ```
 
 If the rules hold, the values do not change. `tests/rtl/run.sh` runs
@@ -426,7 +413,7 @@ Each of these came from a run:
   rtl_systolic: a beat came out with out_tag 2, but the oldest command with beats out is systolic pop vl=4, tag 1
   ```
 - The same library on Spike (`values.c`). Spike sends every command with tag
-  0 and checks it too (`rtl_model.hpp:364,372`):
+  0 and checks it too (`rtl_model.hpp:224,231`):
   ```
   rtl_systolic: a beat came out with out_tag 1, but the oldest command with beats out is systolic pop vl=6, tag 0
   ```
@@ -436,7 +423,7 @@ Each of these came from a run:
   rtl_systolic: only SEW 8, format 0 is in this RTL
   ```
 - A machine description with `vpu_num_lanes: 8` for the 4-lane array. The
-  table's `check` refuses it (`systolic/systolic.cc:20-26`). On Spike:
+  table's `check` refuses it (`systolic/systolic.cc:19-25`). On Spike:
   ```
   coprocessor: rtl_systolic: machine description: vpu_num_lanes: '8' is not the lanes this RTL was built with
   ```
@@ -485,18 +472,16 @@ gem5_run /tmp/m5-lanes8 build/librtl_systolic.so /tmp/lanes8.yml /tmp/timing
 
 The array is the template. Four steps.
 
-**1. The module.** Give it the ports it needs, and follow the two rules.
-`systolic.sv` has the command port with `cmd_vl` and `cmd_tag`, the in and
-out beats and `busy`. It is busy while rows are in its input queue or the
-array and its output queue has room (`systolic.sv:73`).
+**1. The module.** Give it [the ports](#the-ports), and follow the two
+rules. `systolic.sv` is busy while rows are in its input queue or the array
+and its output queue has room (`systolic.sv:73`).
 
-**2. The table.** A struct with these members (`systolic/systolic.cc:10-32`):
+**2. The table.** A struct with these members (`systolic/systolic.cc:10-31`):
 
 ```cpp
 struct Systolic {
   static constexpr const char *NAME = "rtl_systolic";
   static constexpr uint32_t LANES = SYSTOLIC_LANES, TAGS = 256;
-  static constexpr bool BEATS = true, SCALAR = false, MEM = false;
   static constexpr uint32_t FORM = 0xFE00707F;
   static constexpr rtl::Op OPS[] = {
       {0x2200305B, FORM, "systolic input push", 0, true, false},
@@ -510,18 +495,11 @@ using SystolicModel = rtl::Model<Vsystolic, Systolic>;
 VCIX_CP_REGISTER(SystolicModel)
 ```
 
-- `TAGS`: the command tags the unit tells apart; 0 without tag ports.
+- `TAGS`: the command tags the unit tells apart.
 - Each `rtl::Op`: `{match, mask}`, the name, `cmd_op`, beats in from `vs2`,
-  beats out to `vd`, `waits`.
+  beats out to `vd` (one or both).
 - `check(config)`: refuse a machine the RTL was not built for. The array's
-  refuses any `vpu_num_lanes` but its own (`systolic/systolic.cc:20-26`).
-
-An `Op` that waits has no beats; otherwise it would be ready twice. Give the
-pop `waits = true` and the build stops (`rtl_model.hpp:183-188`):
-
-```
-rtl_model.hpp:188:36: error: static assertion failed: an Op that waits has no beats: it would be ready twice
-```
+  refuses any `vpu_num_lanes` but its own (`systolic/systolic.cc:19-25`).
 
 **3. CMake.** `vcix_cp_add_rtl_model` exists only inside the
 `if(VCIX_RTL AND verilator_FOUND)` block of `CMakeLists.txt` (`:35-54`), so
@@ -559,7 +537,7 @@ tests/rtl/run.sh        # the checks below, also run by tests/run.sh; SKIP when 
 
 ```
 == spike: the array's values, libtpu.so and rtl_systolic
-[rtl] 171 clocks, 18 copies, 0 restored after a trap
+[rtl] 171 clocks, 18 copies
 the same 1536 bytes
 == gem5: the array's timing
 [rtl] systolic weight push vl=4: issued @6209, ready @6214 (5 cycles)
@@ -569,7 +547,7 @@ the same 1536 bytes
 [rtl] systolic input push vl=8: issued @6291, ready @6300 (9 cycles)
 [rtl] systolic pop vl=8: issued @6292, ready @6309 (17 cycles)
 exit: exiting with last active thread context at cycle 8069
-[rtl] 8074 clocks, 8 copies, 0 restored after a trap
+[rtl] 8074 clocks, 8 copies
 ```
 
 The 18 copies of the first run are one per Spike execute of `values.c`'s 18
@@ -607,8 +585,8 @@ What `tests/rtl/run.sh` covers:
 - The RTL keeps the low byte of each 32-bit sum (`systolic.sv:59`).
   `values.c` keeps its inputs and weights in [-3, 3], so every sum of four
   fits int8 (`values.c:3-4`).
-- Every copy is a whole Verilator save: one per gem5 issue, one per Spike
-  `execute`, and one more per Spike `execute` of a `MEM` unit.
+- Every copy is a whole Verilator save: one per gem5 issue and one per Spike
+  `execute`.
 
 <details><summary>Reproduce the row limit and the push before weights</summary>
 
