@@ -7,7 +7,7 @@ import yaml
 YAML_NULL = "tag:yaml.org,2002:null"
 
 
-# The machine description as vcix_config in include/vcix_accel.h defines it.
+# The machine description as vcix_config in include/coprocessor.h defines it.
 def machine_description(path):
     with open(path) as f:
         root = next(yaml.compose_all(f, Loader=yaml.SafeLoader), None)

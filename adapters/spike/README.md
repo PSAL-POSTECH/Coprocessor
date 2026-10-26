@@ -16,7 +16,7 @@ What the model must do is in the [root README](../../README.md). The gem5
 side is in [../gem5/README.md](../gem5/README.md).
 
 ```
-spike --extlib=<model.so> --isa=rv64gcv_zfh_xvcixaccel --machine-config=<machine.yml> \
+spike --extlib=<model.so> --isa=rv64gcv_zfh_xcoprocessor --machine-config=<machine.yml> \
       [--base-path=<dir>] [--kernel-addr=<start>:<end>] pk <program>
 ```
 
@@ -29,7 +29,7 @@ calls `execute` once, and the instruction is done when `execute` returns:
 sequenceDiagram
     participant P as program
     participant S as Spike hart
-    participant X as extension vcixaccel
+    participant X as extension coprocessor
     participant M as model .so
     P->>S: custom-1 / custom-2 instruction
     S->>X: dispatch (the model listed this encoding)
@@ -39,7 +39,7 @@ sequenceDiagram
     X->>S: vstart = 0, pc + 4
 ```
 
-`dispatch` is `riscv/vcix_accel_extension.cc:201-227`.
+`dispatch` is `riscv/coprocessor_extension.cc:201-227`.
 
 ## A worked run: print_args
 
@@ -88,9 +88,9 @@ spike_run build/libprint_args.so examples/print_args/machine.yml build/vcix
 ## 1. Loading the model
 
 `--extlib` opens the library with `dlopen(RTLD_NOW | RTLD_GLOBAL)`
-(`spike_main/spike.cc:451`). The extension `vcixaccel` is built into Spike and
-named in the ISA string. It finds `vcix_accel_model` with
-`dlsym(RTLD_DEFAULT, ...)` (`riscv/vcix_accel_extension.cc:45-77`). The run
+(`spike_main/spike.cc:451`). The extension `coprocessor` is built into Spike and
+named in the ISA string. It finds `coprocessor_model` with
+`dlsym(RTLD_DEFAULT, ...)` (`riscv/coprocessor_extension.cc:45-77`). The run
 ends, with the library's path and the reason, when:
 
 - no model is loaded;
@@ -103,15 +103,15 @@ The timing members of the table are not looked at. Four of these, run on
 `tests/contract/unowned.S`:
 
 ```
-$ spike --isa=rv64gcv_zfh_xvcixaccel ... pk unowned                       (no --extlib)
-vcixaccel: no accelerator model is loaded; give its library with --extlib=<model.so>
+$ spike --isa=rv64gcv_zfh_xcoprocessor ... pk unowned                       (no --extlib)
+coprocessor: no accelerator model is loaded; give its library with --extlib=<model.so>
 $ spike --extlib=build/libnull_table.so ...
-vcixaccel: .../libnull_table.so: vcix_accel_model() returned no table
+coprocessor: .../libnull_table.so: coprocessor_model() returned no table
 $ spike --extlib=build/libother_abi.so ...
-vcixaccel: .../libother_abi.so has ABI 12, Spike has 11
+coprocessor: .../libother_abi.so has ABI 13, Spike has 12
 $ spike --extlib=build/libcannot_be_made.so ...
 vcix_cp: the model cannot be made: no such unit can be built
-vcixaccel: .../libcannot_be_made.so: vcix_accel_model() returned no table
+coprocessor: .../libcannot_be_made.so: coprocessor_model() returned no table
 ```
 
 Each exits with 1. In the last one, the model's own C++ wrapper prints why
@@ -128,7 +128,7 @@ shows `reports`' own `f16_to_f32` losing to Spike's.
 ```
 source scripts/sim.sh
 rv_program tests/contract/unowned.S build/unowned
-$SPIKE --isa=rv64gcv_zfh_xvcixaccel --varch=vlen:256,elen:64 $PK build/unowned
+$SPIKE --isa=rv64gcv_zfh_xcoprocessor --varch=vlen:256,elen:64 $PK build/unowned
 for m in null_table other_abi cannot_be_made; do spike_run build/lib$m.so "" build/unowned; echo "exit $?"; done
 ```
 
@@ -137,7 +137,7 @@ for m in null_table other_abi cannot_be_made; do spike_run build/lib$m.so "" bui
 ## 2. Ownership
 
 The encodings the model lists are registered as the extension's instructions
-(`get_instructions`, `vcix_accel_extension.cc:155-163`). Spike refuses an
+(`get_instructions`, `coprocessor_extension.cc:155-163`). Spike refuses an
 extension whose encoding overlaps an instruction it implements itself,
 whichever is registered first (`refuse_overlap`, `riscv/processor.cc:1112-1122`).
 So a model cannot shadow a base instruction, or be shadowed by one. An
@@ -152,23 +152,23 @@ instruction.
 ## 3. Instances and reset
 
 There is one extension per hart, and one model instance per extension
-(`vcix_accel_extension.cc:139-199`). The instance is made from the machine
+(`coprocessor_extension.cc:139-199`). The instance is made from the machine
 description the first time the hart needs it. A hart reset resets every
 custom extension (`riscv/processor.cc:696-697`); the extension's `reset` makes
 the instance if there is none yet, then calls the model's `reset` if the table
-has one (`vcix_accel_extension.cc:148-153`).
+has one (`coprocessor_extension.cc:148-153`).
 
 A description the model refuses ends the run, with exit 1, the model's name
 and its reason. [The machine description](../../README.md#the-machine-description)
-in the root README shows one, `vcixaccel: reports: machine description: ...`.
+in the root README shows one, `coprocessor: reports: machine description: ...`.
 
 ## 4. Execute
 
 For custom-2, the vector unit must be on and `vtype` valid, and a form that
 reads `f[rs1]` (funct3 5) needs the floating-point unit on. Otherwise the
 instruction is illegal and the model is not called
-(`vcix_accel_extension.cc:209-213`). Then the model gets the bits, `vl`, SEW
-and LMUL, and a host (`vcix_accel_extension.cc:95-135`). The host:
+(`coprocessor_extension.cc:209-213`). Then the model gets the bits, `vl`, SEW
+and LMUL, and a host (`coprocessor_extension.cc:95-135`). The host:
 
 - reads and writes x registers, and reads f registers;
 - reads a CSR as the hart holds it, with no check of the privilege mode;
@@ -247,7 +247,7 @@ in `scripts/sim.sh` passes `--varch=vlen:256,elen:64` then.
 ```
 source scripts/sim.sh
 M='vpu_num_lanes: 4\nvpu_spad_size_kb_per_lane: 128\n'
-$SPIKE --extlib=build/libreports.so --isa=rv64gcv_zfh_xvcixaccel \
+$SPIKE --extlib=build/libreports.so --isa=rv64gcv_zfh_xcoprocessor \
   --machine-config=examples/print_args/machine.yml --varch=vlen:256,elen:64 $PK build/unowned
 printf 'vpu_num_lanes: 4\nvpu_vector_length_bits: 256\n' > build/nospad.yml
 printf "${M}vpu_vector_length_bits: 100\n" > build/vlen100.yml
@@ -363,8 +363,8 @@ it, and what happens when an instruction can never finish.
 
 ## The header and the branch's own tests
 
-Spike's `riscv/vcix_accel.h` is a copy of `include/vcix_accel.h`.
+Spike's `riscv/coprocessor.h` is a copy of `include/coprocessor.h`.
 `tests/contract/run.sh` ("one header") compares the two on every run, and the
 ABI version in the table is checked at load. The branch's own checks are in
 its `ci-tests/vcix/run.sh`: `--machine-config`, the scratchpad, the overlap
-refusal and the extension `vcixaccel`.
+refusal and the extension `coprocessor`.

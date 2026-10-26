@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include "vcix_accel.h"
+#include "coprocessor.h"
 
 namespace {
 
@@ -22,7 +22,7 @@ const char *nothing(void *, const char *) { return nullptr; }
 const vcix_model *load(const char *path) {
   void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!h) fprintf(stderr, "%s\n", dlerror()), exit(2);
-  return reinterpret_cast<const vcix_model *(*)()>(dlsym(h, "vcix_accel_model"))();
+  return reinterpret_cast<const vcix_model *(*)()>(dlsym(h, "coprocessor_model"))();
 }
 
 // One seed: "" when the two answered alike throughout, else the first difference.

@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=versions.env
 source "$HERE/versions.env"
 
-# Of Spike the installed binary is used, and riscv/vcix_accel.h of its source, which the tests compare with ours.
+# Of Spike the installed binary is used, and riscv/coprocessor.h of its source, which the tests compare with ours.
 rm -rf "$SPIKE_BUILD" "$SPIKE_ROOT/.git" "$PK_ROOT" "$VERILATOR_SRC"
 
 for tool in clang-check clang-repl clang-refactor clang-rename clang-scan-deps \

@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Proposes PTB's third_party/vcix-accelerator submodule at this repository's newest main commit whose tests passed
+# Proposes PTB's third_party/coprocessor submodule at this repository's newest main commit whose tests passed
 # and whose environment image is published (PTB's images are FROM it):
 # one branch (BUMP_BRANCH) force-pushed from the tip of PTB_BASE, one open pull request on it.
 # DRY_RUN=1 makes only read calls and prints the writes it would make.
 set -euo pipefail
 
-: "${SRC:=PSAL-POSTECH/vcix-accelerator}"
+: "${SRC:=PSAL-POSTECH/coprocessor}"
 : "${PTB:=PSAL-POSTECH/PyTorchSim-Triton-Backend}"
 : "${PTB_BASE:=main}"
 : "${BUMP_BRANCH:=bot/vcix-bump}"
-: "${SUBMODULE:=third_party/vcix-accelerator}"
-: "${IMAGE_REPO:=ghcr.io/psal-postech/vcix-accelerator}"
+: "${SUBMODULE:=third_party/coprocessor}"
+: "${IMAGE_REPO:=ghcr.io/psal-postech/coprocessor}"
 : "${DRY_RUN:=0}"
 : "${SRC_TOKEN:?read token for $SRC (contents, packages)}"
 : "${PTB_TOKEN:?write token for $PTB (contents, pull requests)}"
 : "${NEW:?the main commit this run tested}"
-LABEL=vcix-accelerator
+LABEL=coprocessor
 MARKER='<!-- vcix-bump -->'
 NAME='Wonhyuk Yang'
 EMAIL='wonhyuk@postech.ac.kr'

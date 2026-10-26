@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <map>
 
-#include "vcix_accel.h"
+#include "coprocessor.h"
 
 namespace {
 
@@ -40,7 +40,7 @@ int ready(void *self, vcix_id_t id, vcix_cycle_t now) {
 const vcix_encoding encodings[] = {{0x5B, 0x7F, "custom-2"}};
 
 const vcix_model table = {
-    VCIX_ACCEL_ABI_VERSION,
+    COPROCESSOR_ABI_VERSION,
     "by_hand",
     encodings,
     1,
@@ -61,4 +61,4 @@ const vcix_model table = {
 
 }  // namespace
 
-extern "C" __attribute__((visibility("default"))) const vcix_model *vcix_accel_model(void) { return &table; }
+extern "C" __attribute__((visibility("default"))) const vcix_model *coprocessor_model(void) { return &table; }

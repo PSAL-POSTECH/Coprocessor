@@ -120,7 +120,7 @@ if want verilator; then
 fi
 
 if want repo; then
-  log "vcix-accelerator"
+  log "coprocessor"
   "$REPO/scripts/build.sh" -j "$JOBS"
 fi
 

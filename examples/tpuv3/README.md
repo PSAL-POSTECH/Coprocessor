@@ -192,7 +192,7 @@ On gem5 the instruction is accepted and issued; the run ends with the same
 line, exit 1, when it commits. Here is one `vmatprep` on both:
 
 ```
-$ spike --extlib=build/libtpuv3.so --isa=rv64gcv_zfh_xvcixaccel \
+$ spike --extlib=build/libtpuv3.so --isa=rv64gcv_zfh_xcoprocessor \
     --machine-config=tests/tpu/functional/machine.yml pk prep
 tpu: vmatprep: an operand of an array of lanes x lanes is one register, with no upper half
 $ echo $?
@@ -286,7 +286,7 @@ refused when the model is made (`mxu.hpp:50-51`; `tests/tpuv3/run.sh`,
 asserted):
 
 ```
-src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libtpuv3.so: tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
+src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/libtpuv3.so: tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2
 ```
 
 ## A walk through `tests/tpuv3/mxu.S`

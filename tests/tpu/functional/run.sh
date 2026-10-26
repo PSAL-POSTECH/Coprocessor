@@ -33,7 +33,7 @@ done
 on_model() {
   local name=$1 options=(); shift
   while [ "$1" != -- ]; do options+=("$1"); shift; done; shift
-  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xvcixaccel --machine-config="$HERE/machine.yml" \
+  timeout 900 "$SPIKE" --extlib="$MODEL" --isa=rv64gcv_zfh_xcoprocessor --machine-config="$HERE/machine.yml" \
     --kernel-addr=$KERNEL_RANGE "${options[@]}" "$PK" "$OUT/$1" "${@:2}" < /dev/null > "$OUT/$name.out" 2> "$OUT/$name.err"
 }
 # The same machine, as the old Spike takes it.

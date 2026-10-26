@@ -347,7 +347,7 @@ leaves `insns()`, one cycle after its issue.
 
 [mvin.S](#running-the-examples-on-this-page), one `mvin`, with no machine
 description:
-`spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xvcixaccel --varch=vlen:256,elen:64 pk mvin`
+`spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xcoprocessor --varch=vlen:256,elen:64 pk mvin`
 (exit 1), and on gem5 with a description of `tpu_trace: 1` only (exit 1):
 
 ```
@@ -1229,7 +1229,7 @@ and access ports and its latency.
 ```
 funcUnits  0- 7  scalar: FP, Int, Int, IntMul, IntDiv, Pred, Mem, Misc       (IntAlu at 1, 2)
            8-15  scalar: the same                                             (IntAlu at 9, 10)
-          16     MinorVcixAccelFU: every custom-1 and custom-2 instruction, handed to the model
+          16     MinorCoprocessorFU: every custom-1 and custom-2 instruction, handed to the model
           17-44  vector: two groups of Config x2, Misc x2, LdStore x2, then two ALUs of
                  Adder, Multiplier, Divider, Reduce each
           45-46  two more IntAlu units ("Two more integer units" below)
@@ -1237,7 +1237,7 @@ funcUnits  0- 7  scalar: FP, Int, Int, IntMul, IntDiv, Pred, Mem, Misc       (In
 
 Where it differs from PyTorchSim's pool ([vpu_config.py:148-218](gem5/vpu_config.py#L148-L218)):
 
-- One `MinorVcixAccelFU` sits where PyTorchSim's pool has `SystolicArray`.
+- One `MinorCoprocessorFU` sits where PyTorchSim's pool has `SystolicArray`.
   It hands the model the instructions of PyTorchSim's `SystolicArray`
   (`CustomMatMul*`), `SpecialFunctionUnit` (`CustomV*`) and `CustomVlaneIdx`,
   and of the cross-lane units of the fork `student-Jungmin/PyTorchSim`
@@ -1372,7 +1372,7 @@ before `pk`, so a program with arguments is run with `spike` written out:
 clang --target=riscv64 -march=rv64gcv_xsfvcp -c tests/tpu/functional/kernels.S -o kernels.o
 riscv64-unknown-elf-gcc -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d \
     -Wl,--section-start=.kernel=0x2000000 -Itests/tpu/functional show.c kernels.o -o show
-spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xvcixaccel \
+spike --extlib=build/libtpu.so --isa=rv64gcv_zfh_xcoprocessor \
     --machine-config=tests/tpu/functional/machine.yml --kernel-addr=2000000:2100000 pk show matmul
 
 rv_program eup.S eup

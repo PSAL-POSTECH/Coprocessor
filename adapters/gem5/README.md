@@ -3,7 +3,7 @@
 This page shows how gem5 loads a model `.so` and drives its timing face. The
 code is not in this repository. It is on branch `vcix` of `PSAL-POSTECH/gem5`,
 on top of upstream gem5 `stable` (25.1.0.1, `f5c5a6e390`). The pinned release
-is `GEM5_RELEASE` in `setup/versions.env` (`vcix-v0.3.5`). File paths below
+is `GEM5_RELEASE` in `setup/versions.env` (`vcix-v0.3.6`). File paths below
 under `src/` are in that gem5 tree.
 
 The branch carries no accelerator. It hands every custom-1 and custom-2
@@ -37,7 +37,7 @@ sequenceDiagram
     participant Q as in-order queue
     participant C as Execute (commit)
     participant M as model .so
-    D->>E: class Vcix, OpClass VcixAccel, registers from the encoding
+    D->>E: class Vcix, OpClass Coprocessor, registers from the encoding
     E->>M: can_accept(insn)
     M-->>E: yes
     E->>M: issue(insn, id, now)
@@ -76,7 +76,7 @@ gem5's `Exec` trace of the same run shows both:
 
 ```
 6461000: system.cpu: T0 : 0x10214 @main+40    : flw fa0, 0(t1)             : FloatMemRead :  D=0xffffffff40200000 A=0x12058
-6461000: system.cpu: T0 : 0x10218 @main+44    : vcix 0x062541db <- a0      : VcixAccel :
+6461000: system.cpu: T0 : 0x10218 @main+44    : vcix 0x062541db <- a0      : Coprocessor :
 ```
 
 `tests/print_args/run.sh` asserts the latencies 7, 14 and 7, nine commits and
@@ -141,7 +141,7 @@ custom1 0x00b5002b <- a0,a1                  .insn r 0x2b, 0, 0, x0, a0, a1
 **custom-1** decodes to a second class, `AccelCustom1`
 (`decoder.isa:2067`, `vcix.hh:128-166`). That opcode has no operand rule of its
 own, so gem5 takes it as R-type on x registers: it reads `x[rs1]` and `x[rs2]`
-and writes nothing. Both classes have the OpClass `VcixAccel`.
+and writes nothing. Both classes have the OpClass `Coprocessor`.
 
 The model receives the instruction bits with `vl`, SEW and LMUL of the vector
 configuration the instruction was decoded under (`vcixInsn`,
@@ -149,13 +149,13 @@ configuration the instruction was decoded under (`vcixInsn`,
 
 ## 2. Loading the model
 
-A config adds a `MinorVcixAccelFU` to the MinorCPU's functional unit pool
+A config adds a `MinorCoprocessorFU` to the MinorCPU's functional unit pool
 (`src/cpu/minor/BaseMinorCPU.py:308-312`). Nothing else about the machine
 changes. Its parameters (`BaseMinorCPU.py:138-161`):
 
-- `vcixModel`: the model `.so`.
-- `vcixConfigKeys`, `vcixConfigValues`: the machine description, as two lists.
-- `vcixMaxInFlight` (8192): see [Issue](#3-issue).
+- `coprocessorModel`: the model `.so`.
+- `coprocessorConfigKeys`, `coprocessorConfigValues`: the machine description, as two lists.
+- `coprocessorMaxInFlight` (8192): see [Issue](#3-issue).
 - `vcixReadyWarnCycles` (1000000, 0 for never): see
   [Result not known at issue](#6-result-not-known-at-issue).
 
@@ -165,10 +165,10 @@ fixture's pool (`examples/gem5_se.py:29-38`):
 ```python
 class ExampleFUPool(MinorFUPool):
     funcUnits = MinorDefaultFUPool.funcUnits + [
-        MinorVcixAccelFU(
-            vcixModel=args.model,
-            vcixConfigKeys=list(settings.keys()),
-            vcixConfigValues=list(settings.values()),
+        MinorCoprocessorFU(
+            coprocessorModel=args.model,
+            coprocessorConfigKeys=list(settings.keys()),
+            coprocessorConfigValues=list(settings.values()),
             **bound,
         )
         for _ in range(args.units)
@@ -197,10 +197,10 @@ its configuration twice, and each unit sees one of the two commits:
 both counts.
 
 **What is refused, and how it reads.** gem5 loads each library path once
-(`VcixAccelModel::load`, `src/cpu/minor/vcix_accel_model.cc:202-231`) and stops
+(`CoprocessorModel::load`, `src/cpu/minor/coprocessor_model.cc:202-231`) and stops
 with `fatal` when:
 
-- a unit takes `VcixAccel` instructions but names no `vcixModel`
+- a unit takes `Coprocessor` instructions but names no `coprocessorModel`
   (`execute.cc:147`);
 - the library hands over no table, or a table of another ABI version;
 - the table leaves `create`, `destroy`, `can_accept`, `issue`, `squash` or
@@ -213,8 +213,8 @@ Two of them, from runs of `tests/contract/unowned.S` (a refused description
 reads as in [the root README](../../README.md#the-machine-description)):
 
 ```
-src/cpu/minor/vcix_accel_model.cc:220: fatal: fatal condition !model occurred: .../libnull_table.so: vcix_accel_model() returned no table
-src/cpu/minor/vcix_accel_model.cc:221: fatal: fatal condition model->abi_version != VCIX_ACCEL_ABI_VERSION occurred: .../libother_abi.so has ABI 12, gem5 has 11
+src/cpu/minor/coprocessor_model.cc:220: fatal: fatal condition !model occurred: .../libnull_table.so: coprocessor_model() returned no table
+src/cpu/minor/coprocessor_model.cc:221: fatal: fatal condition model->abi_version != COPROCESSOR_ABI_VERSION occurred: .../libother_abi.so has ABI 13, gem5 has 12
 ```
 
 A description whose top level is not a mapping stops in the config script:
@@ -228,14 +228,14 @@ and the not-a-mapping cases ("machine description", "model table and
 instances"). The other-ABI line is from the run below.
 
 **Symbols.** gem5 opens a model with `dlopen(RTLD_NOW | RTLD_LOCAL)`
-(`vcix_accel_model.cc:212`), not `RTLD_DEEPBIND`. gem5 exports its own
+(`coprocessor_model.cc:212`), not `RTLD_DEEPBIND`. gem5 exports its own
 symbols, so a model's *visible* definition of a name gem5 also defines loses to
 gem5's. Build models hidden:
 [Build with hidden visibility](../../README.md#build-with-hidden-visibility).
 
 **The header.** gem5 keeps a copy of the interface header at
-`src/cpu/minor/vcix_accel.h`. It must stay byte-identical to
-`include/vcix_accel.h` here. At `vcix-v0.3.5` it is. No test compares the gem5
+`src/cpu/minor/coprocessor.h`. It must stay byte-identical to
+`include/coprocessor.h` here. At `vcix-v0.3.6` it is. No test compares the gem5
 copy; the ABI version check at load is what catches a mismatch.
 
 <details><summary>Reproduce</summary>
@@ -257,12 +257,12 @@ gem5_run build/m5-notmap build/libreports.so build/notmap.yml build/unowned
 ## 3. Issue
 
 `Execute::issue` asks the model in the same chain of conditions that keeps any
-instruction from issuing (`execute.cc:795-861`). For a `VcixAccel`
+instruction from issuing (`execute.cc:795-861`). For a `Coprocessor`
 instruction and one accelerator unit of the pool, the chain ends like this:
 
 ```mermaid
 flowchart TD
-    A[VcixAccel instruction, unit U] --> B{U has vcixMaxInFlight<br/>instructions queued?}
+    A[Coprocessor instruction, unit U] --> B{U has coprocessorMaxInFlight<br/>instructions queued?}
     B -- yes --> W1["try the next unit, U's model is not asked"]
     B -- no --> C{another unit's model<br/>owns it?}
     C -- yes --> W2[try the next unit]
@@ -283,7 +283,7 @@ flowchart TD
 - An instruction no model owns goes through untold, with latency 0. It becomes
   an illegal instruction at commit ([Commit](#4-commit)).
 
-**`vcixMaxInFlight`.** A unit with that many instructions in the in-order
+**`coprocessorMaxInFlight`.** A unit with that many instructions in the in-order
 queue gets no more, and its model is not asked. The queue is sized to hold that
 many for each unit (`execute.cc:217`); a model that accepts without limit would
 otherwise outgrow it. `tests/contract/forty.S` runs 40 owned instructions on
@@ -350,7 +350,7 @@ exit: m5_exit instruction encountered, code 0
 
 An issue line with no commit line after it is an instruction that was
 squashed: every issued instruction gets one commit or is squashed
-(`include/vcix_accel.h:97`). `tests/contract/run.sh`
+(`include/coprocessor.h:97`). `tests/contract/run.sh`
 ("processor state") asserts the one commit of `2825c1db`, none of `2c2552db`,
 and exit 0.
 
@@ -449,7 +449,7 @@ unit suffix; the last three lines' descriptions are left out.)
 
 **Reset.** The model's counters only grow. At a reset gem5 stores them as a
 base, and a dump shows `value - base`, except `capacity`, which is a constant
-(`vcix_accel_model.cc:182-199`). Admitted rows, input pushes and pops in the
+(`coprocessor_model.cc:182-199`). Admitted rows, input pushes and pops in the
 five windows:
 
 ```
@@ -467,7 +467,7 @@ of the five units `cycles` equals `system.cpu.numCycles` in every dump.
 (`BaseMinorCPU.py:141-145`). The cycles in which any FU of the unit is occupied
 print as `system.cpu.units.<unit>.{admitted,capacity,cycles,utilized_cycles}`,
 in the same shape as a model's unit. An FU that names both a `unit` and a
-`vcixModel` is fatal: a VCIX unit is counted by its model
+`coprocessorModel` is fatal: a VCIX unit is counted by its model
 (`execute.cc:2246-2248`). `tests/stats/run.sh` ("vector unit busy cycles")
 checks `system.cpu.units.Vpu` on the tpu machine of `examples/tpu/gem5/`.
 

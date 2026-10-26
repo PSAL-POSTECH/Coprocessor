@@ -1,4 +1,4 @@
-// C++ face of vcix_accel.h: subclass Model, then VCIX_CP_REGISTER(YourModel). The cp engine (vcix_cp.hpp) is built on it.
+// C++ face of coprocessor.h: subclass Model, then VCIX_CP_REGISTER(YourModel). The cp engine (vcix_cp.hpp) is built on it.
 #pragma once
 
 #include <charconv>
@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "vcix_accel.h"
+#include "coprocessor.h"
 
 namespace cp {
 
@@ -396,7 +396,7 @@ __attribute__((visibility("hidden"))) const vcix_model *export_model() {
     return Description{asked.name(), asked.owns()};
   }();
   static const vcix_model table = {
-      VCIX_ACCEL_ABI_VERSION,
+      COPROCESSOR_ABI_VERSION,
       description.name,
       description.encodings.data(),
       description.encodings.size(),
@@ -459,7 +459,7 @@ __attribute__((visibility("hidden"))) const vcix_model *export_model_or_null() {
 }  // namespace cp
 
 #define VCIX_CP_REGISTER(ModelClass)                                                    \
-  extern "C" __attribute__((visibility("default"))) const vcix_model *vcix_accel_model(void) { \
+  extern "C" __attribute__((visibility("default"))) const vcix_model *coprocessor_model(void) { \
     return cp::export_model_or_null<ModelClass>();                                 \
   }
 

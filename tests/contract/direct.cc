@@ -7,7 +7,7 @@
 #include <map>
 #include <string>
 
-#include "vcix_accel.h"
+#include "coprocessor.h"
 
 namespace {
 
@@ -28,7 +28,7 @@ void expect(bool ok, const std::string &what) {
 const vcix_model *table(const std::string &library) {
   const std::string path = directory + "/lib" + library + ".so";
   void *lib = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-  void *entry = lib ? dlsym(lib, "vcix_accel_model") : nullptr;
+  void *entry = lib ? dlsym(lib, "coprocessor_model") : nullptr;
   if (!entry) {
     fprintf(stderr, "%s: %s\n", path.c_str(), dlerror());
     exit(2);

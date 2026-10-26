@@ -41,9 +41,9 @@ printf 'latency: 100\n' > "$BUILD/slow.yml"
 
 echo "-- one header"
 log="$BUILD/header.log"
-cmp "$REPO/include/vcix_accel.h" "$SPIKE_ROOT/riscv/vcix_accel.h" > "$log" 2>&1; rc=$?
+cmp "$REPO/include/coprocessor.h" "$SPIKE_ROOT/riscv/coprocessor.h" > "$log" 2>&1; rc=$?
 ended 0
-verdict "Spike's copy of vcix_accel.h, in $SPIKE_ROOT/riscv, is this repository's"
+verdict "Spike's copy of coprocessor.h, in $SPIKE_ROOT/riscv, is this repository's"
 
 echo "-- ownership"
 for sim in spike gem5; do
@@ -119,12 +119,12 @@ done
 for sim in spike gem5; do
   run $sim null_table null_table "" pair
   ended 1
-  part 1 "libnull_table.so: vcix_accel_model() returned no table"
+  part 1 "libnull_table.so: coprocessor_model() returned no table"
   verdict "$sim refuses a library that hands over no table"
 done
 run spike other_abi other_abi "" pair
 ended 1
-part 1 "libother_abi.so has ABI 12, Spike has 11"
+part 1 "libother_abi.so has ABI 13, Spike has 12"
 verdict "spike refuses a table of another ABI version"
 run spike cannot_be_made cannot_be_made "" pair
 ended 1
@@ -144,7 +144,7 @@ ended 0
 part + "[model] issue $OWNED, 3 in flight, "
 part 0 ", 4 in flight, "
 line 1 "[model] commit $OWNED, 0 in flight, 40 commits seen"
-verdict "gem5 with vcixMaxInFlight 4 asks the model with three in flight and never with four"
+verdict "gem5 with coprocessorMaxInFlight 4 asks the model with three in flight and never with four"
 
 run gem5 in-flight-default reports "$BUILD/slow.yml" forty
 ended 0

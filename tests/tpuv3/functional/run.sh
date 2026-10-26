@@ -34,7 +34,7 @@ printf 'vpu_num_lanes: 8\nvpu_spad_size_kb_per_lane: 512\nvpu_vector_length_bits
 # on_model <name> <model> <machine.yml> -- <program> [arguments]: standard output to $OUT/<name>.out.
 on_model() {
   local name=$1 model=$2 machine=$3; shift 4
-  timeout 900 "$SPIKE" --extlib="$BUILD/lib$model.so" --isa=rv64gcv_zfh_xvcixaccel --machine-config="$machine" \
+  timeout 900 "$SPIKE" --extlib="$BUILD/lib$model.so" --isa=rv64gcv_zfh_xcoprocessor --machine-config="$machine" \
     --kernel-addr=$KERNEL_RANGE "$PK" "$OUT/$1" "${@:2}" < /dev/null > "$OUT/$name.out" 2> "$OUT/$name.err"
 }
 # formula <name> <model> <machine.yml> <program> <what>: the run as the formula says, exit 0.

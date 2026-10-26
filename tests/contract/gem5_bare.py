@@ -12,7 +12,7 @@ args = parser.parse_args()
 
 
 class BareFUPool(MinorFUPool):
-    funcUnits = MinorDefaultFUPool.funcUnits + [MinorVcixAccelFU(vcixModel=args.model)]
+    funcUnits = MinorDefaultFUPool.funcUnits + [MinorCoprocessorFU(coprocessorModel=args.model)]
 
 
 system = System()

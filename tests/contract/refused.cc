@@ -23,8 +23,8 @@ class CannotBeMade : public Model {
 
 VCIX_CP_REGISTER(CannotBeMade)
 #else
-extern "C" __attribute__((visibility("default"))) const vcix_model *vcix_accel_model(void) {
-  static const vcix_model other_abi = {VCIX_ACCEL_ABI_VERSION + 1};
+extern "C" __attribute__((visibility("default"))) const vcix_model *coprocessor_model(void) {
+  static const vcix_model other_abi = {COPROCESSOR_ABI_VERSION + 1};
   return WHICH == 1 ? nullptr : &other_abi;
 }
 #endif

@@ -1,4 +1,4 @@
-# vcix-accelerator
+# coprocessor
 
 You describe an accelerator once, as one shared library (a *model*). Spike runs
 it to get the values. gem5 runs the same library to get the time. Neither
@@ -70,7 +70,7 @@ print_args prints the same split on Spike:
 
 A model says which instructions are its own with `{match, mask}` pairs. It
 owns an instruction when `(bits & mask) == match`
-([`include/vcix_accel.h:117-123`](include/vcix_accel.h)).
+([`include/coprocessor.h:117-123`](include/coprocessor.h)).
 
 - print_args owns `{0x5B, 0x7F}` and `{0x2B, 0x7F}`: the whole custom-2 and
   custom-1 opcodes
@@ -162,8 +162,8 @@ absolute cycles above come from one run of `examples/print_args/run.sh`.
 ## The C ABI and its two faces
 
 The boundary is a C struct of function pointers, `vcix_model`, in
-[`include/vcix_accel.h`](include/vcix_accel.h). A library exports one symbol,
-`vcix_accel_model()`, which returns it. A model needs neither simulator's
+[`include/coprocessor.h`](include/coprocessor.h). A library exports one symbol,
+`coprocessor_model()`, which returns it. A model needs neither simulator's
 source tree.
 
 ```
@@ -235,7 +235,7 @@ through `host`: `lanes()`, `vlen_bits()`, `vreg(lane, reg)`,
 `mem_write` ([`vcix_cp_base.hpp:80-102`](include/vcix_cp_base.hpp)).
 
 **Instances.** A simulator makes one object per instance of the accelerator:
-Spike one per hart, gem5 one per `MinorVcixAccelFU`. Instances share nothing.
+Spike one per hart, gem5 one per `MinorCoprocessorFU`. Instances share nothing.
 A model's state belongs in the object's members: a static or a global is
 shared by every instance in the process. `tests/contract` runs gem5 with two
 units naming one library, and each instance sees only its own commit
@@ -272,14 +272,14 @@ refuses a table of another ABI version:
 
 ```
 $ build/timing_probe build/libother_abi.so 062541db 2
-.../libother_abi.so has ABI 12, the probe has 11
+.../libother_abi.so has ABI 13, the probe has 12
 ```
 
 ## The timing rules
 
 gem5 keeps these rules. The model can rely on them.
 
-**One cycle, in this order** ([`include/vcix_accel.h:99`](include/vcix_accel.h)):
+**One cycle, in this order** ([`include/coprocessor.h:99`](include/coprocessor.h)):
 
 ```mermaid
 sequenceDiagram
@@ -345,9 +345,9 @@ The fifth waits for the first commit, and every one commits 10 cycles after
 its issue. [`tests/pipeline/run.sh`](tests/pipeline/run.sh) asserts "3 in
 flight" at least once, "4 in flight" never, and six commits at 10.
 
-gem5 also bounds the model: a unit that already has `vcixMaxInFlight`
+gem5 also bounds the model: a unit that already has `coprocessorMaxInFlight`
 instructions in the processor (8192 unless the CPU config sets it) is issued
-no more, and its model is not asked. With `vcixMaxInFlight` 4, gem5 asks the
+no more, and its model is not asked. With `coprocessorMaxInFlight` 4, gem5 asks the
 model with three in flight and never with four
 ([`tests/contract/run.sh:141-147`](tests/contract/run.sh); where gem5 checks it:
 [gem5 adapter, Issue](adapters/gem5/README.md#3-issue)).
@@ -558,8 +558,8 @@ message that names the model, the key and the value. With
 `latency: 8 cycles` in the description of the `reports` model:
 
 ```
-Spike:  vcixaccel: reports: machine description: latency: '8 cycles' is not an unsigned decimal number
-gem5:   src/cpu/minor/vcix_accel_model.cc:257: fatal: <build>/libreports.so: reports: machine description: latency: '8 cycles' is not an unsigned decimal number
+Spike:  coprocessor: reports: machine description: latency: '8 cycles' is not an unsigned decimal number
+gem5:   src/cpu/minor/coprocessor_model.cc:257: fatal: <build>/libreports.so: reports: machine description: latency: '8 cycles' is not an unsigned decimal number
 ```
 
 ([`tests/contract/run.sh:72-76`](tests/contract/run.sh).) A model that reads a
@@ -575,7 +575,7 @@ A description whose top level is not a mapping is refused by both simulators
 Build the model with `-fvisibility=hidden -fvisibility-inlines-hidden` (in
 CMake, `CXX_VISIBILITY_PRESET hidden`, as
 [`CMakeLists.txt:11-15`](CMakeLists.txt) does). `VCIX_CP_REGISTER` exports
-the one symbol a simulator looks up, `vcix_accel_model`, by itself, so nothing
+the one symbol a simulator looks up, `coprocessor_model`, by itself, so nothing
 else has to be marked.
 
 A symbol the library leaves visible is not its own any more. Both simulators
@@ -1111,7 +1111,7 @@ rules that keep it so:
 ### Statistics
 
 Every component is a unit in gem5's statistics, counted at its `PRIMARY`
-`Port`. The four kinds are the C ABI's ([`vcix_accel.h:57-73`](include/vcix_accel.h));
+`Port`. The four kinds are the C ABI's ([`coprocessor.h:57-73`](include/coprocessor.h));
 gem5 adds `utilized_cycles` (`admitted / capacity`) to each unit and
 `vcix.committed.<encoding>` for each encoding, with every character outside
 `[A-Za-z0-9_]` turned into `_` ("copy source" is `copy_source`). The full name is
@@ -1217,33 +1217,33 @@ You configure, per run, only where the model is. These are the two command
 lines [`scripts/sim.sh:32-42`](scripts/sim.sh) uses:
 
 ```
-spike --extlib=build/libprint_args.so --isa=rv64gcv_zfh_xvcixaccel \
+spike --extlib=build/libprint_args.so --isa=rv64gcv_zfh_xcoprocessor \
       --machine-config=examples/print_args/machine.yml  <pk> build/vcix
 
 gem5.opt -d build/m5out examples/gem5_se.py --model build/libprint_args.so \
       --config examples/print_args/machine.yml  build/vcix
 ```
 
-- **Spike**: the ISA suffix `_xvcixaccel` turns the adapter on, `--extlib`
+- **Spike**: the ISA suffix `_xcoprocessor` turns the adapter on, `--extlib`
   names the model, `--machine-config` gives the description.
-- **gem5**: the CPU's functional unit pool gets one `MinorVcixAccelFU`. Its
-  `vcixModel` names the model; `vcixConfigKeys` and `vcixConfigValues` carry
+- **gem5**: the CPU's functional unit pool gets one `MinorCoprocessorFU`. Its
+  `coprocessorModel` names the model; `coprocessorConfigKeys` and `coprocessorConfigValues` carry
   the description. From [`examples/gem5_se.py:29-38`](examples/gem5_se.py):
 
   ```python
   class ExampleFUPool(MinorFUPool):
       funcUnits = MinorDefaultFUPool.funcUnits + [
-          MinorVcixAccelFU(
-              vcixModel=args.model,
-              vcixConfigKeys=list(settings.keys()),
-              vcixConfigValues=list(settings.values()),
+          MinorCoprocessorFU(
+              coprocessorModel=args.model,
+              coprocessorConfigKeys=list(settings.keys()),
+              coprocessorConfigValues=list(settings.values()),
               **bound,
           )
           for _ in range(args.units)
       ]
   ```
 
-`MinorVcixAccelFU` is defined in the gem5 branch, beside gem5's own units. A
+`MinorCoprocessorFU` is defined in the gem5 branch, beside gem5's own units. A
 machine's CPU config stays where it lives and gains that one unit.
 `examples/gem5_se.py` is only a fixture, for the example and the tests: gem5's
 default pool plus the one unit. `examples/tpu/gem5/`, `examples/tpuv6e/gem5/`
@@ -1268,7 +1268,7 @@ model, and what they do instead is wrong rather than an error: see
   MMIO plug-in interface, not the ones an extension needs, and a model that
   subclasses simulator types would have to be built against both simulator
   source trees. A plain C boundary keeps the model independent of both, and
-  leaves room for models in other languages. `include/vcix_accel.h` is the
+  leaves room for models in other languages. `include/coprocessor.h` is the
   contract for such a model and for an adapter.
 
 Not goals:
@@ -1281,7 +1281,7 @@ Not goals:
 ## Layout
 
 ```
-include/vcix_accel.h      the C ABI: vcix_model, vcix_insn, vcix_config, vcix_host,
+include/coprocessor.h      the C ABI: vcix_model, vcix_insn, vcix_config, vcix_host,
                           vcix_encoding, vcix_stat
 include/vcix_cp_base.hpp  the C++ layer, namespace cp: Model, Config, Host, Stats, Instance,
                           VCIX_CP_REGISTER
@@ -1402,10 +1402,10 @@ run it. The "Reproduce" sections above use them.
 
 ## Status
 
-- Interface: ABI version 11 (`VCIX_ACCEL_ABI_VERSION`). A simulator refuses a
+- Interface: ABI version 12 (`COPROCESSOR_ABI_VERSION`). A simulator refuses a
   model of another version. Each simulator carries a copy of
-  `include/vcix_accel.h` (Spike `riscv/vcix_accel.h`, gem5
-  `src/cpu/minor/vcix_accel.h`) that must stay identical to this one;
+  `include/coprocessor.h` (Spike `riscv/coprocessor.h`, gem5
+  `src/cpu/minor/coprocessor.h`) that must stay identical to this one;
   `tests/contract` compares Spike's.
 - Spike adapter: working; branch `vcix` of `PSAL-POSTECH/riscv-isa-sim`
   (see [`adapters/spike/`](adapters/spike/README.md)).
