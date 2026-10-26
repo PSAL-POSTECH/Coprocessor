@@ -25,15 +25,14 @@ sfu_push/sfu_pop round trip of two registers over two lanes, vlane_idx), and the
 | block | kind | sized by | role |
 |---|---|---|---|
 | `insns()` | `Queue<Insn>` | default `(2, 1)` | one a cycle, exactly (§4) |
-| `entry` | `Port`, PRIMARY, "instructions", width 1 | — | spent once per instruction as it leaves `insns()`: the `SFU` unit in stats |
-| `function` | `Pipeline<Insn>`, unit "instructions" | (`tpu_sfu_latency_cycles`, 1) | the seven special functions |
-| `eup_input` | `Queue<Register>`, unit "registers" | `tpu_sfu_queue_registers` | the registers sfu_push queues |
-| `eup` | `Pipeline<Register>`, unit "registers" | (`tpu_sfu_latency_cycles`, 1) | the EUP: one register enters a cycle |
-| `eup_output` | `Queue<Register>`, unit "registers" | `tpu_sfu_queue_registers` | the results sfu_pop takes |
+| `instructions` | `Counter`, capacity 1 | — | counts each instruction as it leaves `insns()`: `SFU.instructions` in stats |
+| `function` | `Pipeline<Insn>` | (`tpu_sfu_latency_cycles`, 1) | the seven special functions |
+| `eup_input` | `Queue<Register>` | `tpu_sfu_queue_registers` | the registers sfu_push queues |
+| `eup` | `Pipeline<Register>` | (`tpu_sfu_latency_cycles`, 1) | the EUP: one register enters a cycle |
+| `eup_output` | `Queue<Register>` | `tpu_sfu_queue_registers` | the results sfu_pop takes |
 | `moved_` | plain | — | registers the head has moved so far |
 
-Deleted: the REPORTING `eup` port. It only timed one register a cycle, which the pipeline's interval 1 now does. It was
-never a statistic (FACT `vcix_accel.h:66-67`, "No other port is listed").
+No `eup` port: the pipeline's interval 1 times one register a cycle.
 
 ### Diagram
 
@@ -42,7 +41,7 @@ never a statistic (FACT `vcix_accel.h:66-67`, "No other port is listed").
           |
           v
    +-------------+   head, one a cycle   +--------------------------+
-   | insns (2)   |---------------------->| entry port (1/cycle)     |  PRIMARY "SFU"
+   | insns (2)   |---------------------->| counted: instructions    |  SFU.instructions
    +-------------+                       +--------------------------+
           |  verf..vexp           sfu_push |                 ^ sfu_pop
           v                                v                 |
@@ -101,7 +100,8 @@ Because pop runs before push, a full pipeline still takes one row in and one row
 | block | kind | sized by |
 |---|---|---|
 | `insns()` | `Queue<Insn>` | `(2W, W)`, W = `tpu_misc_issue_width` |
-| `issue` | `Port`, PRIMARY, "instructions" | width = W: the `MISC` unit |
+| `issue` | `Port` | width = W: at most W a cycle |
+| `instructions` | `Counter`, capacity W | counted where `issue` is taken: `MISC.instructions` in stats |
 | `dma_` | plain `tpu::Dma` (copyable: three `uint64_t`) | `dma_ = Dma{}; dma_.configure(config)` (a second configure without the key keeps no stale size); `reset()` clears the descriptor |
 
 Deleted: `cp::Register<Dma>`. The `Dma configured; … dma_.configure(configured)` dance is replaced by `dma_.reset()` in
@@ -114,7 +114,7 @@ Deleted: `cp::Register<Dma>`. The `Dma configured; … dma_.configure(configured
           |
           v
    +----------------+  up to W a cycle   +---------------------+
-   | insns (2W)     |------------------->| issue port (W)      | PRIMARY "MISC"
+   | insns (2W)     |------------------->| issue port (W)      | MISC.instructions
    +----------------+                    +---------------------+
                                                    |
                                                    v
@@ -179,18 +179,18 @@ The config key's meaning, "W a cycle", is a decision-8 keep.
 
 ## 5. Statistics: gem5 `stats.txt` lines
 
-Only a component's PRIMARY port is a unit (design §6); `.` becomes `_`. SFU and MISC keep one line group each:
+A component's statistics are its counters (ENGINE §6); `.` becomes `_`. SFU and MISC have one each:
 
 ```
-# prefix system.cpu.executeFuncUnits.funcUnits<N>. (FACT README.md:837)
-vcix.SFU.{admitted,capacity,cycles,occupancy,utilized_cycles}  # entry: instructions, capacity 1
-vcix.MISC.*             # issue: instructions, capacity W
+# prefix system.cpu.executeFuncUnits.funcUnits<N>.
+vcix.SFU.instructions   # capacity 1
+vcix.MISC.instructions  # capacity W
 ```
 
 Example, tpuv6e `sfu.S` (push m8, then pop m8, L=10) (FACT check):
-- `SFU.admitted 2`
+- `SFU.instructions 2`
 
-`tests/stats/run.sh:47` `consistent` still finds `vcix.SFU.*` and `vcix.MISC.*`, each with one primary (DERIVED).
+`tests/stats/run.sh` `listed` finds `vcix.SFU.instructions` and `vcix.MISC.instructions`.
 
 ## 6. Re-baselined tests (gem5 numbers DERIVED, not run in gem5)
 
@@ -207,12 +207,12 @@ producer's `ready()` turns true. Today's fixed-latency path did the same.
 | `tests/tpu/run.sh:161` Misc "commit X: 1 cycles after its issue" (8 of 10) | 1 | **1** | pop and complete at t+1 (FACT check: ≤ 1) |
 | `tests/tpu/run.sh:164` "issue systolic weight push: 10 cycles after the last issue…" | 10 | **11** | it reads the vexp's v4, so per A it comes 11 after (the systolic queue numbers belong to the systolic design) |
 | `tests/tpu/run.sh:209` misc_per_cycle, W=2 | at most 2, all 8 | **2, 8** | §4 accept rule |
-| `tests/tpu/run.sh:211` MISC capacity / admitted | 2 / 8 of 8 | **2 / 8 of 8** | `issue` is spent once per instruction |
-| `tests/tpu/run.sh:223` W=3 | capacity 3, 3, 8 | **3, 3, 8** | §4 |
+| `tests/tpu/run.sh:211` MISC instructions | 8 of 8 | **8 of 8** | counted once per instruction |
+| `tests/tpu/run.sh:223` W=3 | 3, 8 | **3, 8** | §4 |
 | `tests/tpu/run.sh:172,225` config errors (`'0' is not a pipeline depth` / `is not an issue width`) | exit 1 | **exit 1**, same text | `ConfigError` is thrown before `Pipeline::configure` |
-| `tests/tpu/ports.cc:180-190` 1000 vexp, one a cycle | all accepted; SFU.entry admitted 1000, cycles 1000 | all accepted; **admitted 999**, cycles 1000 | `entry` is spent at the pop in `tick(t+1)`, and the 1000th is never ticked |
-| `tests/tpu/ports.cc:216-237` misc: 10 offered | 2 a cycle × 5, admitted 10, capacity 2, committed 10 | **same** | FACT check; the driver must poll `ready()` (design §8) |
-| `tests/tpu/ports.cc:108-123` list: "5 units … no other port" | 4×5 + encodings | unchanged: 4×5 + encodings | queues and pipelines are no units |
+| `tests/tpu/ports.cc:180-190` 1000 vexp, one a cycle | all accepted; SFU.instructions 1000 | all accepted; **999** | counted at the pop in `tick(t+1)`, and the 1000th is never ticked |
+| `tests/tpu/ports.cc:216-237` misc: 10 offered | 2 a cycle × 5, instructions 10 of capacity 2, committed 10 | **same** | FACT check; the driver must poll `ready()` (design §8) |
+| `tests/tpu/ports.cc:108-123` list | the counters + encodings | unchanged | ports, queues and pipelines are no statistics |
 | `tests/tpuv3/ports.cc:37`, `tests/tpuv6e/ports.cc:37` lists | 4 units | grows the same way | the same |
 | `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `units …` | `TPUV*_MISC … TPUV*_SFU …` | unchanged | the same |
 | `tests/tpuv6e/run.sh:126-128` push m8 → pop, L=10 | "issue sfu_pop: **18** cycles after the last issue, 0 in flight, input queue 0, output queue 8"; pop commit 1 after its issue | "issue sfu_pop: **1** cycles after the last issue, **0 or 1** in flight, input queue **8**, output queue **0**"; pop commit **19** after its issue; push issue → pop ready **20** (was 19) | the pop now waits in `insns()`; the push is ready at t+1, and Minor may commit it before the pop's issue in that same cycle; the 8 registers enter one a cycle from t+2, and each is visible in the output L+1 after it entered the EUP (FACT check: push 1→2, pop 2→21) |

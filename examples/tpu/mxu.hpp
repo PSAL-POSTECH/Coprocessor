@@ -6,6 +6,7 @@
 #define TPU_MXU_HPP
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <optional>
@@ -24,6 +25,7 @@ class Mxu : public Component {
   using Cycle = cp::Cycle;
   using Host = cp::Host;
   using Insn = cp::Insn;
+  using Counter = cp::Counter;
   using Port = cp::Port;
   using Row = std::vector<float>;
   using Rows = std::vector<Row>;
@@ -71,6 +73,7 @@ class Mxu : public Component {
       throw cp::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
     insns().configure(2 * (slots + arrays), slots + arrays);
     entry_.set_width((word_a_cycle_ ? 2 : 1) * arrays);
+    rows_.set_capacity(entry_.width());
     issue_.set_width(slots);
     pop_.set_width(entries);
     units_ = arrays;
@@ -83,12 +86,13 @@ class Mxu : public Component {
     for (size_t i = 0; i < units_; i++) arrays_[i]->state = {}, arrays_[i]->values = {}, arrays_[i]->in_line = 0;
   }
   // Each array's line hands its finished word on and takes its next; then insns() in order, each carried out whole
-  // (or faulted).
+  // (or faulted). active_cycles counts the cycles some line holds a row.
   void cycle() override {
     uint64_t in_line = 0;
-    for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_);
+    for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_, rows_);
     while (insns().length() && carry_out(insns().front())) insns().pop();
-    entry_.occupy(in_line);
+    rows_in_flight_.add(in_line);
+    active_cycles_.add(in_line != 0);
   }
 
   // What the [tpu] trace adds to an issue: the array when there are several, and its queues.
@@ -140,11 +144,11 @@ class Mxu : public Component {
   // its values, and the rows in its line.
   struct Array {
     Array(Mxu &mxu, size_t i, uint32_t halves)
-        : weight_issue{mxu, "weight_issue", "instructions", 1},
-          input_issue{mxu, "input_issue", "instructions", 1},
-          pop_issue{mxu, "pop_issue", "instructions", 1},
+        : weight_issue{mxu, "weight_issue", 1},
+          input_issue{mxu, "input_issue", 1},
+          pop_issue{mxu, "pop_issue", 1},
           input{mxu, named(i, "input")},
-          line{mxu, named(i, "line"), "words"},
+          line{mxu, named(i, "line")},
           lower{mxu, named(i, halves > 1 ? "lower" : "output")} {
       if (halves > 1) upper.emplace(mxu, named(i, "upper"));
     }
@@ -157,25 +161,23 @@ class Mxu : public Component {
     cp::Queue<Row> &out(uint32_t half) { return half ? *upper : lower; }
     const cp::Queue<Row> &out(uint32_t half) const { return half ? *upper : lower; }
     // The finished word into every output queue, if each has room for all its rows; then the next word in, if the
-    // shared input port has room for its rows. Returns the rows in the line.
-    uint64_t flow(Port &entry) {
+    // shared input port has room for its rows, counted in `rows_in`. Returns the rows in the line.
+    uint64_t flow(Port &entry, Counter &rows_in) {
       if (line.length()) {
         const uint32_t rows = line.front().rows;
         if (lower.available() >= rows && (!upper || upper->available() >= rows)) {
           Word w = line.pop();
-          for (uint32_t k = 0; k < rows; k++) {
-            if (upper) upper->push(w.out[k]);
-            lower.push(std::move(w.out[k]));
-          }
+          for (uint32_t k = 0; k < rows; k++)
+            if ((upper && !upper->push(w.out[k])) || !lower.push(std::move(w.out[k]))) std::abort();
           in_line -= rows;
         }
       }
-      if (input.length() && line.available() && entry.available() >= input.front().word) {
+      if (input.length() && line.available() && entry.utilize(input.front().word)) {
         Word w{input.front().word, {}};
         for (uint32_t k = 0; k < w.rows; k++) w.out[k] = input.pop().out;
-        entry.utilize(w.rows);
+        rows_in.add(w.rows);
         in_line += w.rows;
-        line.push(std::move(w));
+        if (!line.push(std::move(w))) std::abort();
       }
       return in_line;
     }
@@ -249,9 +251,7 @@ class Mxu : public Component {
         return fault(insn, message("vpop: %u rows asked of the %s half, %zu computed", vl, half ? "upper" : "lower",
                                    static_cast<size_t>(out.size()))),
                true;
-      if (!a.pop_issue.available() || out.length() < vl || pop_.available() < vl) return false;
-      a.pop_issue.utilize(1);
-      pop_.utilize(vl);
+      if (out.length() < vl || pop_.available() < vl || !a.pop_issue.utilize(1) || !pop_.utilize(vl)) return false;
       for (uint32_t i = 0; i < vl; i++) {
         const Row row = out.pop();
         values([&](const Host &host) {
@@ -265,9 +265,8 @@ class Mxu : public Component {
     const bool weights = is(insn, PUSH) || (is(insn, PREP) && !(field & SECOND));
     Port &slot = weights ? a.weight_issue : a.input_issue;
     const uint64_t rows = uint64_t{vl} * rows_in_word(field);
-    if (!issue_.available() || !slot.available() || (is(insn, MATMUL) && a.input.available() < rows)) return false;
-    issue_.utilize(1);
-    slot.utilize(1);
+    if (!issue_.available() || (is(insn, MATMUL) && a.input.available() < rows) || !slot.utilize(1) || !issue_.utilize(1))
+      return false;
     if (is(insn, PREP)) prep(insn, a, weights ? WEIGHTS : INPUTS, rows);
     else if (is(insn, PUSH)) push(insn, a);
     else matmul(insn, a, rows);
@@ -309,7 +308,7 @@ class Mxu : public Component {
     for (uint64_t row = 0; row < rows; row++) {
       Input in{row % word ? 0 : word, {}};
       values([&](const Host &host) { in.out = output(host, insn, a, row); });
-      a.input.push(std::move(in));
+      if (!a.input.push(std::move(in))) std::abort();
     }
     a.state.held[INPUTS] = false, a.state.latched |= latch;
   }
@@ -358,10 +357,13 @@ class Mxu : public Component {
   static constexpr const char *SLOTS_KEY = "tpu_mxu_issue_slots";
   static constexpr const char *WORD_KEY = "tpu_mxu_word_a_cycle";
 
-  Port entry_{*this, "input", "rows", Shape::WORD_A_CYCLE ? 2 : 1, Port::PRIMARY};
-  Port issue_{*this, "issue", "instructions", Shape::SLOTS};
+  Port entry_{*this, "input", Shape::WORD_A_CYCLE ? 2 : 1};
+  Counter rows_{*this, "rows", Shape::WORD_A_CYCLE ? 2 : 1};
+  Counter rows_in_flight_{*this, "rows_in_flight"};
+  Counter active_cycles_{*this, "active_cycles"};
+  Port issue_{*this, "issue", Shape::SLOTS};
   std::optional<Array> arrays_[MAX_ARRAYS];
-  Port pop_{*this, "pop", "rows", 256};
+  Port pop_{*this, "pop", 256};
   uint32_t registers_ = Shape::REGISTERS;
   bool word_a_cycle_ = Shape::WORD_A_CYCLE;
   size_t units_ = 1;

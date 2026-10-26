@@ -1,6 +1,6 @@
-// The tpuv6e model's statistics, read through the C table with no simulator: a unit per component at its primary
-// port, none of its queues and pipelines, under the names it gives them, in the order a reader that indexes the list
-// depends on. Usage: tpuv6e_ports libtpuv6e.so
+// The tpuv6e model's statistics, read through the C table with no simulator: each component's counters under the
+// names the model gives them, in the order a reader that indexes the list depends on; then the commits.
+// Usage: tpuv6e_ports libtpuv6e.so
 #include <dlfcn.h>
 
 #include <cstdio>
@@ -34,24 +34,33 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Four entries per unit, a unit being a component at its one primary port, the components in the order the model
-  // holds them; none of a component's insns, queues and pipelines; then the commits.
-  const char *expected[][2] = {{"TPUV6E_SFU", "entry"}, {"TPUV6E_MISC", "issue"}, {"TPUV6E_XLU", "input"}, {"TPUV6E_MXU", "input"}};
-  const size_t units = sizeof expected / sizeof expected[0];
-  bool ok = !strcmp(m->name, "tpuv6e") && m->num_stats(self) == 4 * units + m->num_encodings;
-  for (size_t u = 0; ok && u < units; u++)
-    for (uint32_t kind = 0; kind < 4; kind++) {
-      const vcix_stat *s = m->stat(self, 4 * u + kind);
-      ok = ok && !strcmp(s->unit, expected[u][0]) && !strcmp(s->name, expected[u][1]) && s->kind == kind;
-    }
-  for (size_t e = 0; ok && e < m->num_encodings; e++) {
-    const vcix_stat *s = m->stat(self, 4 * units + e);
-    ok = !strcmp(s->unit, "committed") && !strcmp(s->name, m->encodings[e].name) && s->kind == VCIX_STAT_COUNT;
+  // The counters in the model's order, none of a component's insns(), ports, queues and pipelines; then one commit
+  // count per encoding.
+  const vcix_stat expected[] = {{"TPUV6E_SFU", "instructions", 1},
+                                {"TPUV6E_MISC", "instructions", 2},
+                                {"TPUV6E_XLU", "elements", 1},
+                                {"TPUV6E_XLU", "elements_in_flight", 0},
+                                {"TPUV6E_MXU", "rows", 2},
+                                {"TPUV6E_MXU", "rows_in_flight", 0},
+                                {"TPUV6E_MXU", "active_cycles", 0}};
+  const size_t counters = sizeof expected / sizeof expected[0], listed = m->num_stats(self);
+  bool ok = !strcmp(m->name, "tpuv6e") && listed == counters + m->num_encodings;
+  for (size_t i = 0; i < listed; i++) {
+    const vcix_stat *s = m->stat(self, i);
+    printf("%-28s %-28s %llu\n", s->group, s->name, static_cast<unsigned long long>(s->capacity));
   }
-  printf("%s  model tpuv6e: 4 units, each a component at its one primary port (TPUV6E_SFU.entry, TPUV6E_MISC.issue, "
-         "TPUV6E_XLU.input, TPUV6E_MXU.input), in the model's order, none of their queues and pipelines; then one commit "
-         "count per encoding\n",
-         ok ? "PASS" : "FAIL");
+  for (size_t i = 0; ok && i < counters; i++) {
+    const vcix_stat *s = m->stat(self, i);
+    ok = !strcmp(s->group, expected[i].group) && !strcmp(s->name, expected[i].name) && s->capacity == expected[i].capacity;
+  }
+  for (size_t e = 0; ok && e < m->num_encodings; e++) {
+    const vcix_stat *s = m->stat(self, counters + e);
+    ok = !strcmp(s->group, "committed") && !strcmp(s->name, m->encodings[e].name) && !s->capacity;
+  }
+  printf("%s  model tpuv6e: %zu counters (TPUV6E_SFU/MISC.instructions, TPUV6E_XLU.elements, TPUV6E_MXU.rows of capacity "
+         "2, the _in_flight counts and TPUV6E_MXU.active_cycles) in the model's order; then one commit count per "
+         "encoding\n",
+         ok ? "PASS" : "FAIL", counters);
   m->destroy(self);
   return ok ? 0 : 1;
 }

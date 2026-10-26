@@ -214,7 +214,7 @@ reads as in [the root README](../../README.md#the-machine-description)):
 
 ```
 src/cpu/minor/coprocessor_model.cc:220: fatal: fatal condition !model occurred: .../libnull_table.so: coprocessor_model() returned no table
-src/cpu/minor/coprocessor_model.cc:221: fatal: fatal condition model->abi_version != COPROCESSOR_ABI_VERSION occurred: .../libother_abi.so has ABI 13, gem5 has 12
+src/cpu/minor/coprocessor_model.cc:221: fatal: fatal condition model->abi_version != COPROCESSOR_ABI_VERSION occurred: .../libother_abi.so has ABI 14, gem5 has 13
 ```
 
 A description whose top level is not a mapping stops in the config script:
@@ -350,7 +350,7 @@ exit: m5_exit instruction encountered, code 0
 
 An issue line with no commit line after it is an instruction that was
 squashed: every issued instruction gets one commit or is squashed
-(`include/coprocessor.h:97`). `tests/contract/run.sh`
+(`include/coprocessor.h:88`). `tests/contract/run.sh`
 ("processor state") asserts the one commit of `2825c1db`, none of `2c2552db`,
 and exit 0.
 
@@ -420,13 +420,14 @@ waits only for the LSQ, Execute's input buffer and the in-order queue (`Execute:
 ## 8. Statistics
 
 A table with `num_stats` gives its unit gem5 statistics. gem5 reads them with
-`read_stats` at each dump. For each unit of the model, at its primary port,
-the stats are `admitted`, `capacity`, `cycles`, `occupancy` and
-`utilized_cycles` (`admitted / capacity`). Each encoding gets
-`vcix.committed.<encoding>`. The group hangs under the functional unit, so the
-full name starts with the FU's path. A model built on the cp engine lists one unit per
-component, at its primary port; its queues and pipelines are no units (the
-root README's [Statistics](../../README.md#statistics)).
+`read_stats` at each dump and prints each entry `{group, name, capacity}` as
+one scalar, `vcix.<group>.<name>`: a model's counters, and
+`vcix.committed.<encoding>` for each encoding. Its description is the name, and
+", at most <capacity> a cycle" when the capacity is not 0; nothing reads it.
+The group hangs under the functional unit, so the full name starts with the
+FU's path. A model built on the cp engine lists its components' `cp::Counter`s;
+its ports, queues and pipelines are no statistics (the root README's
+[Statistics](../../README.md#statistics)).
 
 `tests/stats/markers.S` on the `tpu` model (4x4 array, `tests/tpu/systolic.yml`)
 cuts the run into five windows with m5ops. Dump 1, the systolic array's own
@@ -434,11 +435,8 @@ lines:
 
 ```
 system.cpu.numCycles                                                           137
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.admitted                   12   # rows admitted at port input
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.capacity                    1   # rows the unit can admit per cycle
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.cycles                    137   # cycles the model was ticked, replays after a squash included
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.occupancy                  84   # rows held behind the port, summed over cycles
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.utilized_cycles            12   # admitted / capacity, the cycles admitting at full capacity takes
+system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows                       12   # rows, at most 1 a cycle
+system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows_in_flight             84   # rows_in_flight
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_input_push        3
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_weight_push       0
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_pop               3
@@ -448,25 +446,24 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.committed.systolic_pop              
 unit suffix; the last three lines' descriptions are left out.)
 
 **Reset.** The model's counters only grow. At a reset gem5 stores them as a
-base, and a dump shows `value - base`, except `capacity`, which is a constant
-(`coprocessor_model.cc:182-199`). Admitted rows, input pushes and pops in the
-five windows:
+base, and a dump shows `value - base`. Rows, input pushes and pops in the five
+windows:
 
 ```
 dump 1   12  3  3    reset, three pushes of four rows, three pops, dump
-dump 2    0  0  0    reset, then dump at once (capacity still 1)
+dump 2    0  0  0    reset, then dump at once
 dump 3    4  1  1
 dump 4    8  2  2
 dump 5    0  0  0    to the end of the run
 ```
 
-`tests/stats/run.sh` ("m5op windows") asserts these counts, and that for each
-of the five units `cycles` equals `system.cpu.numCycles` in every dump.
+`tests/stats/run.sh` ("m5op windows") asserts these counts, and that every dump
+lists each counter and nothing else of the model but the commits.
 
 **FUs that are not models.** Any `MinorFU` takes a `unit` name
 (`BaseMinorCPU.py:141-145`). The cycles in which any FU of the unit is occupied
-print as `system.cpu.units.<unit>.{admitted,capacity,cycles,utilized_cycles}`,
-in the same shape as a model's unit. An FU that names both a `unit` and a
+print as `system.cpu.units.<unit>.{admitted,capacity,cycles,utilized_cycles}`;
+these are gem5's own and not a model's counters. An FU that names both a `unit` and a
 `coprocessorModel` is fatal: a VCIX unit is counted by its model
 (`execute.cc:2246-2248`). `tests/stats/run.sh` ("vector unit busy cycles")
 checks `system.cpu.units.Vpu` on the tpu machine of `examples/tpu/gem5/`.

@@ -63,14 +63,14 @@ PR #59은 단계를 기록하고, 새 설계는 `cycle()`에서 EUP 파이프라
           values([&](const Host &host) { special_function(host, row.insn); });
           complete(row.insn);
         }
-      } else if (!eup_output_.full()) {
-        eup_output_.push(eup_.pop().pushed);
+      } else if (eup_output_.push(std::move(eup_.front().pushed))) {
+        eup_.pop();
       }
     }
-    if (eup_.available() && eup_input_.length()) eup_.push({Insn{}, 0, false, eup_input_.pop()});
+    if (eup_input_.length() && eup_.push(Row{Insn{}, 0, false, eup_input_.front()})) eup_input_.pop();
     if (insns().length() && head(insns().front())) {
       insns().pop();
-      entry_.utilize(1);
+      instructions_.add(1);
       moved_ = 0;
     }
   }
@@ -89,5 +89,5 @@ PR #59은 단계를 기록하고, 새 설계는 `cycle()`에서 EUP 파이프라
 | 받아들임 조건이 경로의 단계에 흩어져 있었습니다. | 내장 입력 큐 `insns()`: `can_accept = valid && insns()에 자리`. |
 | 고정 지연을 `done_after`와 `Pipeline`+`Stall` 두 가지로 표현했습니다. | 고정 지연은 `Pipeline`으로 모델합니다. |
 | 블록 종류가 많았습니다(`CmdQueue`, `Register<S>` 등). | `cp::Port`, `cp::Pipeline<T>`, `cp::Queue<T>` 셋. |
-| 블록별 통계를 늘리면 ABI가 바뀔 수 있습니다. | 통계 단위는 컴포넌트의 PRIMARY 포트 하나, 4 kind(ADMITTED, CAPACITY, CYCLES, OCCUPANCY)만. 큐와 파이프라인은 통계에 오르지 않아 ABI 변경 없음. |
+| 블록이 통계와 동작을 함께 지면 무엇이 통계인지 흐려집니다. | 블록은 동작만, 통계는 `cp::Counter`만(ABI 13: 항목 `{group, name, capacity}`). capacity > 0인 카운터가 TOGSim의 단위입니다. |
 | 보임이 엔진 내부 목록에 있었습니다. | 타임스탬프: t에 push한 행은 t+1부터 보입니다. |

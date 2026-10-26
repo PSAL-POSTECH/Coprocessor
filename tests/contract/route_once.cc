@@ -1,5 +1,5 @@
 // A cp component with no simulator: an instruction issued once, then a copy, an assigned copy and the original each
-// tick their own blocks to the same end; its four beats pass a 1-wide memory port one a cycle.
+// tick their own blocks and count their own counter to the same end; its four beats take a cycle each.
 #include <cstdio>
 
 #include "vcix_cp.hpp"
@@ -12,17 +12,15 @@ class Counted : public cp::Component {
 
   explicit Counted(cp::Coprocessor &cp) : Component(cp, "COUNTED") { register_insn(FOUR_BEATS); }
   void reset() override { left_ = 0; }
-  // The head instruction takes the issue port once, then a beat of memory a cycle; its fourth beat completes it.
+  // The head instruction counts once, then takes a beat a cycle; its fourth beat completes it.
   void cycle() override {
     if (!insns().length()) return;
-    if (!left_) issue_.utilize(1), left_ = 4;
-    memory_.utilize(1);
+    if (!left_) instructions_.add(1), left_ = 4;
     if (--left_ == 0) complete(insns().pop());
   }
 
  private:
-  cp::Port issue_{*this, "issue", "instructions", 1, cp::Port::PRIMARY};
-  cp::Port memory_{*this, "memory", "beats", 1};
+  cp::Counter instructions_{*this, "instructions", 1};
   uint32_t left_ = 0;
 };
 
@@ -54,11 +52,16 @@ int main() {
   original.issue(four, 1, 1);
   Model copy = original, assigned;
   assigned = original;
-  const cp::Cycle c = done(copy, 1, 1), a = done(assigned, 1, 1), o = done(original, 1, 1);
-  std::printf("four beats issued in cycle 1: ready in copy %llu, assigned %llu, original %llu\n",
-              static_cast<unsigned long long>(c), static_cast<unsigned long long>(a), static_cast<unsigned long long>(o));
-  const bool ok = c == 5 && a == 5 && o == 5;
-  std::printf("%s  a copy, an assigned copy and the original each tick their own blocks: beats in 2..5, ready in 5\n",
+  const cp::Cycle c = done(copy, 1, 1);
+  const uint64_t counted = copy.counters()[0]->value(), untouched = original.counters()[0]->value();
+  const cp::Cycle a = done(assigned, 1, 1), o = done(original, 1, 1);
+  std::printf("four beats issued in cycle 1: ready in copy %llu, assigned %llu, original %llu; copy counted %llu, the "
+              "original then %llu\n",
+              static_cast<unsigned long long>(c), static_cast<unsigned long long>(a), static_cast<unsigned long long>(o),
+              static_cast<unsigned long long>(counted), static_cast<unsigned long long>(untouched));
+  const bool ok = c == 5 && a == 5 && o == 5 && counted == 1 && untouched == 0;
+  std::printf("%s  a copy, an assigned copy and the original each tick their own blocks and counters: beats in 2..5, "
+              "ready in 5\n",
               ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

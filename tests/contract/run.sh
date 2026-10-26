@@ -90,17 +90,17 @@ ended 0
 line 1 "vcix_cp: the model cannot be made: no such unit can be built"
 verdict "direct: every check above passed, and a constructor that throws says why"
 
-log="$BUILD/port_stats.log"
-"$BUILD/port_stats" > "$log" 2>&1; rc=$?
+log="$BUILD/counters.log"
+"$BUILD/counters" > "$log" 2>&1; rc=$?
 grep -E '^(PASS|FAIL)  ' "$log"
 ended 0
-verdict "port_stats: the statistics a model counts at its ports, every check above passed"
+verdict "counters: the statistics a model counts in its counters, every check above passed"
 
 log="$BUILD/route_once.log"
 "$BUILD/route_once" > "$log" 2>&1; rc=$?
 grep -E '^(PASS|FAIL)  ' "$log"
 ended 0
-verdict "route_once: a copy of a cp model ticks its own blocks: the same cycles as the original"
+verdict "route_once: a copy of a cp model ticks its own blocks and counters: the same cycles as the original"
 
 probe() { log="$BUILD/probe-$1.log"; "$BUILD/timing_probe" "$BUILD/lib$1.so" $OWNED 2 > "$log" 2>&1; rc=$?; }
 probe no_optional
@@ -124,7 +124,7 @@ for sim in spike gem5; do
 done
 run spike other_abi other_abi "" pair
 ended 1
-part 1 "libother_abi.so has ABI 13, Spike has 12"
+part 1 "libother_abi.so has ABI 14, Spike has 13"
 verdict "spike refuses a table of another ABI version"
 run spike cannot_be_made cannot_be_made "" pair
 ended 1

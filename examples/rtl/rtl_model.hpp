@@ -234,7 +234,7 @@ class Model : public cp::Model {
       } catch (...) {
         unit_.restore(snap_);
         seed_ = seed;
-        counters.restores++;
+        rtl::counters.restores++;
         throw;
       }
     }

@@ -29,7 +29,7 @@ Pipeline)을 매 사이클 진행시키고, `complete()`를 gem5의 `ready()`로
  |   | insns(): Queue<Insn> (2, 1)                          |   | insns()    |        |
  |   | user cycle(): pop / issue / take / push / complete|   | cycle() |        |
  |   | blocks: Port  Queue<T>  Pipeline<T>  (self-registered|   | Port       |        |
- |   |         by byte offset; each block = one stats unit) |   +------------+        |
+ |   |         by byte offset; behavior only), Counter(stats)|   +------------+        |
  |   | plain members: copyable values only                  |                         |
  |   +------------------------------------------------------+                         |
  |                                                                                 |
@@ -86,23 +86,26 @@ struct Insn : vcix_insn { Id id = 0; };                // gem5's id; 0 inside va
 ### 2.2 블록 (선택 사항)
 
 ```cpp
-class Port {        // per-cycle bandwidth; holds a cp::Stats member, unit = the component's name
-  Port(Component &c, const char *name, const char *unit_of_work, uint64_t width, Role role = REPORTING);
+class Port {        // per-cycle bandwidth; no statistic
+  Port(Component &c, const char *name, uint64_t width);
   void set_width(uint64_t width);  uint64_t width() const;           // configure only
-  uint64_t available(Cycle now) const;                               // width - utilized at now
-  void utilize(uint64_t n);                               // more than available() aborts
-  void occupy(uint64_t n);                                           // adds to OCCUPANCY
+  uint64_t available() const;                                        // width - utilized now
+  [[nodiscard]] bool utilize(uint64_t n);                            // more than available(): takes nothing, false
+};
+class Counter {     // a statistic: add() only grows it; capacity > 0 makes it a unit TOGSim times
+  Counter(Component &c, const char *name, uint64_t capacity = 0);
+  void set_capacity(uint64_t capacity);  void add(uint64_t n);
 };
 template <class T> class Queue {   // FIFO; a push at t is visible from t+1, a slot freed at t is free from t+1
-  Queue(Component &c, const char *name, const char *unit_of_work = "rows");
+  Queue(Component &c, const char *name);
   void configure(uint64_t capacity, uint64_t per_cycle = UNLIMITED); // depth and pushes a cycle
   uint64_t capacity() const;  uint64_t size() const;  uint64_t length(Cycle now) const;
   uint64_t available(Cycle now) const;  bool full(Cycle now) const;  // full == !available
-  void push(T row);                                       // when full: the run stops
+  template <class U = T> [[nodiscard]] bool push(U &&row);           // when full: false, the row stays with the caller
   const T &front(Cycle now) const;  T &front(Cycle now);  T pop(Cycle now);
 };
 template <class T> class Pipeline { // gem5 MinorFU: opLat = latency, issueLat = interval
-  Pipeline(Component &c, const char *name, const char *unit_of_work = "rows");
+  Pipeline(Component &c, const char *name);
   template <class D> void on_stage(void (D::*fn)(T &, uint32_t));    // Spike: per-stage values; D must be the owner
   void configure(uint64_t latency, uint64_t interval);               // each 1 .. UINT32_MAX
   bool available(Cycle now) const;  void issue(T row);
@@ -171,7 +174,7 @@ try { model.execute(Host(h), *i); } catch (...) { model = std::move(saved); thro
 ```
  tick(t):  C1.cycle()  C2.cycle() ...   ->   every block cycle()
               |                                  Pipeline: age one stage, or hold (head not taken)
-              |                                  Queue: add occupancy;  Port: nothing (available is per cycle number)
+              |                                  Queue, Port: nothing (available is per cycle number)
            ready(id, t)  ->  commit  ->  squash  ->  can_accept(insn, t)  ->  issue(insn, t)
                                                          valid() && !insns().full()     insns().push()
 ```
@@ -240,13 +243,12 @@ try { model.execute(Host(h), *i); } catch (...) { model = std::move(saved); thro
   인코딩)은 copy-on-write로 복사본끼리 공유합니다. 암시적 복사는 Block 생성자를 부르지 않으므로 다시 등록하지 않습니다
   [사실] `verify/eng/check`: 복사본, 대입본, 원본이 각자 tick해서 모두 5에 끝납니다.
 - `check_layout`은 오프셋이 `[this, this + sizeof(M))` 밖이면 throw합니다. `std::vector`에 Queue를 담은 모델은
-  `create refused: vcix_cp: a block of VEC lies outside the model object`로 거절됩니다 [사실] `verify/probe2`. 고치기
-  전에는 복사본의 `ports()`가 segfault였습니다(리뷰 P1).
+  `create refused: vcix_cp: a block or counter of VEC lies outside the model object`로 거절됩니다 [사실] `verify/probe2`.
 - 참조 멤버는 컴파일 오류입니다 [사실] `vcix_accel.hpp:211`. 형제 컴포넌트를 가리키는 raw 포인터는 컴파일되고 복사본에서
   원본을 가리키므로(리뷰 P3), 다음 규칙으로 금지합니다 [의견]. "모든 가변 상태는 대입할 때 값으로 복사된다. 모델 상태를
   가리키는 포인터도, 모델 밖 상태를 가리키는 포인터도 두지 않는다. 컴포넌트는 서로를 읽지 않는다."
 - `on_stage(&D::fn)`은 소유자가 D가 아니면 throw합니다 [사실] `verify/probe2`: `vcix_cp: W.p: on_stage of another class`.
-- 이름은 한 번 할당하고 해제하지 않는 집합에 intern합니다. 그래서 stats Port와 gem5가 가진 `const char *`는 복사본에서도,
+- 이름은 한 번 할당하고 해제하지 않는 집합에 intern합니다. 그래서 Counter와 gem5가 가진 `const char *`는 복사본에서도,
   프로그램 종료 시에도 유효합니다.
 - squash 동등성 [사실]:
   - `verify/eng/check`: wrong-path issue 3, squash 6 → 모든 통계가 같습니다.
@@ -306,27 +308,28 @@ commit될 때(squash된 것은 commit되지 않습니다) `why`를 찍고 종료
 
 ### 3.6 통계와 trace
 
-**통계(ABI 변경 없음).** 쓰는 kind는 ADMITTED, CAPACITY, CYCLES, OCCUPANCY뿐입니다 [사실] `vcix_accel.h:60-63`.
-`cp::Port`는 `cp::Stats`를 멤버로 가집니다(상속 아님). Queue와 Pipeline도 하나씩 가지지만 REPORTING이라 표에 오르지
-않습니다: 통계 단위는 컴포넌트 하나, 그 PRIMARY 포트에서 셉니다 [사실] `vcix_cp_base.hpp:326-363`. gem5는 이름의 `.`을
-`_`로 바꿉니다 [사실] gem5 `vcix_accel_model.cc:22-33`.
+**통계(ABI 13).** 블록은 통계를 갖지 않습니다. 통계는 `cp::Counter(component, name, capacity = 0)`뿐이며 C 표의
+항목은 `{group = 컴포넌트, name, capacity}`, 그 뒤에 인코딩마다 `{"committed", 이름, 0}`입니다. capacity > 0인 카운터는
+사이클당 최대 capacity만큼 일하는 단위로 TOGSim이 `<COMPONENT>.<name>`으로 시간을 잽니다. gem5는 항목마다 스칼라
+`vcix.<group>.<name>` 하나를 내고 `.` 등을 `_`로 바꿉니다.
 
-| 단위 | ADMITTED | CAPACITY | OCCUPANCY |
-|---|---|---|---|
-| `<C>` (PRIMARY `cp::Port` 하나) | `utilize` 합 | width | 사용자 `occupy` |
+| 컴포넌트 | capacity > 0 | 그냥 개수 |
+|---|---|---|
+| SFU, MISC, COPIER | `instructions` | |
+| SYSTOLIC, MSA | `rows` | `rows_in_flight` |
+| XLU | `elements` | `elements_in_flight` |
+| MXU | `rows` | `rows_in_flight`, `active_cycles` |
 
-gem5 `stats.txt`에는 다음처럼 나옵니다 [사실] 접두어 `README.md:837`, 값 `verify/cs/dump`(markers 창 1).
+gem5 `stats.txt`에는 다음처럼 나옵니다(markers 창 1).
 
 ```
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.admitted                12   # rows admitted at port input
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.capacity                 1
-system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.occupancy               84
+system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows                    12
+system.cpu.executeFuncUnits.funcUnits8.vcix.SYSTOLIC.rows_in_flight          84
 ```
 
-- 각 유닛의 PRIMARY 포트는 그대로입니다: SFU `entry`, MISC `issue`, SYSTOLIC `input`, XLU `input`, MSA `input`,
-  MXU `input`, COPIER `issue`. 그래서 `tests/stats`의 `consistent`(5 of 5)와 `beyond_units`(0)는 유지됩니다 [도출].
-- 단위 목록은 컴포넌트뿐입니다 [사실] `tests/tpu/ports.cc`, `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc`: 예
-  `SFU MISC SYSTOLIC XLU MSA`.
+- `tests/stats`의 `listed`(카운터 여덟 개)와 `beyond_units`(0)가 이 목록을 고정합니다.
+- 카운터 목록은 모델의 순서입니다 [사실] `tests/tpu/ports.cc`, `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc`: 예
+  `SFU MISC SYSTOLIC XLU MSA`의 카운터들.
 
 **trace.** 다음은 그대로 유지합니다.
 - `tpu::Coprocessor`가 `issue`와 `commit`을 override해서 줄을 찍습니다 [사실] `examples/tpu/machine.hpp:32-38`.
@@ -350,7 +353,7 @@ push), 마지막으로 `insns()`의 머리를 처리합니다. 그래서 가득 
 ### 4.1 Sfu (`units/examples/tpu/sfu.hpp`, 178줄)
 
 ```
- insns (2,1) --head--> entry Port(1) PRIMARY "SFU"
+ insns (2,1) --head--> counted: SFU.instructions (capacity 1)
       | verf..vexp: one register a cycle          | sfu_push                     ^ sfu_pop
       v                                           v                              |
  eup Pipeline(L,1), the ONE EUP  <--1/cycle-- eup_input Queue   eup --pop if room--> eup_output Queue
@@ -362,10 +365,10 @@ void cycle() override {                                   // sfu.hpp:62
   if (eup_.length()) {
     if (eup_.front().special) { const Row row = eup_.pop();
       if (row.j + 1 == cp::group_size(row.insn)) { values(...special_function...); complete(row.insn); } }
-    else if (!eup_output_.full()) eup_output_.push(eup_.pop().pushed);
+    else if (eup_output_.push(std::move(eup_.front().pushed))) eup_.pop();
   }
-  if (eup_.available() && eup_input_.length()) eup_.push({Insn{}, 0, false, eup_input_.pop()});
-  if (insns().length() && head(insns().front())) { insns().pop(); entry_.utilize(1); moved_ = 0; }
+  if (eup_input_.length() && eup_.push(Row{Insn{}, 0, false, eup_input_.front()})) eup_input_.pop();
+  if (insns().length() && head(insns().front())) { insns().pop(); instructions_.add(1); moved_ = 0; }
 }
 ```
 
@@ -383,14 +386,14 @@ m8은 18, push m8 바로 뒤의 vexp m1은 19입니다. gem5 타이밍 테스트
 ### 4.2 Misc와 Dma (`misc.hpp`, `dma.hpp`)
 
 ```
- insns (2W, W) --up to W a cycle--> issue Port(W) PRIMARY "MISC" --> values(): lane idx | pack | unpack | DMA --> complete
+ insns (2W, W) --up to W a cycle--> issue Port(W), MISC.instructions --> values(): lane idx | pack | unpack | DMA --> complete
 ```
 
 ```cpp
 void cycle() override {                                   // misc.hpp:57
-  while (insns().length() && issue_.available()) {
+  while (insns().length() && issue_.utilize(1)) {
     const Insn in = insns().pop();
-    issue_.utilize(1);
+    instructions_.add(1);
     if (transfer(in) && !dma_.scratchpad()) { fault(in, message("%s: the machine description has no %s", ...)); continue; }
     values([&](const Host &host) { apply(host, in); });
     complete(in);
@@ -410,7 +413,7 @@ void cycle() override {                                   // misc.hpp:57
  insns (2W, W)  in order, head only; a start spends issue Port(W)
    | push / push_reduce (vl rows, when queue_.available() >= vl)  | xlu_pop
    v                                                                 |
- queue_ Queue<Element> --1 group/cycle, entry Port PRIMARY "XLU"--> stages_ | moves_ Pipeline<Group>
+ queue_ Queue<Element> --1 group/cycle, XLU.elements--> stages_ | moves_ Pipeline<Group>
                                                                      | taken when done (never stalls)
                                                                      v
                                 buffer_ Queue <-- first pop takes the tile --> line_ Pipeline<Result>(1) --> out_ Queue
@@ -420,9 +423,9 @@ void cycle() override {                                   // misc.hpp:57
 void cycle() override {                                   // xlu.hpp:115
   if (line_.length()) { Result r = line_.pop(); /* r.count rows into out_ */ }
   for (auto *line : {&stages_, &moves_}) if (line->length()) { /* group into buffer_ */ }
-  if (queue_.length() && (head moves ? moves_ : stages_).available()) { /* one group in, entry_.utilize */ }
-  while (insns().length() && step(insns().front())) complete(insns().pop());
-  entry_.occupy(staged_);
+  if (queue_.length() && (head moves ? moves_ : stages_).available()) { /* one group in, elements_.add */ }
+  while (insns().length() && step(insns().front())) insns().pop();
+  elements_in_flight_.add(staged_);
 }
 ```
 
@@ -441,7 +444,7 @@ void cycle() override {                                   // xlu.hpp:115
  golden (command queue 0): head of insns (2,1) moves the whole instruction, or waits
  RTL keys: insns = wrapper's pending skid (valid: empty, command slot free) -> commands_ Queue(N), head 1/cycle
 
- input push --in Port--> input_queue --1/cycle, entry Port PRIMARY "SYSTOLIC", when enable--> array Pipeline(2L-1,1)
+ input push --in Port--> input_queue --1/cycle, SYSTOLIC.rows, when enable--> array Pipeline(2L-1,1)
  weight push --in Port--> landing_ --next cycle--> weights_          on_stage(stage) on Spike  | take when enable
  pop <--pop Port-- output_queue <-----------------------------------------------------------+
  enable = !output_queue.full() as the cycle began
@@ -455,9 +458,9 @@ void cycle() override {                                   // systolic.hpp:88
                 else if (insns().length() && work(insns().front())) weigh(insns().pop()); }
   else { if (commands_.length() && work(commands_.front())) commands_.pop();
          if (insns().length() && !commands_.full()) { const Insn in = insns().pop(); if (!wrong(in)) enter(in); } }
-  if (enable && array_.length()) output_.push(array_.pop());
-  if (enable && input_.length() && array_.available()) { array_.push(input_.pop()); entry_.utilize(1); }
-  entry_.occupy(array_.size());
+  if (enable && array_.length() && output_.push(std::move(array_.front()))) array_.pop();
+  if (enable && input_.length() && array_.push(std::move(input_.front()))) { input_.pop(); rows_.add(1); }
+  rows_in_flight_.add(array_.size());
 }
 ```
 
@@ -472,24 +475,24 @@ void cycle() override {                                   // systolic.hpp:88
 ### 4.5 Msa (`msa.hpp`, 190줄)
 
 ```
- insns (2,1) --head, issue Port(1)--> weight push: weights_, format_ (plain)
+ insns (2,1) --head--> weight push: weights_, format_ (plain)
                                   --> input push: vl rows at once into input_queue (available() >= vl)
                                   --> pop: vl rows at once from output_queue (length() >= vl)
- input_queue --1/cycle, entry Port PRIMARY "MSA"--> array Pipeline(2L-1,1) --pop if output_queue not full--> output_queue
+ input_queue --1/cycle, MSA.rows--> array Pipeline(2L-1,1) --pop if output_queue not full--> output_queue
 ```
 
 ```cpp
 void cycle() override {                                   // msa.hpp:53
-  if (array_.length() && !output_.full()) output_.push(array_.pop());
-  if (input_.length() && array_.available()) { entry_.utilize(1); array_.push(input_.pop()); }
+  if (array_.length() && output_.push(std::move(array_.front()))) array_.pop();
+  if (input_.length() && array_.push(std::move(input_.front()))) { rows_.add(1); input_.pop(); }
   if (insns().length() && carry_out(insns().front())) insns().pop();   // carry_out: complete or fault
-  entry_.occupy(array_.size());
+  rows_in_flight_.add(array_.size());
 }
 ```
 
 - 검사는 `refusal(insn)` 한 곳에 오늘 순서대로 있습니다(필드, 그 다음 상태). 처음 실패한 것이 머리에서 `fault`의
   `why`가 됩니다. `valid`는 override하지 않습니다.
-- 큐 이름은 `input_queue`/`output_queue`입니다. Port `input`과 abort 메시지에서 헷갈리지 않게 하려는 것입니다.
+- 큐 이름은 `input_queue`/`output_queue`입니다.
 
 ### 4.6 Mxu (`mxu.hpp`, 357줄)
 
@@ -497,7 +500,7 @@ void cycle() override {                                   // msa.hpp:53
  insns (2W, W), W = SLOTS + units; heads in order; issue Port(SLOTS); per array: weight_issue, input_issue, pop_issue (1)
    vmatprep / vmatpush: array state and values only
    vmatmul: vl*rows_in_word rows at once into array<i>_input (available() >= rows)
- array<i>_input --1 word/cycle, entry Port PRIMARY (PER_CYCLE*units)--> array<i>_line Pipeline<Word>("words", delay)
+ array<i>_input --1 word/cycle, input Port (PER_CYCLE*units), MXU.rows--> array<i>_line Pipeline<Word>(delay)
    --pop when every output has available() >= rows--> array<i>_lower (+ array<i>_upper on the v6e)
  vpop: vl rows at once from one output queue, shared pop Port
 ```
@@ -505,9 +508,10 @@ void cycle() override {                                   // msa.hpp:53
 ```cpp
 void cycle() override {                                   // mxu.hpp:76
   uint64_t in_line = 0;
-  for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_);
+  for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_, rows_);
   while (insns().length() && carry_out(insns().front())) insns().pop();   // carry_out: complete or fault
-  entry_.occupy(in_line);
+  rows_in_flight_.add(in_line);
+  active_cycles_.add(in_line != 0);
 }
 ```
 
@@ -518,16 +522,16 @@ void cycle() override {                                   // mxu.hpp:76
 ### 4.7 Copier (`examples/copier/copier.cc`, 87줄)
 
 ```
- insns (2,1) [valid: nothing pending, commands_ < 4] --tick(t+1)--> commands_ Queue(4), issue Port PRIMARY "COPIER"
+ insns (2,1) [valid: nothing pending, commands_ < 4] --tick(t+1)--> commands_ Queue(4), COPIER.instructions
    source / copy: values() at entry, complete() at entry     wait: waits_ (plain) until !left_ && commands_ empty
  head popped while left_ == 0; a copy then makes 64 requests, memory Port(1) one a cycle
 ```
 
 ```cpp
 void cycle() override {                               // copier.cc:35
-  if (left_) { memory_.utilize(1); left_--; }
+  if (left_) left_ -= memory_.utilize(1);
   else if (commands_.length() && is(COPY, commands_.pop())) left_ = 2 * BYTES / 8;
-  if (insns().length() && !commands_.full()) enter(insns().pop());
+  if (insns().length() && commands_.push(insns().front())) enter(insns().pop());
   if (left_ || commands_.size()) return;
   for (const cp::Insn &wait : waits_) complete(wait);
   waits_.clear();
@@ -562,9 +566,9 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 |---|---|---|---|
 | `tests/contract/route_once.cc:59,63` | 6에 끝남 | **5** (복사본, 대입본, 원본 모두) [사실] `verify/eng/check` | 도착 스탬프가 없습니다. "handler ran once"는 "a copy's cycle() ticks its own blocks"로 다시 씁니다(`run.sh:103` 문장도). |
 | `tests/tpu/ports.cc:63` 외 드라이버 | `now + latency`에 commit | `ready()`를 poll해야 합니다 | `Unknown`이면 wrap됩니다 |
-| `tests/tpu/ports.cc:108-123`, `tests/tpuv3/ports.cc:37`, `tests/tpuv6e/ports.cc:37` list | 유닛 4–5개 | **그대로**: 컴포넌트당 하나 | 큐와 파이프라인은 REPORTING, 통계가 아님 |
+| `tests/tpu/ports.cc:108-123`, `tests/tpuv3/ports.cc:37`, `tests/tpuv6e/ports.cc:37` list | 컴포넌트의 카운터 | **그대로** | 포트, 큐, 파이프라인은 통계가 아님 |
 | `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` units | `…_MISC …_MXU …_SFU …_XLU` | **그대로** | 같은 이유 |
-| `tests/stats` counts/consistent/beyond_units | 12 3 3 …, 5 of 5, 0 | **그대로** | PRIMARY 포트 불변 |
+| `tests/stats` counts/listed/beyond_units | 12 3 3 …, 카운터 여덟 개, 0 | **그대로** | 카운터 불변 |
 
 ### 5.2 Sfu / Misc (드라이버 [사실] `verify/sm/units`)
 
@@ -578,9 +582,9 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 | `run.sh:161` Misc "1 cycles after its issue" | 1 (8 of 10) | **1** | t+1 |
 | `run.sh:164` "issue systolic weight push: 10 cycles after the last issue" | 10 | **11** | vexp의 v4를 읽으므로 |
 | `run.sh:209` misc_per_cycle W=2 | at most 2, all 8 | **2, 8** | `(4, 2)` |
-| `run.sh:211` MISC capacity/admitted | 2 / 8 of 8 | **2 / 8 of 8** | |
+| `run.sh:211` MISC instructions | 8 of 8 | **8 of 8** | |
 | `run.sh:223` W=3 | 3, 3, 8 | **3, 3, 8** | `(6, 3)` |
-| `ports.cc:180-190` 1000 vexp | admitted 1000 | **admitted 999**, cycles 1000 | 1000번째는 tick되지 않음 |
+| `ports.cc:180-190` 1000 vexp | SFU.instructions 1000 | **999** | 1000번째는 tick되지 않음 |
 | `ports.cc:216-237` misc 10 | 2/cycle ×5 | **같음** | |
 | `tests/tpuv6e/run.sh:126-128` push m8 → pop (L=10) | `issue sfu_pop: 18 cycles …, input queue 0, output queue 8` | `issue sfu_pop: 1 cycles …, 0 or 1 in flight, input queue 8, output queue 0`, pop commit **19**, push→pop ready **20** (was 19) | pop이 머리에서 기다림 |
 | 같은 것, L=4 | `issue sfu_pop: 12 …` | `1 …`, pop commit **13**, push→pop **14** (was 13) | 같음 |
@@ -628,7 +632,7 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 |---|---|---|---|
 | `tests/tpuv3/run.sh:54`, `tests/tpuv6e/run.sh:44` ports | 1 passed | **FAIL as written** | 블록 단위 |
 | tpuv3 `:59` mxu | `vmatmul:1:0/0 vpop:11:0/4 vpop:4:0/4` | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0` | vpop commit 13, 17 |
-| tpuv3 `:62` admitted/capacity/occupancy | 8, 1, 56 | **8, 1, 56** | |
+| tpuv3 `:62` rows/rows_in_flight | 8, 56 | **8, 56**; active_cycles 14 | |
 | tpuv3 `:66` mxu_rate | `vmatmul:1:0/0 vmatmul:4:0/0 vpop:7:1/4 vpop:4:0/4 vpop:4:0/4` | `vmatmul:0:0/0 vmatmul:1:0/0 vpop:0:0/0 vpop:1:4/0 vpop:1:3/0` | 두 번째 vmatmul이 머리에서 기다림 (commit 6) |
 | tpuv3 `:70` mxu_rate-16 | `vmatmul:1:0/0 vmatmul:1:3/0` | `vmatmul:0:0/0 vmatmul:1:0/0` | |
 | tpuv3 `:75` lanes-128 | `vmatmul:1:0/0 vpop:259:0/4 vpop:4:0/4` | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0` | vpop commit 261, 265 |
@@ -639,7 +643,7 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 | tpuv3 `:137` machine-mxu (폭 12) | gem5_se와 같음 | `vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0`, **gem5_se와 같음** | 한도 W=2가 CPU 폭보다 먼저 묶습니다 |
 | tpuv6e `:54` mxu pairs | lines 4 | **lines 1** | vmatpush가 vmatprep 옆에서 accept |
 | tpuv6e `:60` mxu pops | lines 4 of 8 | **lines 0 of 8** | commit 19, 20, 20, 21 |
-| tpuv6e `:63` admitted | 8, 2, 120 | **8, 2, 120** | |
+| tpuv6e `:63` rows/rows_in_flight | 8, 120 | **8, 120**; active_cycles 18 | |
 | tpuv6e `:69` mxu_rate 입력 큐 | `0 0 0 0 3 2 10 9 8 6 0 0 0 0 0 0` | `0 0 0 0 0 0 4 4 3 3 10 9 9 8 6 4` | |
 | tpuv6e `:73` mxu_rate pops | `14:4/4 1:2/6 1:4/4 1:2/6 1:4/4 1:0/4` | `1:0/0 1:0/0 0:0/0 1:0/0 1:0/0 1:0/0` | commit 18, 18, 19, 19, 19, 19 |
 | tpuv6e `:88` mxu_arrays | 8 of 12; capacity 4 | **0 of 12; capacity 4** | 배열 0 commit 18, 배열 1 commit 19 |
@@ -657,13 +661,13 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 
 ## 6. 지금의 `include/vcix_cp.hpp`에서 다시 쓰는 것과 지우는 것
 
-개요: 복사 안전성의 뼈대(오프셋 등록)와 결과 표면(stats Port, 멈춤 메시지)은 남깁니다. 명령마다 단계를 기록하던 기계는
+개요: 복사 안전성의 뼈대(오프셋 등록)와 멈춤 메시지는 남깁니다. 명령마다 단계를 기록하던 기계는
 모두 지웁니다.
 
 | 오늘 | 처리 |
 |---|---|
 | 오프셋 등록, `components_` shared_ptr, `Layout` COW (`:46-104, 1079-1089`) | **재사용**. Layout은 인코딩과 블록을 담고, `check_layout`을 추가합니다. |
-| `vcix_accel::Port`를 컴포넌트 이름으로 쓰는 `cp::Port` (`:106-113`) | **재사용**. `Block`이 되어 `cp::Stats`를 멤버로 갖고 `available()/utilize(n)/occupy(n)`를 씁니다. |
+| `vcix_accel::Port`를 컴포넌트 이름으로 쓰는 `cp::Port` (`:106-113`) | **재사용**. `Block`이 되어 `available()/utilize(n)`만 씁니다. 통계는 `cp::Counter`가 맡습니다. |
 | `ready_` 목록, commit 삭제, ready 조회 (`:868-872`) | **재사용** (`done_`) |
 | 멈춤 메시지와 `exit(1)` (`:1034-1036`), "has no unit" (`:855`) | **재사용**, 문장 그대로 |
 | 단계 함수, 들어온 사이클 k = 0, Spike 전용 (`:434-438`) | **재사용** (`Pipeline::cycle`) |
@@ -676,7 +680,7 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 | `with_owner`, `each_pipeline` (`:897-908`) | **대체** (`owner(insn)`) |
 
 유닛 쪽에서 지우는 것은 다음입니다 [사실, 새 파일 기준].
-- REPORTING 포트 중 타이밍만 주던 것: SFU `eup`, systolic `issue`/`weight_push`, XLU `output`.
+- 아무것도 제한하지 않던 포트: SFU `eup`, systolic `issue`/`weight_push`, XLU `output`, MSA `issue`/`weight_push`.
 - `cp::Register<Dma>`, `dma_index_key`, Sfu와 Misc의 `held_`.
 
 ---
@@ -687,7 +691,7 @@ vmatmul이 앞선 명령 없이 함께 실행되어 vpop commit이 21·22가 아
 
 | 순서 | 파일 | 내용 | 그 단계의 검증 |
 |---|---|---|---|
-| 1 | `include/vcix_accel.hpp` → `include/vcix_cp_base.hpp` | `vcix_cp_base.hpp.diff` 적용: namespace `cp`, `vcix_accel::Port` → `cp::Stats`, `VCIX_CP_REGISTER`, `Model::check_layout`, `Instance::configure`의 두 번 검사, `export_model` trap 복원. `vcix_accel.h`와 `vcix_accel_model`은 그대로 | 기존 `tests/contract`, `tests/rtl` 그대로 PASS. RTL 모델이 영향을 받지 않는지 확인합니다. |
+| 1 | `include/vcix_accel.hpp` → `include/vcix_cp_base.hpp` | `vcix_cp_base.hpp.diff` 적용: namespace `cp`, 통계는 `cp::Counter`, `VCIX_CP_REGISTER`, `Model::check_layout`, `Instance::configure`의 두 번 검사, `export_model` trap 복원. `vcix_accel.h`와 `vcix_accel_model`은 그대로 | 기존 `tests/contract`, `tests/rtl` 그대로 PASS. RTL 모델이 영향을 받지 않는지 확인합니다. |
 | 2 | `include/vcix_cp.hpp` | `vcix_cp.hpp.design`으로 교체 | `verify/probe2`와 `verify/eng/check`를 `tests/contract`에 옮깁니다(trap 1회, vector 거절, 처리량 표, 컴포넌트별 멈춤, interval 거절, on_stage 거절). |
 | 3 | `examples/copier/copier.cc` | `units/examples/copier/copier.cc` | `copier_lockstep`, `timing_probe`, `tests/rtl/run.sh` 전체 |
 | 4 | `examples/tpu/machine.hpp` | trace 변경 (§3.6) | 빌드 |

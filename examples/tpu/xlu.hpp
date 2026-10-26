@@ -100,7 +100,7 @@ class Xlu : public Component {
       throw cp::ConfigError(WIDTH_KEY, config.get(WIDTH_KEY), "is not between 1 and the queue size");
     if (issue < 1 || issue > UINT32_MAX)
       throw cp::ConfigError(ISSUE_KEY, config.get(ISSUE_KEY), "is not an issue rate");
-    entry_.set_width(width), issue_.set_width(issue);
+    elements_.set_capacity(width), issue_.set_width(issue);
     insns().configure(2 * issue, issue);
     queue_.configure(entries), buffer_.configure(MAX_SLOTS), out_.configure(MAX_SLOTS);
     stages_.configure(latency, 1), moves_.configure(move_latency, 1), line_.configure(1, 1);
@@ -115,13 +115,15 @@ class Xlu : public Component {
   void cycle() override {
     if (line_.length()) {
       Result r = line_.pop();
-      for (uint64_t k = 0; k < r.count; k++) out_.push(k < r.slots.size() ? std::move(r.slots[k]) : Column{});
+      for (uint64_t k = 0; k < r.count; k++)
+        if (!out_.push(k < r.slots.size() ? std::move(r.slots[k]) : Column{})) std::abort();
     }
     for (cp::Pipeline<Group> *line : {&stages_, &moves_}) {
       if (!line->length()) continue;
       Group g = line->pop();
       staged_ -= g.count;
-      for (uint32_t k = 0; k < g.count; k++) buffer_.push(k < g.elements.size() ? std::move(g.elements[k]) : Elements{});
+      for (uint32_t k = 0; k < g.count; k++)
+        if (!buffer_.push(k < g.elements.size() ? std::move(g.elements[k]) : Elements{})) std::abort();
     }
     if (queue_.length()) {
       const Element &head = queue_.front();
@@ -129,13 +131,13 @@ class Xlu : public Component {
       if (line.available()) {
         Group g{head.group, {}};
         for (uint32_t k = 0; k < g.count; k++) g.elements.push_back(queue_.pop().lanes);
-        entry_.utilize(g.count);
+        elements_.add(g.count);
         staged_ += g.count;
-        line.push(std::move(g));
+        if (!line.push(std::move(g))) std::abort();
       }
     }
     while (insns().length() && step(insns().front())) insns().pop();
-    entry_.occupy(staged_);
+    elements_in_flight_.add(staged_);
   }
   // What the [tpu] trace adds to an issue: the input queue and the buffer the stages leave into.
   void trace_queues(const vcix_insn &) const override {
@@ -157,7 +159,7 @@ class Xlu : public Component {
     if (const std::string why = fields(in); !why.empty()) return fault(in, why), true;
     if (is(in, XLU_POP)) return pop(in);
     if (!issue_.available()) return false;
-    if (is(in, XLU_SET_PATTERN)) return set_pattern(in), complete(in), true;
+    if (is(in, XLU_SET_PATTERN)) return issue_.utilize(1) && (set_pattern(in), complete(in), true);
     return push(in);
   }
   // Why the unit has no form of the instruction's fields, or "".
@@ -189,7 +191,7 @@ class Xlu : public Component {
     const uint32_t field = cp::rs1(in);
     const bool fold = is(in, XLU_PUSH_REDUCE);
     if (loads(in)) {
-      issue_.utilize(1);
+      if (!issue_.utilize(1)) return false;
       box_.after_entries += in.vl;
       values([&](const Host &host) {
         Tile &pattern = sized(box_.after, host);
@@ -200,8 +202,7 @@ class Xlu : public Component {
       return true;
     }
     if (const std::string why = fits(in); !why.empty()) return fault(in, why), true;
-    if (queue_.available() < in.vl) return false;
-    issue_.utilize(1);
+    if (queue_.available() < in.vl || !issue_.utilize(1)) return false;
     if (left_ && !keep_) {
       while (out_.length()) out_.pop();
       left_ = 0;
@@ -223,7 +224,7 @@ class Xlu : public Component {
     for (uint32_t i = 0; i < in.vl; i++) {
       Element e{group, box_.moves, {}};
       values([&](const Host &host) { e.lanes = element(host, in, i); });
-      queue_.push(std::move(e));
+      if (!queue_.push(std::move(e))) std::abort();
     }
     complete(in);
     return true;
@@ -231,7 +232,6 @@ class Xlu : public Component {
   // The before's pattern, as the v6e's vset.pattern.permute: rs2's vl words in each lane, a lane number per element,
   // kept until the next set; each push after it takes it, so a set between pushes of one tile changes the later ones.
   void set_pattern(const Insn &in) {
-    issue_.utilize(1);
     pattern_width_ = in.vl;
     values([&](const Host &host) {
       pattern_.assign(host.lanes(), {});
@@ -248,7 +248,7 @@ class Xlu : public Component {
       if (!issue_.available()) return false;
       if (pushed && !box_.fold)
         if (const std::string why = patterned(pushed, out); !why.empty()) return fault(in, why, INVALID_XLU_PATTERN), true;
-      issue_.utilize(1);
+      if (!issue_.utilize(1)) return false;
       if (!left_) {
         keep_ = !box_.fold && !(box_.operation & EXCHANGE);
         box_.elements = 0;
@@ -263,7 +263,7 @@ class Xlu : public Component {
       for (uint64_t k = 0; k < pop_.pushed; k++) tile.push_back(buffer_.pop());
       Result r{pop_.out, {}};
       values([&](const Host &host) { r.slots = transform(host, tile, pop_.out); });
-      line_.push(std::move(r));
+      if (!line_.push(std::move(r))) std::abort();
       pop_.pushed = 0;
       return false;
     }
@@ -404,13 +404,14 @@ class Xlu : public Component {
   static constexpr const char *WIDTH_KEY = "tpu_xlu_elements_per_cycle";
   static constexpr const char *ISSUE_KEY = "tpu_xlu_issue_per_cycle";
 
-  cp::Port entry_{*this, "input", "elements", 1, cp::Port::PRIMARY};
-  cp::Port issue_{*this, "issue", "instructions", 1};
-  cp::Queue<Element> queue_{*this, "queue", "elements"};
-  cp::Pipeline<Group> stages_{*this, "stages", "groups"}, moves_{*this, "moves", "groups"};
-  cp::Queue<Elements> buffer_{*this, "buffer", "elements"};
-  cp::Pipeline<Result> line_{*this, "line", "results"};
-  cp::Queue<Column> out_{*this, "out", "slots"};
+  cp::Counter elements_{*this, "elements", 1};
+  cp::Counter elements_in_flight_{*this, "elements_in_flight"};
+  cp::Port issue_{*this, "issue", 1};
+  cp::Queue<Element> queue_{*this, "queue"};
+  cp::Pipeline<Group> stages_{*this, "stages"}, moves_{*this, "moves"};
+  cp::Queue<Elements> buffer_{*this, "buffer"};
+  cp::Pipeline<Result> line_{*this, "line"};
+  cp::Queue<Column> out_{*this, "out"};
   Box box_;
   Pop pop_;
   Tile pattern_;

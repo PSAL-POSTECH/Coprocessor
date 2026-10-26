@@ -5,6 +5,7 @@
 #define TPU_MSA_HPP
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <string>
@@ -51,13 +52,13 @@ class Msa : public Component {
   // The array hands its finished row on while the output queue has room and takes the input queue's next; then the
   // head of insns(), carried out whole (or faulted).
   void cycle() override {
-    if (array_.length() && !output_.full()) output_.push(array_.pop());
-    if (input_.length() && array_.available()) {
-      entry_.utilize(1);
-      array_.push(input_.pop());
+    if (array_.length() && output_.push(std::move(array_.front()))) array_.pop();
+    if (input_.length() && array_.push(std::move(input_.front()))) {
+      rows_.add(1);
+      input_.pop();
     }
     if (insns().length() && carry_out(insns().front())) insns().pop();
-    entry_.occupy(array_.size());
+    rows_in_flight_.add(array_.size());
   }
   void trace_queues(const vcix_insn &) const override {
     std::printf(", input queue %u, output queue %u", static_cast<uint32_t>(input_.size()), static_cast<uint32_t>(output_.size()));
@@ -81,18 +82,16 @@ class Msa : public Component {
       return lanes_ >> shift != 0 ? "" : message("msa push: no column is left of %u when shifted by %u", lanes_, shift);
     return pack == held ? "" : message("msa push: inputs of %u to a word, weights of %u", pack, held);
   }
-  // The head of insns() in this cycle, if the issue slot, the rows or the room allow: a weight push writes the matrix
+  // The head of insns() in this cycle, if the rows or the room allow: a weight push writes the matrix
   // (changing the format or the width empties it); an input push puts vl rows in, a pop takes vl rows out. True once
   // it completed, or faulted: a wrong push, or a pop asking more rows than the idle array and its queues hold.
   bool carry_out(const Insn &insn) {
     const uint32_t vl = insn.vl, field = cp::rs1(insn), format = field & 3;
-    if (!issue_.available()) return false;
     if (const std::string why = refusal(insn); !why.empty()) return fault(insn, why), true;
     if (is(insn, POP)) {
       if (output_.size() < vl && !input_.size() && array_.idle())
         return fault(insn, message("msa pop: %u elements asked, %llu computed", vl, static_cast<unsigned long long>(output_.size()))), true;
-      if (output_.length() < vl || pop_.available() < vl) return false;
-      pop_.utilize(vl);
+      if (output_.length() < vl || !pop_.utilize(vl)) return false;
       for (uint32_t i = 0; i < vl; i++) {
         const Row row = output_.pop();
         values([&](const Host &host) { popped(host, insn, i, row); });
@@ -102,14 +101,12 @@ class Msa : public Component {
       for (uint32_t i = 0; i < vl; i++) {
         Row row;
         values([&](const Host &host) { row = input(host, insn, i); });
-        input_.push(std::move(row));
+        if (!input_.push(std::move(row))) std::abort();
       }
     } else {
-      weight_push_.utilize(1);
       values([&](const Host &host) { latch(host, insn); });
       format_ = format;
     }
-    issue_.utilize(1);
     complete(insn);
     return true;
   }
@@ -173,10 +170,9 @@ class Msa : public Component {
   static constexpr const char *LANES_KEY = "vpu_num_lanes";
   static constexpr const char *QUEUE_KEY = "tpu_systolic_queue_entries";
 
-  cp::Port entry_{*this, "input", "rows", 1, cp::Port::PRIMARY};
-  cp::Port issue_{*this, "issue", "instructions", 1};
-  cp::Port weight_push_{*this, "weight_push", "instructions", 1};
-  cp::Port pop_{*this, "pop", "rows", 256};
+  cp::Counter rows_{*this, "rows", 1};
+  cp::Counter rows_in_flight_{*this, "rows_in_flight"};
+  cp::Port pop_{*this, "pop", 256};
   cp::Queue<Row> input_{*this, "input_queue"};
   cp::Pipeline<Row> array_{*this, "array"};
   cp::Queue<Row> output_{*this, "output_queue"};

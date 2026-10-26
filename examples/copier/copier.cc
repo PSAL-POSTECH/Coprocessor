@@ -34,12 +34,11 @@ class Copier : public cp::Component {
   // waits if the unit is no longer busy.
   void cycle() override {
     if (left_) {
-      memory_.utilize(1);
-      left_--;
+      left_ -= memory_.utilize(1);
     } else if (commands_.length() && is(COPY, commands_.pop())) {
       left_ = 2 * BYTES / 8;
     }
-    if (insns().length() && !commands_.full()) enter(insns().pop());
+    if (insns().length() && commands_.push(insns().front())) enter(insns().pop());
     if (left_ || commands_.size()) return;
     for (const cp::Insn &wait : waits_) complete(wait);
     waits_.clear();
@@ -61,15 +60,14 @@ class Copier : public cp::Component {
       }
       source_ += BYTES;
     });
-    issue_.utilize(1);
-    commands_.push(insn);
+    instructions_.add(1);
     if (is(COPY_WAIT, insn)) waits_.push_back(insn);
     else complete(insn);
   }
 
-  cp::Port issue_{*this, "issue", "instructions", 1, cp::Port::PRIMARY};
-  cp::Port memory_{*this, "memory", "requests", 1};
-  cp::Queue<cp::Insn> commands_{*this, "commands", "commands"};
+  cp::Counter instructions_{*this, "instructions", 1};
+  cp::Port memory_{*this, "memory", 1};
+  cp::Queue<cp::Insn> commands_{*this, "commands"};
   uint64_t source_ = 0, left_ = 0;
   std::vector<cp::Insn> waits_;
 };

@@ -48,6 +48,7 @@ class Misc : public cp::Component {
     const uint64_t width = config.uint(WIDTH_KEY, 2);
     if (width == 0) throw cp::ConfigError(WIDTH_KEY, "0", "is not an issue width: at least 1");
     issue_.set_width(width);
+    instructions_.set_capacity(width);
     insns().configure(2 * width, width);
     dma_ = Dma{};
     dma_.configure(config);
@@ -57,9 +58,9 @@ class Misc : public cp::Component {
   // transfer on a machine with no scratchpad is a fault (mvin2 and mvin3 are mvin's); one that leaves the scratchpad
   // (Spike only, where the values run) a fault with Dma::INVALID_SPAD_ACCESS.
   void cycle() override {
-    while (insns().length() && issue_.available()) {
+    while (insns().length() && issue_.utilize(1)) {
       const Insn in = insns().pop();
-      issue_.utilize(1);
+      instructions_.add(1);
       if (transfer(in) && !dma_.scratchpad()) {
         fault(in, message("%s: the machine description has no %s", is(in, MVOUT) ? MVOUT.name : MVIN.name, Dma::SPAD_LANE_KEY));
         continue;
@@ -138,7 +139,8 @@ class Misc : public cp::Component {
 
   static constexpr const char *WIDTH_KEY = "tpu_misc_issue_width";
 
-  cp::Port issue_{*this, "issue", "instructions", 2, cp::Port::PRIMARY};
+  cp::Port issue_{*this, "issue", 2};
+  cp::Counter instructions_{*this, "instructions", 2};
   Dma dma_;
 };
 

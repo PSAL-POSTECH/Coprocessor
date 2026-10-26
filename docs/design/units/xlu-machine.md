@@ -33,7 +33,7 @@ push issued at 18 and squashed at 22 leaves every statistic the same as a run wi
    +---------------------------+     |
    | queue_  Queue<Element>    |     |  capacity tpu_xlu_queue_entries (elements)
    +---------------------------+     |
-        | head group of gcd(vl, width) elements, 1 group a cycle, spends entry_ ("input", PRIMARY)
+        | head group of gcd(vl, width) elements, 1 group a cycle, counted in elements_
         v                            |
    +---------------------------+  +---------------------------+
    | stages_ Pipeline<Group>   |  | moves_  Pipeline<Group>   |  a fold's / exchange's tile: stages_
@@ -152,22 +152,17 @@ that is the state after `tick(t)`.
 
 tpu.cc: no change is needed (FACT, the file in `units/` is a byte-for-byte copy).
 
-## 4. Statistics (no ABI change)
+## 4. Statistics
 
-FACT, `verify/xlu/xlu_check` `Instance::dump_stats`, xlu.S on xlu.yml, 420 ticks (gem5 prefixes each line with
-`system.cpu.executeFuncUnits.funcUnits<N>.`, FACT `README.md:837`):
+`XLU`'s counters (ENGINE §6), xlu.S on xlu.yml (gem5 prefixes each line with `system.cpu.executeFuncUnits.funcUnits<N>.`):
 
 ```
-vcix.XLU.admitted          20  # elements admitted at port input         capacity 1, occupancy 60 (20 x 3)
+vcix.XLU.elements             20  # elements, at most tpu_xlu_elements_per_cycle a cycle
+vcix.XLU.elements_in_flight   60  # 20 x 3: elements in the stages, summed over cycles
 ```
 
-Each unit also prints `.cycles`, `.occupancy` and `.utilized_cycles`.
-- `vcix.XLU.*` keeps today's meaning (FACT check: `sfu_and_xlu` gives admitted 5, occupancy 15). It is the PRIMARY
-  `cp::Port` `input`: elements entering the stages, with occupancy = elements in the stages per cycle (via
-  `entry_.hold`).
-- `issue` is a REPORTING port: listed in `ports()`, not a statistic.
-- Today's REPORTING `output` port (`UNLIMITED`, never limited anything) is deleted.
-- ports() order is `insns, input, issue, queue, stages, moves, buffer, line, out`, all under unit `XLU`; only `input`, the PRIMARY port, is a statistic.
+- `elements` counts the elements entering the stages (FACT check: `sfu_and_xlu` gives 5, and `elements_in_flight` 15).
+- `issue` is a `Port` that limits the starts a cycle; no port, queue or pipeline is a statistic.
 
 ## 5. Re-baselined tests
 
@@ -189,12 +184,12 @@ lets them share one. Most deltas come from the rows entering `queue_` in `tick(t
 | `run.sh:137-139` `commit xlu_pop: 9` (pattern), `12` (move), `9` (move-exchange) | 2 and 2, 2 | **0 and 0, 0**: pattern 8 and 8, move 11 and 11, move-exchange 8 and 8 | the move latency still adds 3 |
 | `run.sh:141-147` eight pushes | lines 8 | **lines 5**: `8 cycles …, 0 in flight, input queue 1, output queue 0`, then `1 cycles …` with queues `2 0`, `3 0`, `4 1`, `5 2`, `6 3`, `7 4` | the push after the pop waits for it at the head; the queue counts include the previous push's rows |
 | `run.sh:149-154` pops after the 18-element tile | lines 3 of 13 | **lines 0 of 13**: `issue xlu_pop: 1 cycles …, 0 in flight, input queue 2, output queue 16`, `issue xlu_pop: 1 cycles …, 1 in flight, input queue 1, output queue 16`; commits 8 and 7 | the second pop waits in `insns()` behind the first and completes from what is left |
-| `tests/tpu/ports.cc:192-199` sfu_and_xlu, XLU part | admitted 5, occupancy 15 | **5, 15** | 3 cycles per element in the stages |
+| `tests/tpu/ports.cc:192-199` sfu_and_xlu, XLU part | elements 5, elements_in_flight 15 | **5, 15** | 3 cycles per element in the stages |
 | `ports.cc:291-302` fewer_pushed(XLU) | 1, 100 | **1, 1**; the first pop faults, and its commit exits 1 (`tpu: xlu pop: 2 elements asked, 1 left`) | a second pop fits behind the faulted first |
 | `ports.cc:325-336` xlu_shallower, per tile (pop, rest, push) | (1, 11, 1) ×100, first 1 | **(1, 1, 10) ×100, first 1** | both pops queue in `insns()` |
-| `ports.cc:108-123` list(), `tests/tpuv3/ports.cc:37-49`, `tests/tpuv6e/ports.cc:37-49` | XLU = 1 unit | **XLU = 1 unit**, its PRIMARY port `input` | queues and pipelines are REPORTING, no unit |
-| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `units …` | `… TPUV3_XLU` | unchanged | same |
-| `tests/stats/run.sh` consistent / beyond_units | 5 of 5, 0 | **5 of 5, 0** | `vcix.XLU.*` is still the PRIMARY port |
+| `ports.cc:108-123` list(), `tests/tpuv3/ports.cc`, `tests/tpuv6e/ports.cc` | XLU's counters | **`elements`, `elements_in_flight`** | ports, queues and pipelines are no statistics |
+| `tests/tpuv3/run.sh:62`, `tests/tpuv6e/run.sh:63` `groups …` | `… TPUV3_XLU` | unchanged | same |
+| `tests/stats/run.sh` listed / beyond_units | the counters, 0 | **the same** | `vcix.XLU.elements` and `elements_in_flight` |
 | `tests/tpu/functional/run.sh:141-146,162-164` | pass; exit 201 / 1 / 1 | **unchanged** (FACT `verify/xlu`: values of fields 0/4/8/16 and fold sum, exits 201, 1, 1) | same values and messages |
 
 The `ports.cc` drivers must poll `ready()` (FACT `tests/tpu/ports.cc:63` commits at `now + latency`). The README's

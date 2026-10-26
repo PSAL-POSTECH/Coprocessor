@@ -31,23 +31,23 @@
           values([&](const Host &host) { special_function(host, row.insn); });
           complete(row.insn);
         }
-      } else if (!eup_output_.full()) {
-        eup_output_.push(eup_.pop().pushed);
+      } else if (eup_output_.push(std::move(eup_.front().pushed))) {
+        eup_.pop();
       }
     }
-    if (eup_.available() && eup_input_.length()) eup_.push({Insn{}, 0, false, eup_input_.pop()});
+    if (eup_input_.length() && eup_.push(Row{Insn{}, 0, false, eup_input_.front()})) eup_input_.pop();
     if (insns().length() && head(insns().front())) {
       insns().pop();
-      entry_.utilize(1);
+      instructions_.add(1);
       moved_ = 0;
     }
 ```
 
 **Misc** — 11개 명령 모두 t+1에 끝나며, 사이클당 W개 accept는 `insns().configure(2 * width, width)`가 맡습니다.
 ```cpp
-    while (insns().length() && issue_.available()) {
+    while (insns().length() && issue_.utilize(1)) {
       const Insn in = insns().pop();
-      issue_.utilize(1);
+      instructions_.add(1);
       values([&](const Host &host) { apply(host, in); });
       complete(in);
     }
@@ -56,7 +56,7 @@
 **Xlu** — 유닛 안은 엄격한 프로그램 순서이고, 머리가 못 나가면 뒤 명령도 기다립니다.
 ```cpp
     while (insns().length() && step(insns().front())) complete(insns().pop());
-    entry_.occupy(staged_);
+    elements_in_flight_.add(staged_);
 ```
 
 **Systolic** — golden 배열은 push의 첫 행을 t+1이 아니라 t+2에 받습니다.
@@ -65,34 +65,37 @@
       if (insns().length() && work(insns().front())) weigh(insns().pop());
     } else {
       if (commands_.length() && work(commands_.front())) commands_.pop();
-      if (insns().length() && !commands_.full()) enter(insns().pop());
+      if (insns().length() && !commands_.full()) {
+        const Insn in = insns().pop();
+        if (!wrong(in)) enter(in);
+      }
     }
 ```
 
 **Msa** — 출력 큐가 찼을 때 배열 전체가 아니라 끝난 머리만 붙잡습니다.
 ```cpp
-    if (array_.length() && !output_.full()) output_.push(array_.pop());
-    if (input_.length() && array_.available()) {
-      entry_.utilize(1);
-      array_.push(input_.pop());
+    if (array_.length() && output_.push(std::move(array_.front()))) array_.pop();
+    if (input_.length() && array_.push(std::move(input_.front()))) {
+      rows_.add(1);
+      input_.pop();
     }
-    if (insns().length() && carry_out(insns().front())) complete(insns().pop());
-    entry_.occupy(array_.size());
+    if (insns().length() && carry_out(insns().front())) insns().pop();
+    rows_in_flight_.add(array_.size());
 ```
 
 **Mxu** — 필드 검사만 `valid()`에 남고, 상태 검사는 `carried(VALID|HEAD|WHY)`로 머리에서 합니다.
 ```cpp
     uint64_t in_line = 0;
-    for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_);
-    while (insns().length() && carry_out(insns().front())) complete(insns().pop());
-    entry_.occupy(in_line);
+    for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_, rows_);
+    while (insns().length() && carry_out(insns().front())) insns().pop();
+    rows_in_flight_.add(in_line);
+    active_cycles_.add(in_line != 0);
 ```
 
 **Copier** — copier.sv의 한 클럭 에지가 `cycle()` 하나이며, `copier_lockstep`이 PASS입니다.
 ```cpp
     if (left_) {
-      memory_.utilize(1);
-      left_--;
+      left_ -= memory_.utilize(1);
     } else if (commands_.length() && is(COPY, commands_.pop())) {
       left_ = 2 * BYTES / 8;
     }
@@ -107,7 +110,7 @@
 | 프레임워크 | `tests/contract/route_once.cc:59,63` | 6 → **5** |
 | 프레임워크 | `tests/tpu/ports.cc` 외 드라이버, `tpuv3/run.sh:62`·`tpuv6e/run.sh:63` units | `now + latency` commit → `ready()` poll; 유닛 목록 **FAIL**, 블록 단위 추가 |
 | Sfu/Misc | `tests/tpu/run.sh:52`, `:64`, `:66`, `:164`, `:186` | 10 → **11**, 10/10 → **11/11**, 4/4 → **5/5**, 10 → **11**, 10 → **11** |
-| Sfu | `ports.cc:180-190` 1000 vexp, `tests/tpuv6e/run.sh:126-128` push → pop ready | admitted 1000 → **999**; L=10: 19 → **20**, L=4: 13 → **14** |
+| Sfu | `ports.cc:180-190` 1000 vexp, `tests/tpuv6e/run.sh:126-128` push → pop ready | `SFU.instructions` 1000 → **999**; L=10: 19 → **20**, L=4: 13 → **14** |
 | Sfu (EUP 공유, 고정 테스트 없음) | push m8 다음 vexp m1 / vexp m2 / vexp m8 (L=10) | vexp ready−issue 11 → **19** / 11 → **12** / 11 → **18** |
 | Xlu | `tests/tpu/run.sh:114-131` fold / wide / issue / xlu | lines 2 / 1 / 1 / 2 → **1 / 0 / 0 / 1** |
 | Xlu | `run.sh:137-154` commits / eight pushes / 18원소 타일 | 2 and 2, 2 → **0 and 0, 0**; lines 8 → **5**; 3 of 13 → **0 of 13** |
@@ -129,8 +132,9 @@
 | 5. 틀린 프로그램 | 순서 오류와 필드 오류 모두 `fault(insn, why, exit_code = 1)`로 완료합니다. gem5는 commit에서, Spike는 `execute`에서 `why`를 내고 끝납니다. `why_stuck`은 없앱니다. | 순서 오류는 XLU·MXU, 필드 오류는 sfu·xlu·msa·mxu·misc·systolic이 대상입니다. gem5도 이유를 출력합니다(지금은 받지 않고 멈춤). squash된 명령은 commit되지 않으므로 오류가 나지 않습니다. |
 | 6. `valid()` | 흐름 제어 전용으로 좁힙니다. 이름은 `valid`로 둡니다. | copier와 systolic RTL 모드만 씁니다. `copier_lockstep`이 이 accept 시점에 기댑니다. |
 | 7. 종료 코드 201·200 | xlu pattern 오류(201)와 MVIN/MVOUT 주소 overflow(200)도 `fault(insn, why, 201|200)`로 통일합니다. `std::exit` 직접 호출은 없습니다. | Spike 거절 테스트 12개의 문구와 종료 코드는 그대로입니다. gem5는 pattern 누락 pop을 영구 대기 대신 commit에서 exit 201로 끝냅니다. "gem5는 받지 않는다" 테스트와 README 문장은 "commit에서 오류로 끝난다"로 바꿉니다. |
-| 8. 이름 | 공용 층과 엔진을 한 네임스페이스 `cp`로 합칩니다. `vcix_accel.hpp` → `vcix_cp_base.hpp`, `vcix_accel::Port` → `cp::Stats`(상속 대신 멤버), `Block::end_cycle` → `cycle`, `spike()`/`on_spike()` → `functional_model()`, `VCIX_ACCEL_REGISTER` → `VCIX_CP_REGISTER`. | C ABI(`vcix_accel.h`, 심볼 `vcix_accel_model`)는 그대로입니다. RTL 모델과 contract 테스트 14곳의 include와 네임스페이스를 함께 고칩니다. 공용 층의 `Insn` 별칭은 없애고 `vcix_insn`을 씁니다(`cp::Insn`은 엔진의 id 달린 명령).  설계 파일 전체에 적용했고, 일회용 드라이버 출력 42개가 변경 전과 바이트 단위로 같습니다. |
-| 9. 블록 메서드 이름 | `room(now)` → `available()`, `spend(n, now)` → `utilize(n)`, `Port::hold(n)` → `occupy(n)`. | `Port`와 `Queue`에 같이 적용. `utilize`는 통계 `utilized_cycles`와, `occupy`는 OCCUPANCY와 이어집니다. 드라이버 출력 42개 동일. |
+| 8. 이름 | 공용 층과 엔진을 한 네임스페이스 `cp`로 합칩니다. `vcix_accel.hpp` → `vcix_cp_base.hpp`, `Block::end_cycle` → `cycle`, `spike()`/`on_spike()` → `functional_model()`, `VCIX_ACCEL_REGISTER` → `VCIX_CP_REGISTER`. | C ABI(`vcix_accel.h`, 심볼 `vcix_accel_model`)는 그대로입니다. RTL 모델과 contract 테스트 14곳의 include와 네임스페이스를 함께 고칩니다. 공용 층의 `Insn` 별칭은 없애고 `vcix_insn`을 씁니다(`cp::Insn`은 엔진의 id 달린 명령).  설계 파일 전체에 적용했고, 일회용 드라이버 출력 42개가 변경 전과 바이트 단위로 같습니다. |
+| 9. 블록 메서드 이름 | `room(now)` → `available()`, `spend(n, now)` → `utilize(n)`. | `Port`와 `Queue`에 같이 적용. 드라이버 출력 42개 동일. |
+| 10. 통계 (ABI 13) | 블록은 동작만 합니다. 통계는 `cp::Counter(component, name, capacity = 0)`뿐이고, C 표 항목은 `{group, name, capacity}`입니다. `utilize`와 `push`는 `[[nodiscard]] bool`: 자리가 없으면 아무것도 안 가져가고 `false`. | capacity > 0인 카운터가 TOGSim의 단위 `<COMPONENT>.<name>`입니다. 예: `rows`/`instructions`/`elements`(사이클당 최대 capacity)와 `*_in_flight`(사이클마다 든 양의 합). |
 
 ## 구현 순서
 

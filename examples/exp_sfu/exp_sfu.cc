@@ -25,12 +25,15 @@ class ExpSfu : public cp::Component {
       values([&](const cp::Host &host) { exp_of(host, in); });
       complete(in);
     }
-    // 2. Then fill: the head instruction enters the EUP when it can take a row; a wrong one is a fault.
-    if (insns().length() && eup_.available()) {
-      const cp::Insn in = insns().pop();
-      entry_.utilize(1);
-      if (supported(in)) eup_.push(in);
-      else fault(in, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
+    // 2. Then fill: the head instruction enters the EUP when it takes a row; a wrong one is a fault there instead.
+    if (insns().length()) {
+      const cp::Insn &head = insns().front();
+      const bool wrong = !supported(head);
+      if (wrong ? eup_.available() : eup_.push(head)) {
+        if (wrong) fault(head, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
+        instructions_.add(1);
+        insns().pop();
+      }
     }
   }
 
@@ -44,8 +47,8 @@ class ExpSfu : public cp::Component {
     }
   }
 
-  cp::Port entry_{*this, "entry", "instructions", 1, cp::Port::PRIMARY};
-  cp::Pipeline<cp::Insn> eup_{*this, "eup", "instructions"};
+  cp::Counter instructions_{*this, "instructions", 1};
+  cp::Pipeline<cp::Insn> eup_{*this, "eup"};
 };
 
 class ExpSfuCP final : public cp::Coprocessor {

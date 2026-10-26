@@ -34,11 +34,11 @@ done
 printf 'tpu_trace: 1\ntpu_sfu_latency_cycles: 4\n' > "$BUILD/tpu-latency-4.yml"
 printf 'tpu_sfu_latency_cycles: 0\n' > "$BUILD/tpu-latency-0.yml"
 
-echo "-- the units' ports, with no simulator"
+echo "-- the counters, with no simulator"
 "$BUILD/tpu_ports" "$BUILD/libtpu.so" > "$BUILD/tpu-ports.log" 2>&1
 rc[ports]=$?
 report "exit ${rc[ports]}, $(grep -c '^PASS' "$BUILD/tpu-ports.log") passed" "exit 0, 17 passed" \
-  "tpu_ports: each unit's ports count what the cases worked out by hand say (tpu-ports.log)"
+  "tpu_ports: each component's counters count what the cases worked out by hand say (tpu-ports.log)"
 
 echo "-- special-function unit"
 on_gem5 sfu sfu "$HERE/trace.yml"
@@ -213,9 +213,8 @@ for name in vlane_idx compute dma_config_desc dma_index_key mvin mvin2 mvin3 mvo
 done
 report "exit ${rc[machine-misc]}, at most and in all $(misc_per_cycle machine-misc)" "exit 0, at most and in all 2 8" \
   "script_systolic.py issues one_cycle.S's eight tpu::Misc instructions at most two a cycle, though the CPU issues 12"
-report "capacity $(machine_stat machine-misc MISC.capacity), admitted $(machine_stat machine-misc MISC.admitted) of $committed committed" \
-  "capacity 2, admitted 8 of 8 committed" \
-  "MISC, at its primary port issue, takes 2 a cycle and admits each committed custom-2 and DMA instruction of tpu::Misc once"
+report "instructions $(machine_stat machine-misc MISC.instructions) of $committed committed" "instructions 8 of 8 committed" \
+  "MISC counts each committed custom-2 and DMA instruction of tpu::Misc once"
 
 printf 'tpu_trace: 1\ntpu_misc_issue_width: 3\nvpu_spad_size_kb_per_lane: 512\n' > "$BUILD/tpu-misc-3.yml"
 printf 'tpu_misc_issue_width: 0\n' > "$BUILD/tpu-misc-0.yml"
@@ -225,8 +224,8 @@ for width in 3 0; do
     > "$BUILD/tpu-machine-misc-$width.gem5.log" 2>&1
   rc[machine-misc-$width]=$?
 done
-report "exit ${rc[machine-misc-3]}, capacity $(machine_stat machine-misc-3 MISC.capacity), at most and in all $(misc_per_cycle machine-misc-3)" \
-  "exit 0, capacity 3, at most and in all 3 8" "gem5 follows tpu_misc_issue_width: 3 from the machine description"
+report "exit ${rc[machine-misc-3]}, at most and in all $(misc_per_cycle machine-misc-3)" \
+  "exit 0, at most and in all 3 8" "gem5 follows tpu_misc_issue_width: 3 from the machine description"
 why=$(grep -Fc "tpu: machine description: tpu_misc_issue_width: '0' is not an issue width: at least 1" \
   "$BUILD/tpu-machine-misc-0.gem5.log")
 report "exit ${rc[machine-misc-0]}, reason given $why" "exit 1, reason given 1" "gem5 stops on tpu_misc_issue_width: 0"

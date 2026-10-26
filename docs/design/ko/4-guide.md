@@ -7,7 +7,7 @@
 - 컴포넌트(`cp::Component`)는 내 하드웨어 블록 하나입니다.
 - `insns()`는 그 블록의 명령 입력 큐입니다. 프레임워크가 명령을 여기에 넣어 줍니다.
 - `cycle()`는 그 블록이 매 클럭 하는 일입니다. 타이밍은 모두 여기서 정합니다.
-- 블록(`cp::Port`, `cp::Pipeline<T>`, `cp::Queue<T>`)은 컴포넌트 안에 배치하는 부품입니다. 통계 단위는 컴포넌트(PRIMARY 포트) 하나이고, 큐와 파이프라인은 통계에 오르지 않습니다.
+- 블록(`cp::Port`, `cp::Pipeline<T>`, `cp::Queue<T>`)은 컴포넌트 안에 배치하는 부품이며 동작만 합니다. 통계는 `cp::Counter`뿐입니다.
 - 값(레지스터·메모리)은 `values()` 안에서만 씁니다. 이 코드는 Spike에서만 돕니다. 명령이 끝나면 `complete(insn)`을 부릅니다.
 
 ## 1. 예제 A: `vexp`만 하는 SFU
@@ -16,8 +16,8 @@
 
 ```
  insns()  Queue (2, 1)       in order, one accepted per cycle
-            | head, when eup.available()
- entry    Port (1)           PRIMARY -> stats unit "SFU"
+            | head, when eup.push() takes it
+ instructions  Counter (1)   -> statistic SFU.instructions
             v
  eup      Pipeline (L, 1)    stage 0 -> stage 1 -> ... -> stage L-1
             | length() -> pop()
@@ -54,12 +54,15 @@ class ExpSfu : public cp::Component {
       values([&](const cp::Host &host) { exp_of(host, in); });
       complete(in);
     }
-    // 2. Then fill: the head instruction enters the EUP when it can take a row; a wrong one is a fault.
-    if (insns().length() && eup_.available()) {
-      const cp::Insn in = insns().pop();
-      entry_.utilize(1);
-      if (supported(in)) eup_.push(in);
-      else fault(in, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
+    // 2. Then fill: the head instruction enters the EUP when it takes a row; a wrong one is a fault there instead.
+    if (insns().length()) {
+      const cp::Insn &head = insns().front();
+      const bool wrong = !supported(head);
+      if (wrong ? eup_.available() : eup_.push(head)) {
+        if (wrong) fault(head, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
+        instructions_.add(1);
+        insns().pop();
+      }
     }
   }
 
@@ -73,8 +76,8 @@ class ExpSfu : public cp::Component {
     }
   }
 
-  cp::Port entry_{*this, "entry", "instructions", 1, cp::Port::PRIMARY};
-  cp::Pipeline<cp::Insn> eup_{*this, "eup", "instructions"};
+  cp::Counter instructions_{*this, "instructions", 1};
+  cp::Pipeline<cp::Insn> eup_{*this, "eup"};
 };
 
 class ExpSfuCP final : public cp::Coprocessor {
@@ -104,12 +107,8 @@ cycle 0: can_accept=1
 cycle 1: can_accept=1
 cycle 4: vexp 0 ready (issued 0)
 cycle 5: vexp 1 ready (issued 1)
-vcix.SFU.admitted                                2  # instructions admitted at port entry
-vcix.SFU.capacity                                1  # instructions per cycle
-vcix.SFU.cycles                                  12
-vcix.SFU.occupancy                               0  # instructions held, summed over cycles
-vcix.SFU.utilized_cycles                         2.000000  # admitted / capacity
-vcix.committed.vexp                              2
+vcix.SFU.instructions                            2  # instructions, at most 1 a cycle
+vcix.committed.vexp                              2  # vexp
 ```
 
 틀린 명령(64비트 원소)은 받아들여진 뒤 `fault`로 끝납니다. gem5식에서는 commit 때, Spike식에서는 `execute`가 돌아올 때 같은 문구를 내고 exit 1입니다.
@@ -131,8 +130,8 @@ L = 3, A를 사이클 0에, B를 사이클 1에 제시하면 issue에서 ready�
 | t | `cycle()` 안에서 | `cycle()` 뒤 EUP | 같은 t의 gem5 |
 |---|---|---|---|
 | 0 | 할 일 없음 | 빈 상태 | A accept·issue. 사이클당 한도 1로 B 거절 |
-| 1 | A pop, `eup.push(A)`, `entry.utilize(1)` | A 나이 1 | `available(1) = 2 − 0 − 1 = 1` → B accept·issue |
-| 2 | B pop, `eup.push(B)` | A 2, B 1 | |
+| 1 | `eup.push(A)`, A를 세고 pop | A 나이 1 | `available(1) = 2 − 0 − 1 = 1` → B accept·issue |
+| 2 | `eup.push(B)`, B를 세고 pop | A 2, B 1 | |
 | 3 | 할 일 없음 | A 3 = L → A 끝남, B 2 | |
 | 4 | A pop, `values`, `complete(A)` | B 3 → B 끝남 | `ready(A, 4)` 참 |
 | 5 | B pop, `complete(B)` | 빈 상태 | `ready(B, 5)` 참 |
@@ -212,14 +211,14 @@ class Sfu : public Component {
           values([&](const Host &host) { special_function(host, row.insn); });
           complete(row.insn);
         }
-      } else if (!eup_output_.full()) {
-        eup_output_.push(eup_.pop().pushed);
+      } else if (eup_output_.push(std::move(eup_.front().pushed))) {
+        eup_.pop();
       }
     }
-    if (eup_.available() && eup_input_.length()) eup_.push({Insn{}, 0, false, eup_input_.pop()});
+    if (eup_input_.length() && eup_.push(Row{Insn{}, 0, false, eup_input_.front()})) eup_input_.pop();
     if (insns().length() && head(insns().front())) {
       insns().pop();
-      entry_.utilize(1);
+      instructions_.add(1);
       moved_ = 0;
     }
   }
@@ -310,10 +309,10 @@ class Sfu : public Component {
   static constexpr uint64_t DEFAULT_ENTRIES = 16;
   static constexpr const char *QUEUE_KEY = "tpu_sfu_queue_registers";
 
-  cp::Port entry_{*this, "entry", "instructions", 1, cp::Port::PRIMARY};
-  cp::Queue<Register> eup_input_{*this, "eup_input", "registers"};
-  cp::Pipeline<Row> eup_{*this, "eup", "registers"};
-  cp::Queue<Register> eup_output_{*this, "eup_output", "registers"};
+  cp::Counter instructions_{*this, "instructions", 1};
+  cp::Queue<Register> eup_input_{*this, "eup_input"};
+  cp::Pipeline<Row> eup_{*this, "eup"};
+  cp::Queue<Register> eup_output_{*this, "eup_output"};
   uint32_t moved_ = 0;
 };
 
@@ -448,8 +447,8 @@ class Coprocessor : public cp::Coprocessor {
 ```cpp
     const bool enable = !output_.full();
     if (insns().length() && work(insns().front())) insns().pop();
-    if (enable && array_.length()) output_.push(array_.pop());
-    if (enable && input_.length() && array_.available()) { array_.push(input_.pop()); entry_.utilize(1); }
+    if (enable && array_.length() && output_.push(std::move(array_.front()))) array_.pop();
+    if (enable && input_.length() && array_.push(std::move(input_.front()))) { input_.pop(); rows_.add(1); }
 ```
 
 ## 4. 빌드하고 실행하기
@@ -464,10 +463,10 @@ spike_run build/libexp_sfu.so examples/exp_sfu/machine.yml build/vexp2          
 gem5_run build/m5out-exp build/libexp_sfu.so examples/exp_sfu/machine.yml build/vexp2   # time
 ```
 
-gem5의 `stats.txt` 줄은 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<unit>.<stat>` 모양이고, 컴포넌트마다 `<unit>`이 하나입니다(PRIMARY 포트에서 셈). §1의 두 `vexp`라면 다음이 나와야 합니다.
+gem5의 `stats.txt` 줄은 카운터마다 `system.cpu.executeFuncUnits.funcUnits<N>.vcix.<component>.<counter>` 모양입니다. §1의 두 `vexp`라면 다음이 나와야 합니다.
 
 ```
-system.cpu.executeFuncUnits.funcUnits8.vcix.SFU.admitted               2
+system.cpu.executeFuncUnits.funcUnits8.vcix.SFU.instructions           2
 system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vexp             2
 ```
 
@@ -475,8 +474,8 @@ system.cpu.executeFuncUnits.funcUnits8.vcix.committed.vexp             2
 
 | 규칙 | 이유 |
 |---|---|
-| 블록은 모델 객체 안에 둡니다(`std::vector` 금지, `std::optional`은 가능) | 바이트 오프셋으로 찾으므로 복사본(squash)이 자기 블록을 찾아야 합니다 |
-| `cp::Port`가 있으면 정확히 하나를 PRIMARY로 | 아니면 `unit X has N primary ports, not one`으로 거절됩니다 |
+| 블록과 카운터는 모델 객체 안에 둡니다(`std::vector` 금지, `std::optional`은 가능) | 바이트 오프셋으로 찾으므로 복사본(squash)이 자기 블록을 찾아야 합니다 |
+| 카운터 이름은 컴포넌트 안에서 유일하게(`_`로 바꾼 뒤에도) | 아니면 `counters C.a and C.b are both vcix.C.x as statistics`로 거절됩니다 |
 | 멤버에 포인터를 두지 않습니다 | 복사본이 원본을 가리킵니다 |
 | 시간만 흐르는 기다림은 `Pipeline(L, 1)`에 둡니다 | plain 카운트다운은 Spike에서 첫 tick에 멈춤으로 끝납니다 |
 | 틀린 명령(필드 오류, 순서 오류)은 `cycle()`에서 `fault(insn, why, exit_code = 1)`; "나중에 될" 명령은 머리에서 기다리게 | accept hook은 RTL의 ready처럼 잠깐 못 받을 때만 씁니다 |
