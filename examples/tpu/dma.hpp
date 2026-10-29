@@ -4,8 +4,10 @@
 #ifndef TPU_DMA_HPP
 #define TPU_DMA_HPP
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <new>
 #include <string>
 #include <vector>
@@ -25,8 +27,12 @@ class Dma {
     if (config.get(SPAD_LANE_KEY)) spad_lane_bytes_ = config.uint(SPAD_LANE_KEY, 0) * 1024;
     spad_base_ = config.hex(SPAD_BASE_KEY, 0xD0000000);
   }
-  // Back to no descriptor, as configure left it.
-  void reset() { dma_descriptor_ = 0; }
+  // Back to no descriptor and no transfer under way, as configure left it.
+  void reset() {
+    dma_descriptor_ = 0;
+    progress_->live = false;
+    progress_->transfer = Transfer();
+  }
   static constexpr const char *SPAD_LANE_KEY = "vpu_spad_size_kb_per_lane";
   bool scratchpad() const { return spad_lane_bytes_ != 0; }
   // The exit code of the fault of a transfer that leaves a lane's scratchpad; SKIP, an address another transfer owns.
@@ -56,6 +62,37 @@ class Dma {
     uint64_t lane_stride, outer_stride, spad_outer_stride;
     std::vector<uint64_t> address;
   };
+
+  // How far a transfer got before a Spike trap (a page its memory side first touches) stopped it. The model's copies
+  // share it, so the rollback of the trapped execute keeps it, and the retry of the same instruction goes on from the
+  // element it stopped at with the same addresses: each element moves once, and an accumulating mvout adds once.
+  struct Progress {
+    bool live = false;
+    uint64_t key[4] = {};
+    uint64_t done = 0;
+    Transfer transfer;
+  };
+
+  // The transfer of `insn` and the element it starts at: the one a trap stopped, if this is its retry.
+  const Transfer &begin(const Host &host, const Insn &insn, const char *name, bool skips, uint64_t &start) {
+    Progress &p = *progress_;
+    const uint64_t key[4] = {insn.bits, host.xreg(cp::rs1(insn)), host.xreg(cp::rs2(insn)), dma_descriptor_};
+    if (p.live && std::equal(key, key + 4, p.key)) {
+      start = p.done;
+      return p.transfer;
+    }
+    p.live = false;
+    p.transfer = dma_transfer(host, insn, name, skips);
+    std::copy(key, key + 4, p.key);
+    p.done = start = 0;
+    p.live = true;
+    return p.transfer;
+  }
+  // The transfer ended (all of it, or a fault that is not a trap): the next execute starts afresh.
+  void finish() {
+    progress_->live = false;
+    progress_->transfer = Transfer();
+  }
 
   Transfer dma_transfer(const Host &host, const Insn &insn, const char *name, bool skips) const {
     Transfer t;
@@ -170,81 +207,99 @@ class Dma {
     store<T>(host, to, used ? load<T>(host, from) : static_cast<T>(fill));
   }
   std::string mvin(const Host &host, const Insn &insn) {
-    const Transfer t = dma_transfer(host, insn, "mvin", true);
-    for (uint64_t outer = 0; outer < t.outer_loops; outer++)
-      for (uint64_t lane = 0; lane < t.lanes; lane++)
-        for (uint64_t n = 0; n < t.block_dim[0]; n++)
-          for (uint64_t c = 0; c < t.block_dim[1]; c++)
-            for (uint64_t h = 0; h < t.block_dim[2]; h++)
-              for (uint64_t w = 0; w < t.block_dim[3]; w++) {
-                const uint64_t at[4] = {n, c, h, w};
-                const uint64_t position = t.outer_stride * outer + t.lane_stride * lane + t.buffer_stride[0] * n +
-                                          t.buffer_stride[1] * c + t.buffer_stride[2] * h + t.buffer_stride[3] * w;
-                const uint64_t spad_index = t.spad_outer_stride * outer + t.block_stride[0] * n + t.block_stride[1] * c +
-                                            t.block_stride[2] * h + t.block_stride[3] * w;
-                bool used = lane < t.used_lanes;
-                const uint64_t to = t.scratchpad + spad_index * t.element_size + lane * spad_lane_bytes_;
-                uint64_t from = used ? dma_address(t, "mvin", position) : 0;
-                if (from == SKIP) continue;
-                used = used && from != 0;
-                if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) return overflow("MVIN", to);
-                if (t.indirect && used) from += dma_indirect(host, t, "mvin", outer, lane, at, spad_index);
-                if (t.memory_bytes && (from < t.memory_base || from + t.element_size > t.memory_base + t.memory_bytes))
-                  used = false;
-                switch (t.element_size) {
-                  case 1: mvin_element<uint8_t>(host, from, to, used, t.fill); break;
-                  case 2: mvin_element<uint16_t>(host, from, to, used, t.fill); break;
-                  case 4: mvin_element<uint32_t>(host, from, to, used, t.fill); break;
-                  case 8: mvin_element<uint64_t>(host, from, to, used, t.fill); break;
-                  default: break;
-                }
-              }
+    uint64_t start;
+    const Transfer &t = begin(host, insn, "mvin", true, start);
+    const uint64_t block = t.block_dim[0] * t.block_dim[1] * t.block_dim[2] * t.block_dim[3];
+    const uint64_t total = t.outer_loops * t.lanes * block;
+    for (uint64_t i = start; i < total; i++) {
+      progress_->done = i;
+      uint64_t rest = i;
+      const uint64_t w = rest % t.block_dim[3]; rest /= t.block_dim[3];
+      const uint64_t h = rest % t.block_dim[2]; rest /= t.block_dim[2];
+      const uint64_t c = rest % t.block_dim[1]; rest /= t.block_dim[1];
+      const uint64_t n = rest % t.block_dim[0]; rest /= t.block_dim[0];
+      const uint64_t lane = rest % t.lanes, outer = rest / t.lanes;
+      const uint64_t at[4] = {n, c, h, w};
+      const uint64_t position = t.outer_stride * outer + t.lane_stride * lane + t.buffer_stride[0] * n +
+                                t.buffer_stride[1] * c + t.buffer_stride[2] * h + t.buffer_stride[3] * w;
+      const uint64_t spad_index = t.spad_outer_stride * outer + t.block_stride[0] * n + t.block_stride[1] * c +
+                                  t.block_stride[2] * h + t.block_stride[3] * w;
+      bool used = lane < t.used_lanes;
+      const uint64_t to = t.scratchpad + spad_index * t.element_size + lane * spad_lane_bytes_;
+      uint64_t from = used ? dma_address(t, "mvin", position) : 0;
+      if (from == SKIP) continue;
+      used = used && from != 0;
+      if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) {
+        finish();
+        return overflow("MVIN", to);
+      }
+      if (t.indirect && used) from += dma_indirect(host, t, "mvin", outer, lane, at, spad_index);
+      if (t.memory_bytes && (from < t.memory_base || from + t.element_size > t.memory_base + t.memory_bytes))
+        used = false;
+      switch (t.element_size) {
+        case 1: mvin_element<uint8_t>(host, from, to, used, t.fill); break;
+        case 2: mvin_element<uint16_t>(host, from, to, used, t.fill); break;
+        case 4: mvin_element<uint32_t>(host, from, to, used, t.fill); break;
+        case 8: mvin_element<uint64_t>(host, from, to, used, t.fill); break;
+        default: break;
+      }
+    }
+    finish();
     return "";
   }
 
   std::string mvout(const Host &host, const Insn &insn) {
-    const Transfer t = dma_transfer(host, insn, "mvout", false);
-    for (uint64_t outer = 0; outer < t.outer_loops; outer++)
-      for (uint64_t lane = 0; lane < t.used_lanes; lane++)
-        for (uint64_t n = 0; n < t.block_dim[0]; n++)
-          for (uint64_t c = 0; c < t.block_dim[1]; c++)
-            for (uint64_t h = 0; h < t.block_dim[2]; h++)
-              for (uint64_t w = 0; w < t.block_dim[3]; w++) {
-                const uint64_t at[4] = {n, c, h, w};
-                const uint64_t position = t.outer_stride * outer + t.lane_stride * lane + t.buffer_stride[0] * n +
-                                          t.buffer_stride[1] * c + t.buffer_stride[2] * h + t.buffer_stride[3] * w;
-                const uint64_t spad_index = t.spad_outer_stride * outer + t.block_stride[0] * n + t.block_stride[1] * c +
-                                            t.block_stride[2] * h + t.block_stride[3] * w;
-                const uint64_t from = t.scratchpad + spad_index * t.element_size + lane * spad_lane_bytes_;
-                uint64_t to = dma_address(t, "mvout", position);
-                if (to == 0) continue;
-                if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) return overflow("MVOUT", from);
-                if (t.indirect) to += dma_indirect(host, t, "mvout", outer, lane, at, spad_index);
-                if (t.memory_bytes && (to < t.memory_base || to + t.element_size > t.memory_base + t.memory_bytes))
-                  continue;
-                if (t.element_size == 1) {
-                  uint8_t value = load<uint8_t>(host, from);
-                  if (t.accumulate) value = static_cast<uint8_t>(load<uint8_t>(host, to) + value);
-                  store<uint8_t>(host, to, value);
-                } else if (t.element_size == 2) {
-                  uint16_t value = load<uint16_t>(host, from);
-                  if (t.accumulate) {
-                    const uint16_t current = load<uint16_t>(host, to);
-                    value = t.accumulate_float ? half_add(current, value) : static_cast<uint16_t>(current + value);
-                  }
-                  store<uint16_t>(host, to, value);
-                } else if (t.element_size == 4) {
-                  if (t.accumulate && t.accumulate_float)
-                    store<float>(host, to, accumulated<float>(host, to, from));
-                  else
-                    store<uint32_t>(host, to, (t.accumulate ? load<uint32_t>(host, to) : 0) + load<uint32_t>(host, from));
-                } else if (t.element_size == 8) {
-                  if (t.accumulate && t.accumulate_float)
-                    store<double>(host, to, accumulated<double>(host, to, from));
-                  else
-                    store<uint64_t>(host, to, (t.accumulate ? load<uint64_t>(host, to) : 0) + load<uint64_t>(host, from));
-                }
-              }
+    uint64_t start;
+    const Transfer &t = begin(host, insn, "mvout", false, start);
+    const uint64_t block = t.block_dim[0] * t.block_dim[1] * t.block_dim[2] * t.block_dim[3];
+    const uint64_t total = t.outer_loops * t.used_lanes * block;
+    for (uint64_t i = start; i < total; i++) {
+      progress_->done = i;
+      uint64_t rest = i;
+      const uint64_t w = rest % t.block_dim[3]; rest /= t.block_dim[3];
+      const uint64_t h = rest % t.block_dim[2]; rest /= t.block_dim[2];
+      const uint64_t c = rest % t.block_dim[1]; rest /= t.block_dim[1];
+      const uint64_t n = rest % t.block_dim[0]; rest /= t.block_dim[0];
+      const uint64_t lane = rest % t.used_lanes, outer = rest / t.used_lanes;
+      const uint64_t at[4] = {n, c, h, w};
+      const uint64_t position = t.outer_stride * outer + t.lane_stride * lane + t.buffer_stride[0] * n +
+                                t.buffer_stride[1] * c + t.buffer_stride[2] * h + t.buffer_stride[3] * w;
+      const uint64_t spad_index = t.spad_outer_stride * outer + t.block_stride[0] * n + t.block_stride[1] * c +
+                                  t.block_stride[2] * h + t.block_stride[3] * w;
+      const uint64_t from = t.scratchpad + spad_index * t.element_size + lane * spad_lane_bytes_;
+      uint64_t to = dma_address(t, "mvout", position);
+      if (to == 0) continue;
+      if (t.scratchpad + spad_index * t.element_size >= spad_base_ + spad_lane_bytes_) {
+        finish();
+        return overflow("MVOUT", from);
+      }
+      if (t.indirect) to += dma_indirect(host, t, "mvout", outer, lane, at, spad_index);
+      if (t.memory_bytes && (to < t.memory_base || to + t.element_size > t.memory_base + t.memory_bytes))
+        continue;
+      if (t.element_size == 1) {
+        uint8_t value = load<uint8_t>(host, from);
+        if (t.accumulate) value = static_cast<uint8_t>(load<uint8_t>(host, to) + value);
+        store<uint8_t>(host, to, value);
+      } else if (t.element_size == 2) {
+        uint16_t value = load<uint16_t>(host, from);
+        if (t.accumulate) {
+          const uint16_t current = load<uint16_t>(host, to);
+          value = t.accumulate_float ? half_add(current, value) : static_cast<uint16_t>(current + value);
+        }
+        store<uint16_t>(host, to, value);
+      } else if (t.element_size == 4) {
+        if (t.accumulate && t.accumulate_float)
+          store<float>(host, to, accumulated<float>(host, to, from));
+        else
+          store<uint32_t>(host, to, (t.accumulate ? load<uint32_t>(host, to) : 0) + load<uint32_t>(host, from));
+      } else if (t.element_size == 8) {
+        if (t.accumulate && t.accumulate_float)
+          store<double>(host, to, accumulated<double>(host, to, from));
+        else
+          store<uint64_t>(host, to, (t.accumulate ? load<uint64_t>(host, to) : 0) + load<uint64_t>(host, from));
+      }
+    }
+    finish();
     return "";
   }
   // What memory holds at `to` plus what the scratchpad holds at `from`, read in that order; a NaN is from's first.
@@ -267,6 +322,7 @@ class Dma {
   uint64_t spad_base_ = 0xD0000000;
 
   uint64_t dma_descriptor_ = 0;
+  std::shared_ptr<Progress> progress_ = std::make_shared<Progress>();
 };
 
 }  // namespace tpu
