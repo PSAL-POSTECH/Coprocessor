@@ -10,16 +10,16 @@
 - 블록(`cp::Port`, `cp::Pipeline<T>`, `cp::Queue<T>`)은 컴포넌트 안에 배치하는 부품이며 동작만 합니다. 통계는 `cp::Counter`뿐입니다.
 - 값(레지스터·메모리)은 `values()` 안에서만 씁니다. 이 코드는 Spike에서만 돕니다. 명령이 끝나면 `complete(insn)`을 부릅니다.
 
-## 1. 예제 A: `vexp`만 하는 SFU
+## 1. 예제 A: `vexp`만 하는 유닛
 
-머리 명령이 지연 L·간격 1의 EUP에 들어가고, 끝나면 `vd = exp(vs2)`를 쓰고 완료합니다.
+머리 명령이 지연 L·간격 1의 파이프라인에 들어가고, 끝나면 `vd = exp(vs2)`를 쓰고 완료합니다.
 
 ```
  insns()  Queue (2, 1)       in order, one accepted per cycle
-            | head, when eup.push() takes it
- instructions  Counter (1)   -> statistic SFU.instructions
+            | head, when pipe.push() takes it
+ instructions  Counter (1)   -> statistic ExpUnit.instructions
             v
- eup      Pipeline (L, 1)    stage 0 -> stage 1 -> ... -> stage L-1
+ pipe     Pipeline (L, 1)    stage 0 -> stage 1 -> ... -> stage L-1
             | length() -> pop()
  values(): vd = exp(vs2)     complete(insn)
 ```
@@ -27,45 +27,40 @@
 파일 하나가 모델 전체입니다: 컴포넌트, 코프로세서, export. 설계 헤더로 경고 없이 빌드됩니다(실행 결과는 아래).
 
 ```cpp
-// libexp_sfu.so: an SFU that computes only vexp (sf.vc.v.iv 0x3, vd, vs2, 0) on a pipelined EUP.
+// libexp_unit.so: a unit that computes only vexp (sf.vc.v.iv 0x3, vd, vs2, 0) on a pipeline.
 #include <cmath>
 
 #include "vcix_cp.hpp"
 
 namespace {
 
-class ExpSfu : public cp::Component {
+class ExpUnit : public cp::Component {
  public:
   static constexpr cp::Encoding VEXP{0x2C00305B, 0xFE00707F, "vexp"};
 
-  ExpSfu(cp::Coprocessor &cp, const char *name) : Component(cp, name) { register_insn(VEXP); }
+  ExpUnit(cp::Coprocessor &cp, const char *name) : Component(cp, name) {
+    register_insn(VEXP);
+  }
 
   void configure(const cp::Config &config) override {
-    const uint64_t latency = config.uint("exp_sfu_latency_cycles", 10);
-    if (latency == 0) throw cp::ConfigError("exp_sfu_latency_cycles", "0", "is not a pipeline depth: at least 1");
-    eup_.configure(latency, 1);  // latency L, a new row every cycle
+    const uint64_t latency = config.uint("exp_unit_latency_cycles", 10);
+    if (latency == 0) throw cp::ConfigError("exp_unit_latency_cycles", "0", "is not a pipeline depth: at least 1");
+    pipe_.configure(latency, 1);  // latency L, a new row every cycle
   }
   void cycle() override {
-    // 1. Drain first: a finished vexp writes vd and completes.
-    if (eup_.length()) {
-      const cp::Insn in = eup_.pop();
-      values([&](const cp::Host &host) { exp_of(host, in); });
+    if (pipe_.length()) {  // drain: the exit first
+      const cp::Insn in = pipe_.pop();
+      values([&](auto &h) { exp_of(h, in); });
       complete(in);
     }
-    // 2. Then fill: the head instruction enters the EUP when it takes a row; a wrong one is a fault there instead.
-    if (insns().length()) {
-      const cp::Insn &head = insns().front();
-      const bool wrong = !supported(head);
-      if (wrong ? eup_.available() : eup_.push(head)) {
-        if (wrong) fault(head, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
-        instructions_.add(1);
-        insns().pop();
-      }
+    // fill: then the entry
+    if (insns().length() && pipe_.push(insns().front())) {
+      instructions_.add(1);
+      insns().pop();
     }
   }
 
  private:
-  static bool supported(const vcix_insn &in) { return in.sew_bits == 32 && in.lmul_log2 <= 0; }
   static void exp_of(const cp::Host &host, const cp::Insn &in) {
     for (uint32_t lane = 0; lane < host.lanes(); lane++) {
       const float *vs2 = host.vreg<float>(lane, cp::rs2(in));
@@ -75,20 +70,20 @@ class ExpSfu : public cp::Component {
   }
 
   cp::Counter instructions_{*this, "instructions", 1};
-  cp::Pipeline<cp::Insn> eup_{*this, "eup"};
+  cp::Pipeline<cp::Insn> pipe_{*this, "pipe"};
 };
 
-class ExpSfuCP final : public cp::Coprocessor {
+class ExpCoprocessor final : public cp::Coprocessor {
  public:
-  const char *name() const override { return "exp_sfu"; }
+  const char *name() const override { return "exp_unit"; }
 
  private:
-  ExpSfu sfu_{*this, "SFU"};
+  ExpUnit exp_unit_{*this, "ExpUnit"};
 };
 
 }  // namespace
 
-VCIX_CP_REGISTER(ExpSfuCP)
+VCIX_CP_REGISTER(ExpCoprocessor)
 ```
 
 설정(`machine.yml`)과, 이 모델에 vexp 두 개를 연속으로 넣은 gem5식 드라이버의 출력입니다(일회용 드라이버, gem5 실행은 아님).
@@ -97,7 +92,7 @@ VCIX_CP_REGISTER(ExpSfuCP)
 vpu_num_lanes: 4
 vpu_spad_size_kb_per_lane: 128
 vpu_vector_length_bits: 256
-exp_sfu_latency_cycles: 3
+exp_unit_latency_cycles: 3
 ```
 
 ```text
@@ -105,31 +100,17 @@ cycle 0: can_accept=1
 cycle 1: can_accept=1
 cycle 4: vexp 0 ready (issued 0)
 cycle 5: vexp 1 ready (issued 1)
-vcix.SFU.instructions                            2  # instructions, at most 1 a cycle
+vcix.ExpUnit.instructions                        2  # instructions, at most 1 a cycle
 vcix.committed.vexp                              2  # vexp
-```
-
-틀린 명령(64비트 원소)은 받아들여진 뒤 `fault`로 끝납니다. gem5식에서는 commit 때, Spike식에서는 `execute`가 돌아올 때 같은 문구를 내고 exit 1입니다.
-
-```text
-$ ./drive_fault                      # gem5-style
-cycle 1: can_accept=1
-cycle 2: ready, committing
-exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported
-exit=1
-$ ./spike_a bad                      # Spike-style: the good vexp, then the bad one
-v8 = 1 2.71828 7.38906
-exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported
-exit=1
 ```
 
 L = 3, A를 사이클 0에, B를 사이클 1에 제시하면 issue에서 ready까지 **1 + L** 사이클입니다.
 
-| t | `cycle()` 안에서 | `cycle()` 뒤 EUP | 같은 t의 gem5 |
+| t | `cycle()` 안에서 | `cycle()` 뒤 파이프라인 | 같은 t의 gem5 |
 |---|---|---|---|
 | 0 | 할 일 없음 | 빈 상태 | A accept·issue. 사이클당 한도 1로 B 거절 |
-| 1 | `eup.push(A)`, A를 세고 pop | A 나이 1 | `available(1) = 2 − 0 − 1 = 1` → B accept·issue |
-| 2 | `eup.push(B)`, B를 세고 pop | A 2, B 1 | |
+| 1 | `pipe.push(A)`, A를 세고 pop | A 나이 1 | `available(1) = 2 − 0 − 1 = 1` → B accept·issue |
+| 2 | `pipe.push(B)`, B를 세고 pop | A 2, B 1 | |
 | 3 | 할 일 없음 | A 3 = L → A 끝남, B 2 | |
 | 4 | A pop, `values`, `complete(A)` | B 3 → B 끝남 | `ready(A, 4)` 참 |
 | 5 | B pop, `complete(B)` | 빈 상태 | `ready(B, 5)` 참 |
@@ -440,11 +421,11 @@ class Coprocessor : public cp::Coprocessor {
 
 ## 3. 빌드하고 실행하기
 
-`CMakeLists.txt`의 `vcix_cp_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)` 줄이 `build/libexp_sfu.so`를 만듭니다.
+`CMakeLists.txt`의 `vcix_cp_add_model(exp_unit examples/exp_unit/exp_unit.cc)` 줄이 `build/libexp_unit.so`를 만듭니다.
 
 ```
 scripts/build.sh
-build/timing_probe build/libexp_sfu.so 2c00305b 3
+build/timing_probe build/libexp_unit.so 2c00305b 3
 ```
 
 `timing_probe`는 명령을 하나씩 ready까지 tick합니다. L이 기본값 10이면 issue에서 ready까지 1 + L입니다.

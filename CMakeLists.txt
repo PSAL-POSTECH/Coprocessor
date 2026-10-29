@@ -15,8 +15,8 @@ function(vcix_cp_add_model name source)
 endfunction()
 
 vcix_cp_add_model(print_args examples/print_args/print_args.cc)
-# examples/exp_sfu: the smallest cp model, the README's tutorial: one component, one instruction, one pipeline.
-vcix_cp_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)
+# examples/exp_unit: the smallest cp model, the README's tutorial: one component, one instruction, one pipeline.
+vcix_cp_add_model(exp_unit examples/exp_unit/exp_unit.cc)
 vcix_cp_add_model(tpu examples/tpu/tpu.cc)
 vcix_cp_add_model(tpuv6e examples/tpuv6e/tpuv6e.cc)
 vcix_cp_add_model(tpuv3 examples/tpuv3/tpuv3.cc)
