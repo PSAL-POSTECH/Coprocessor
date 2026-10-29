@@ -20,6 +20,36 @@ vcix_cp_add_model(exp_unit examples/exp_unit/exp_unit.cc)
 vcix_cp_add_model(tpu examples/tpu/tpu.cc)
 vcix_cp_add_model(tpuv6e examples/tpuv6e/tpuv6e.cc)
 vcix_cp_add_model(tpuv3 examples/tpuv3/tpuv3.cc)
+# examples/xlane_all_reduce: sum across the lanes, a row a cycle through a tree; Hands-on 1 of the tutorial.
+# One model, libxlane_all_reduce.so: the unit beside the TPU v6e's units, run by Hands-on 1 and compiled for by PTB.
+vcix_cp_add_model(xlane_all_reduce examples/xlane_all_reduce/xlane.cc)
+target_include_directories(xlane_all_reduce PRIVATE examples)
+# Hands-on 1's test programs, in build/xlane_all_reduce: values (values.c, with kernels.S's vector code at .kernel
+# 0x2000000) and timing (timing.S). They need the RISC-V toolchain (TOOLCHAIN_ROOT, which scripts/build.sh passes) and
+# are skipped without it. They do not include xlane_all_reduce.hpp, so they build while the hands-on's start does not.
+find_program(RISCV_CLANG clang HINTS ${TOOLCHAIN_ROOT}/bin)
+find_program(RISCV_GCC riscv64-unknown-elf-gcc HINTS ${TOOLCHAIN_ROOT}/bin)
+if(RISCV_CLANG AND RISCV_GCC)
+  set(xlane_tests ${CMAKE_SOURCE_DIR}/tests/xlane_all_reduce)
+  set(xlane_out ${CMAKE_BINARY_DIR}/xlane_all_reduce)
+  set(rv_clang ${RISCV_CLANG} --target=riscv64 -march=rv64gcv_xsfvcp)
+  add_custom_command(OUTPUT ${xlane_out}/kernels.o
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${xlane_out}
+    COMMAND ${rv_clang} -c ${xlane_tests}/kernels.S -o ${xlane_out}/kernels.o
+    DEPENDS ${xlane_tests}/kernels.S COMMENT "Assembling xlane_all_reduce/kernels.o" VERBATIM)
+  add_custom_command(OUTPUT ${xlane_out}/values
+    COMMAND ${RISCV_GCC} -O1 -Wall -Werror -static -march=rv64gc -mabi=lp64d -DLANES=128u
+            -Wl,--section-start=.kernel=0x2000000 ${xlane_tests}/values.c ${xlane_out}/kernels.o -o ${xlane_out}/values
+    DEPENDS ${xlane_tests}/values.c ${xlane_out}/kernels.o COMMENT "Linking xlane_all_reduce/values" VERBATIM)
+  add_custom_command(OUTPUT ${xlane_out}/timing
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${xlane_out}
+    COMMAND ${rv_clang} -c ${xlane_tests}/timing.S -o ${xlane_out}/timing.o
+    COMMAND ${RISCV_GCC} -static ${xlane_out}/timing.o -o ${xlane_out}/timing
+    DEPENDS ${xlane_tests}/timing.S COMMENT "Linking xlane_all_reduce/timing" VERBATIM)
+  add_custom_target(xlane_all_reduce_programs ALL DEPENDS ${xlane_out}/values ${xlane_out}/timing)
+else()
+  message(STATUS "RISC-V toolchain not found (TOOLCHAIN_ROOT): Hands-on 1's test programs are not built")
+endif()
 # examples/tpuv6e and examples/tpuv3 are the tpu example's units, its matrix unit among them, as tpu/<unit>.hpp.
 target_include_directories(tpuv6e PRIVATE examples)
 target_include_directories(tpuv3 PRIVATE examples)
