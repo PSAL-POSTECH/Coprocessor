@@ -779,62 +779,57 @@ Write `cycle` as the tpu units do: drain first (`pop` at the exits),
 then fill (`push` at the entries), then the head of `insns()`. A full
 pipeline then passes one row a cycle.
 
-### The smallest model: an SFU that computes vexp
+### The smallest model: a unit that computes vexp
 
 A whole model in one file: one component, the coprocessor that holds it, the
-registration. `vcix_cp_add_model(exp_sfu examples/exp_sfu/exp_sfu.cc)` in
-`CMakeLists.txt` builds it as `libexp_sfu.so`.
+registration. `vcix_cp_add_model(exp_unit examples/exp_unit/exp_unit.cc)` in
+`CMakeLists.txt` builds it as `libexp_unit.so`.
 
 ```
  insns()  Queue (2, 1)       in order, one accepted per cycle
-            | head, when eup.push() takes it
- instructions  Counter (1)   counts it: the unit "SFU.instructions" in the statistics
+            | head, when pipe.push() takes it
+ instructions  Counter (1)   counts it: the unit "ExpUnit.instructions" in the statistics
             v
- eup      Pipeline (L, 1)    stage 0 -> stage 1 -> ... -> stage L-1
+ pipe     Pipeline (L, 1)    stage 0 -> stage 1 -> ... -> stage L-1
             | length() -> pop()
  values(): vd = exp(vs2)     complete(insn)
 ```
 
 ```cpp
-// libexp_sfu.so: an SFU that computes only vexp (sf.vc.v.iv 0x3, vd, vs2, 0) on a pipelined EUP.
+// libexp_unit.so: a unit that computes only vexp (sf.vc.v.iv 0x3, vd, vs2, 0) on a pipeline.
 #include <cmath>
 
 #include "vcix_cp.hpp"
 
 namespace {
 
-class ExpSfu : public cp::Component {
+class ExpUnit : public cp::Component {
  public:
   static constexpr cp::Encoding VEXP{0x2C00305B, 0xFE00707F, "vexp"};
 
-  ExpSfu(cp::Coprocessor &cp, const char *name) : Component(cp, name) { register_insn(VEXP); }
+  ExpUnit(cp::Coprocessor &cp, const char *name) : Component(cp, name) {
+    register_insn(VEXP);
+  }
 
   void configure(const cp::Config &config) override {
-    const uint64_t latency = config.uint("exp_sfu_latency_cycles", 10);
-    if (latency == 0) throw cp::ConfigError("exp_sfu_latency_cycles", "0", "is not a pipeline depth: at least 1");
-    eup_.configure(latency, 1);  // latency L, a new row every cycle
+    const uint64_t latency = config.uint("exp_unit_latency_cycles", 10);
+    if (latency == 0) throw cp::ConfigError("exp_unit_latency_cycles", "0", "is not a pipeline depth: at least 1");
+    pipe_.configure(latency, 1);  // latency L, a new row every cycle
   }
   void cycle() override {
-    // 1. Drain first: a finished vexp writes vd and completes.
-    if (eup_.length()) {
-      const cp::Insn in = eup_.pop();
-      values([&](const cp::Host &host) { exp_of(host, in); });
+    if (pipe_.length()) {  // drain: the exit first
+      const cp::Insn in = pipe_.pop();
+      values([&](auto &h) { exp_of(h, in); });
       complete(in);
     }
-    // 2. Then fill: the head instruction enters the EUP when it takes a row; a wrong one is a fault there instead.
-    if (insns().length()) {
-      const cp::Insn &head = insns().front();
-      const bool wrong = !supported(head);
-      if (wrong ? eup_.available() : eup_.push(head)) {
-        if (wrong) fault(head, "exp_sfu: vexp: only 32-bit elements in one register (LMUL <= 1) are supported");
-        instructions_.add(1);
-        insns().pop();
-      }
+    // fill: then the entry
+    if (insns().length() && pipe_.push(insns().front())) {
+      instructions_.add(1);
+      insns().pop();
     }
   }
 
  private:
-  static bool supported(const vcix_insn &in) { return in.sew_bits == 32 && in.lmul_log2 <= 0; }
   static void exp_of(const cp::Host &host, const cp::Insn &in) {
     for (uint32_t lane = 0; lane < host.lanes(); lane++) {
       const float *vs2 = host.vreg<float>(lane, cp::rs2(in));
@@ -844,52 +839,48 @@ class ExpSfu : public cp::Component {
   }
 
   cp::Counter instructions_{*this, "instructions", 1};
-  cp::Pipeline<cp::Insn> eup_{*this, "eup"};
+  cp::Pipeline<cp::Insn> pipe_{*this, "pipe"};
 };
 
-class ExpSfuCP final : public cp::Coprocessor {
+class ExpCoprocessor final : public cp::Coprocessor {
  public:
-  const char *name() const override { return "exp_sfu"; }
+  const char *name() const override { return "exp_unit"; }
 
  private:
-  ExpSfu sfu_{*this, "SFU"};
+  ExpUnit exp_unit_{*this, "ExpUnit"};
 };
 
 }  // namespace
 
-VCIX_CP_REGISTER(ExpSfuCP)
+VCIX_CP_REGISTER(ExpCoprocessor)
 ```
 
-Two things to notice. The order inside `cycle`: a finished `vexp` leaves the
-EUP before the next enters, so the pipeline never holds. And the wrong
-instruction: `supported` is asked at the head of `insns()`, not in `valid`.
-The instruction is accepted, takes the EUP's entry for its cycle, and ends in `fault`; both
-simulators then print its `why` and exit 1, gem5 as it commits, Spike as its
-`execute` returns.
+The order inside `cycle` is the thing to notice: a finished `vexp` leaves the
+pipeline before the next enters, so the pipeline never holds.
 
 With no machine description L is its default, 10. `timing_probe` (one
 instruction at a time, each ticked until it is ready):
 
 ```
-$ build/timing_probe build/libexp_sfu.so 2c00305b 3
+$ build/timing_probe build/libexp_unit.so 2c00305b 3
 insn 0: issued at 0, committed at 11
 insn 1: issued at 11, committed at 22
 insn 2: issued at 22, committed at 33
 ```
 
-Issue to ready is 1 + L: the pop happens in `tick(t+1)`, then the EUP takes
-L. Two `vexp` back to back under `exp_sfu_latency_cycles: 3`, A offered at
+Issue to ready is 1 + L: the pop happens in `tick(t+1)`, then the pipeline takes
+L. Two `vexp` back to back under `exp_unit_latency_cycles: 3`, A offered at
 cycle 0 and B at 1, by the rules above (checked with a driver that calls the
 table as gem5 does: A ready at 4, B at 5):
 
-| t | in `cycle()` | the EUP after `cycle()` | gem5 at t |
+| t | in `cycle()` | the pipeline after `cycle()` | gem5 at t |
 |---|---|---|---|
 | 0 | nothing to do | empty | A accepted and issued; B refused, one a cycle |
-| 1 | `eup.push(A)`, A counted and popped | A at age 1 | `insns().available(1)` = 2 − 0 − 1 = 1: B accepted and issued |
-| 2 | `eup.push(B)`, B counted and popped | A 2, B 1 | |
+| 1 | `pipe.push(A)`, A counted and popped | A at age 1 | `insns().available(1)` = 2 − 0 − 1 = 1: B accepted and issued |
+| 2 | `pipe.push(B)`, B counted and popped | A 2, B 1 | |
 | 3 | nothing to do | A 3 = L, finished; B 2 | |
-| 4 | `eup.pop` A, `values`, `complete(A)` | B 3, finished | `ready(A, 4)` true |
-| 5 | `eup.pop` B, `complete(B)` | empty | `ready(B, 5)` true |
+| 4 | `pipe.pop` A, `values`, `complete(A)` | B 3, finished | `ready(A, 4)` true |
+| 5 | `pipe.pop` B, `complete(B)` | empty | `ready(B, 5)` true |
 
 ### A pipeline, cycle by cycle
 
@@ -1051,11 +1042,11 @@ at create, as is a group named `committed`
 source scripts/sim.sh
 ```
 
-The ExpSfu model, once `vcix_cp_add_model(exp_sfu ...)` is in `CMakeLists.txt`
-and the file above is at `examples/exp_sfu/exp_sfu.cc`:
+The ExpUnit model, once `vcix_cp_add_model(exp_unit ...)` is in `CMakeLists.txt`
+and the file above is at `examples/exp_unit/exp_unit.cc`:
 
 ```
-build/timing_probe build/libexp_sfu.so 2c00305b 3
+build/timing_probe build/libexp_unit.so 2c00305b 3
 ```
 
 The EUP programs, each `main:` then `li t0, 8` and a `vsetvli` (`e32`, or `e16`
