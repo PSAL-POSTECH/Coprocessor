@@ -15,11 +15,12 @@ namespace xlane {
 
 class XlaneAllReduce : public cp::Component {
  public:
-  static constexpr uint32_t LANES = 128, LEVELS = 7;  // a tree of log2(128) = 7 levels
+  static constexpr uint32_t LANES = 128, NR_STAGES = 7;  // a tree of log2(128) = 7 stages
 
   // >>> Step 1: the encoding this unit owns, custom-2 sf.vc.v.iv with opcode 0 (sum)
   // static constexpr cp::Encoding SUM{
   //     0x2000305B, 0xFE00707F, "all-reduce sum"};
+
   // XlaneAllReduce(cp::Coprocessor &cp,
   //                const char *name)
   //     : Component(cp, name) {
@@ -33,10 +34,10 @@ class XlaneAllReduce : public cp::Component {
                             "is not the 128 lanes this unit is built for");
     rows_ = config.uint("xlane_all_reduce_buffer_rows", 16);
     if (rows_ == 0) throw cp::ConfigError("xlane_all_reduce_buffer_rows", "0", "is not a buffer: at least 1");
-    // >>> Step 2b: size the blocks: the buffers hold rows_ rows; the tree takes LEVELS cycles, the broadcast 1
+    // >>> Step 2b: size the blocks: the buffers hold rows_ rows; the tree takes NR_STAGES cycles, the broadcast 1
     // input_.configure(rows_);
     // output_.configure(rows_);
-    // tree_.configure(LEVELS, 1);
+    // tree_.configure(NR_STAGES, 1);
     // broadcast_.configure(1, 1);
     // <<< Step 2b
   }
@@ -119,7 +120,7 @@ class XlaneAllReduce : public cp::Component {
   }
 
   uint64_t rows_ = 16;
-  // The VCIX interface, the input buffer, the adder tree (LEVELS deep), the broadcast network, the output buffer.
+  // The VCIX interface, the input buffer, the adder tree (NR_STAGES deep), the broadcast network, the output buffer.
   // >>> Step 2a: the blocks, one per block of the unit
   // cp::Counter instructions_{
   //     *this, "instructions", 1};
