@@ -1,7 +1,7 @@
 // What the model cannot carry out, one per run. Usage: refused <which>
 #include "common.h"
 
-kernel k_vexp_64, k_cross_pop_32, k_cross_fold_sum_16;
+kernel k_vexp_64, k_cross_pop_32, k_cross_fold_sum_16, k_eup_push_7_32;
 kernel_with k_pop_16, k_pop_32, k_input_16, k_input_32, k_weight_8, k_weight_16, k_weight_32, k_cross_push_32, k_msa_push_16,
     k_msa_push_32, k_msa_pop_32;
 
@@ -27,6 +27,8 @@ int main(int argc, char **argv) {
   const char *which = argc == 2 ? argv[1] : "";
   if (!strcmp(which, "doubles")) {            // a special function without a form for doubles
     k_vexp_64(spad(0, 0), spad(0, 4096), 1);
+  } else if (!strcmp(which, "eup-function")) {  // a push whose field names no function
+    k_eup_push_7_32(spad(0, 0), 0, 1);
   } else if (!strcmp(which, "pop")) {         // a pop of what was never computed
     k_pop_32(0, spad(0, 0), 1, 0, 0);
   } else if (!strcmp(which, "input")) {       // an input with no weights

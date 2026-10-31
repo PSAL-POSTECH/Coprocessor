@@ -106,7 +106,7 @@ EOF
 echo "-- the EUP, which the old Spike did not have"
 on_model eup -- eup; rc=$?
 if [ "$rc" = 0 ] && grep -q "^eup ok" "$OUT/eup.out"; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-echo "  sfu_push and sfu_pop: two groups of 2^x popped in push order, every element exact ($(head -1 "$OUT/eup.out"), exit $rc)"
+echo "  sfu_push and sfu_pop: two groups of 2^x popped in push order, every element exact, and each other function's push equal to its sf.vc.v.iv ($(head -1 "$OUT/eup.out"), exit $rc)"
 
 echo "-- as the old Spike did it"
 close special "the seven special functions: every half, 4096 singles a lane, 1024 doubles a lane for vlog and vatan"
@@ -154,6 +154,7 @@ refused() {
 }
 echo "-- what the model does not carry out"
 refused doubles 1 "tpu: vexp: an element of 64 bits is not supported"
+refused eup-function 1 "tpu: sfu_push: function 7 is none of the 7 it computes"
 refused pop 1 "tpu: systolic pop: 1 elements asked, 0 computed"
 refused input 1 "tpu: systolic input push: no weight was pushed before it"
 refused format 1 "tpu: systolic: format 3 names no element of 8 bits"

@@ -25,7 +25,20 @@
     special k_vexp_\sew, \sew, 0x3, 0
 .endr
 
-# The EUP: a push of 2^x of the source, and a pop of the oldest pushed group into the destination.
+# The EUP: a push of f(x) of the source, f the field (0 2^x, 1 erf, 2 tanh, 3 sin, 4 cos, 5 log, 6 atan), and a pop
+# of the oldest pushed group into the destination.
+.macro eup_push name, field
+    .globl \name
+\name:
+    vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a0)
+    sf.vc.vv 0x3, \field, v8, v8
+    mv      a0, t0
+    ret
+.endm
+.irp field, 1, 2, 3, 4, 5, 6, 7
+    eup_push k_eup_push_\field\()_32, \field
+.endr
     .globl k_vlmax_32
 k_vlmax_32:
     vsetvli t0, a2, e32, m8, ta, ma

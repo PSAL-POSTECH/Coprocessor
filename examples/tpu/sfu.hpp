@@ -1,12 +1,13 @@
 // A TPU's special-function unit around one EUP, a pipeline of tpu_sfu_latency_cycles taking one register a cycle. A special
 // function sends its group's registers through it and writes vd = f(vs2) when the last leaves; sfu_push queues its
-// registers for it, and sfu_pop takes them back in push order once they are out. Queued push registers enter first.
+// registers for it as f(vs2), f the push's field (PUSHED), and sfu_pop takes them back in push order once they are out.
 #ifndef TPU_SFU_HPP
 #define TPU_SFU_HPP
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 #include <vector>
 
 #include "machine.hpp"
@@ -30,7 +31,7 @@ class Sfu : public Component {
 
  public:
   // sf.vc.v.iv on custom-2: opcode, funct3, funct6 and vm; FUNCTION_FIELD adds the field at 19:15. sfu_push is
-  // sf.vc.vv 3 (reads vs2, writes nothing), sfu_pop sf.vc.v.x 3 (writes vd; rs1 unread).
+  // sf.vc.vv 3 (reads vs2, writes nothing; its 11:7 immediate names the function), sfu_pop sf.vc.v.x 3 (writes vd).
   static constexpr uint32_t FUNCTION = 0xFE00707F, FUNCTION_FIELD = 0xFE0FF07F;
   static constexpr cp::Encoding VERF{0x2000305B, FUNCTION, "verf"};
   static constexpr cp::Encoding VTANH{0x2400305B, FUNCTION, "vtanh"};
@@ -96,6 +97,10 @@ class Sfu : public Component {
       fault(in, message("%s: an element of %u bits is not supported", ALL[index(in)]->name, in.sew_bits));
       return true;
     }
+    if (form(in) == SFU_PUSH.match && cp::rd(in) >= std::size(PUSHED)) {
+      fault(in, message("sfu_push: function %u is none of the %zu it computes", cp::rd(in), std::size(PUSHED)));
+      return true;
+    }
     if (form(in) == SFU_PUSH.match) {
       for (; moved_ < registers; moved_++) {
         Register row;
@@ -120,12 +125,12 @@ class Sfu : public Component {
     if (!eup_.push(Row{in, moved_, true, {}})) return false;
     return ++moved_ == registers;
   }
-  // sfu_push's register j of vs2's group: 2^x of its elements per lane.
+  // sfu_push's register j of vs2's group: f(x) of its elements per lane, f = PUSHED[the field at 11:7].
   static Register pushed(const Host &host, const Insn &in, uint32_t j) {
     const uint32_t per = host.vlen_bits() / 32, from = j * per, to = std::min(in.vl, from + per);
     Register out(host.lanes());
     for (uint32_t lane = 0; lane < host.lanes(); lane++)
-      for (uint32_t i = from; i < to; i++) out[lane].push_back(::exp2f(get<float>(host, lane, cp::rs2(in), i)));
+      for (uint32_t i = from; i < to; i++) out[lane].push_back(PUSHED[cp::rd(in)](get<float>(host, lane, cp::rs2(in), i)));
     return out;
   }
   // sfu_pop's register j of vd's group, up to vl.
@@ -160,6 +165,8 @@ class Sfu : public Component {
 
   static inline const cp::Encoding *const ALL[] = {&VERF, &VTANH, &VSIN, &VCOS, &VLOG, &VATAN, &VEXP, &SFU_PUSH, &SFU_POP};
   static inline float (*const SINGLE[])(float) = {::erff, ::tanhf, ::sinf, ::cosf, ::logf, ::atanf, ::expf};
+  // What a push computes by its field: 0 is 2^x (the v6e's vpow2, so a push of x * log2(e) is exp), then SINGLE's six.
+  static inline float (*const PUSHED[])(float) = {::exp2f, ::erff, ::tanhf, ::sinf, ::cosf, ::logf, ::atanf};
   static inline double (*const WIDE[])(double) = {nullptr, nullptr, nullptr, nullptr, ::log, ::atan, nullptr};
   static constexpr const char *LATENCY_KEY = "tpu_sfu_latency_cycles";
   static constexpr uint64_t DEFAULT_ENTRIES = 16;
