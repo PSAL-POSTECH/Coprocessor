@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run a program on gem5 with a model: scripts/sim.sh's gem5_run, as a command.
+# Usage: scripts/gem5_run <output-dir> <model.so> <machine.yml, or ""> <elf> [fixture options]
+# BUILD=<build-dir> picks the build (default <repo>/build).
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO/scripts/sim.sh" "${BUILD:-$REPO/build}"
+gem5_run "$@"

@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Sourced by the run scripts: which simulators to use, and how each one is started.
-# Reads the caller's positional arguments [build-dir [spike [pk [gem5.opt]]]].
+# Reads the caller's positional arguments [build-dir [spike [pk [gem5.opt]]]]. A missing one ends a script with 2;
+# sourced in a terminal, it returns 2 and the terminal stays open.
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../setup/versions.env
@@ -14,9 +15,14 @@ GEM5="${4:-${GEM5:-$GEM5_BIN}}"
 for needed in "$BUILD" "$SPIKE" "$PK" "$GEM5"; do
   [ -e "$needed" ] && continue
   echo "$needed: not found -- run setup/setup.sh, or pass [build-dir [spike [pk [gem5.opt]]]]" >&2
+  [[ $- == *i* ]] && return 2
   exit 2
 done
-BUILD="$(cd "$BUILD" && pwd)" || { echo "$BUILD: cannot resolve the build directory" >&2; exit 2; }
+BUILD="$(cd "$BUILD" && pwd)" || {
+  echo "$BUILD: cannot resolve the build directory" >&2
+  [[ $- == *i* ]] && return 2
+  exit 2
+}
 
 [ -d "$TOOLCHAIN_ROOT/bin" ] && PATH="$TOOLCHAIN_ROOT/bin:$PATH"
 
