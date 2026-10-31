@@ -12,5 +12,6 @@ BUILD="${1:-$REPO/build}"
 source "$REPO/setup/versions.env"
 [ -x "$VERILATOR_BIN" ] && PATH="$VERILATOR_PREFIX/bin:$PATH"
 
-cmake -G Ninja -S "$REPO" -B "$BUILD"
-cmake --build "$BUILD" -j "$JOBS"
+cmake -G Ninja -S "$REPO" -B "$BUILD" -DTOOLCHAIN_ROOT="$TOOLCHAIN_ROOT"
+# -k 0: a target that fails does not stop the others; the build still fails.
+cmake --build "$BUILD" -j "$JOBS" -- -k 0

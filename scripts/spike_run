@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run a program on Spike with a model: scripts/sim.sh's spike_run, as a command.
+# Usage: scripts/spike_run <model.so> <machine.yml, or ""> <elf> [spike options]
+# BUILD=<build-dir> picks the build (default <repo>/build). The test programs link their .kernel at 0x2000000, so
+# --kernel-addr=2000000:2100000 is given first (#70); one given here wins.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO/scripts/sim.sh" "${BUILD:-$REPO/build}"
+spike_run "$1" "$2" "$3" --kernel-addr=2000000:2100000 "${@:4}"
