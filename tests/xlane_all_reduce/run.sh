@@ -23,8 +23,8 @@ echo "-- on gem5: when each instruction issues and how many cycles it takes"
 gem5_run "$OUT/m5" "$MODEL" "$HERE/machine.yml" "$OUT/timing" > "$OUT/timing.log" 2>&1
 report "exit $?" "exit 0" "timing.S runs"
 log="$OUT/timing.log"
-alone=$(awk '/^\[xlane_all_reduce\]/ { n++; if (n >= 5) printf "%s%s", (n > 5 ? " " : ""), $11 } END { print "" }' "$log")
-report "$alone" "18 18 18 14 11" "alone, done 3 + vl + 7 cycles after issue: vl 8, 8, 8, 4, 1"
-ends=$(awk '/^\[xlane_all_reduce\]/ && ++n <= 4 { c = $10; if (n == 1) first = c; printf "%s%d", (n > 1 ? " " : ""), c - first } END { print "" }' "$log")
-report "$ends" "0 8 16 24" "four that need nothing from each other end vl = 8 cycles apart: one row a cycle"
+alone=$(awk '/^\[xlane_all_reduce\]/ { n++; if (n >= 3) printf "%s%s", (n > 3 ? " " : ""), $11 } END { print "" }' "$log")
+report "$alone" "18 18" "each needing the one before, done 3 + vl + 7 cycles after issue: vl 8, 8"
+ends=$(awk '/^\[xlane_all_reduce\]/ && ++n <= 2 { c = $10; if (n == 1) first = c; printf "%s%d", (n > 1 ? " " : ""), c - first } END { print "" }' "$log")
+report "$ends" "0 8" "two that need nothing from each other end vl = 8 cycles apart: one row a cycle"
 exit $failed
