@@ -1,5 +1,5 @@
 """Hands-on 2: your kernel calls your unit. As given, the kernel copies the tile, so the check against torch FAILs.
-Replace the one TODO line between the Step 1 markers with the vcix call, then run
+On the one line between the Step 1 markers, delete "y = x  # " to issue the vcix call, then run
     python3 tests/pytorchsim-compile tests/xlane_all_reduce/ptb/my_xlane_all_reduce.py
 from pytorchsim-triton-compiler. The finished kernel is xlane_all_reduce_sum.py next to this file."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
@@ -17,7 +17,7 @@ def kernel():
         offs = tl.arange(0, M)[:, None] * N + tl.arange(0, N)[None, :]
         x = tl.load(x_ptr + offs)
         # >>> Step 1: issue the unit's sum on the tile: form "v.iv", opcode 0, imm 0, lanes on axis 1
-        y = x  # TODO: y = pytorchsim.vcix(...)
+        y = x  # y = pytorchsim.vcix("v.iv", opcode=0, imm=0, args=[x], layout=pytorchsim.lane_layout(1))
         # <<< Step 1
         tl.store(o_ptr + offs, y)
 
