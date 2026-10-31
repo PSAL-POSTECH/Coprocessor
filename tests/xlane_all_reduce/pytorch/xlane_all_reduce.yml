@@ -1,0 +1,57 @@
+# One TPU v6e TensorCore as libtpu drives it: two 256x256 matrix units (two in every LLO dump), vregs of 8 sublanes
+# x 128 lanes x 32 bit, VMEM 134217728 B (the compile's vmem_report) = 1024 KB x 128 lanes. The array unit is
+# TPUV6E_MXU, libtpuv6e.so's MXU; at 1751 MHz its two 16-bit rows a cycle give 918 TFLOP/s over both.
+num_cores: 1
+core_freq_mhz: 1751
+core_stats_print_period_cycles: 200
+num_systolic_array_per_core: 2
+systolic_array_split: round_robin
+systolic_array_unit: TPUV6E_MXU
+# A load's fixed cost, from tpu-perf-archive data/v6e/dma/pallas.csv (one v6e, 4 KiB f32 loads). Loads started
+# together and waited once grow 17.8 ns (31.1 cycles) a load from 1 to 16 (par 572..839 ns), so most of the cost is a
+# wait loads in flight pay together, not a hold of the engine. Each key is that measurement less what this
+# simulator already charges on the same TOG with both keys 0:
+#   hold  27 = 31.1 cycles a par load  -  4.3 cycles a par load here
+#   ready 842 = 998 cycles one load (570 ns) - 129 cycles one load here - the 27 hold
+dma_load_latency_cycles: 27
+dma_load_ready_cycles: 842
+# A store's, from the same file (4 KiB f32 stores): one is 462 ns (809 cycles), and stores started together grow
+# 15.8 ns (27.7 cycles) a store (par_store 462..699 ns). The two keys were fitted on this simulator, since its own
+# charge does not add to them: at 24 and 784 the par_store points and a 64 KiB store are within -2.5% .. +0.8%.
+dma_store_latency_cycles: 24
+dma_store_ready_cycles: 784
+
+vpu_num_lanes: 128
+vpu_spad_size_kb_per_lane: 1024
+
+isa: [m, a, f, d, c, v, zvfh, zvfbfmin, zvl256b, pytorchsim_xlane_all_reduce, spad-vector-memory]
+target: tpu
+# The MXU's delay line, tpu_mxu_delay_cycles 187 in place of the model's 511 (width + depth - 1): on one v6e a
+# dependent chain x = dot(x, W), x 8x128 f32, W 128x128, takes 195.8 cycles a step (tpu-perf-archive
+# runs/v6e/mxu_chain/2026-10-19_pallas_mirror, 111.8 ns a step at 1751 MHz). The same chain on libtpuv6e.so, 8 rows
+# a step, takes the delay + 9 cycles a step on gem5 (vmatmul 1 cycle after its vmatprep, vpop the delay + 8 after).
+
+# The matrix unit's shape: an operand of 2 registers (256 x 256 at 128 lanes), 2 issue slots, a word of two 16-bit
+# rows a cycle, as Coprocessor's tpuv6e.cc Shape has it; the compiler builds the stream for it, the model reads it.
+# The XLU's stages: a lane reduce's push -> pop is 137 cycles and a lane permute's 123 (tpu-perf-archive
+# runs/v6e/xlu_chain/2026-10-19_pallas and runs/v6e/xlu_permute/2026-10-23_pallas: dependent chains step 142 and
+# 127.9 cycles, libtpu's critical paths 142 and 128 with those push -> pop distances). A move's tile takes the move key.
+vcix: {tpu_mxu_queue_entries: 512, tpu_mxu_delay_cycles: 187, tpu_mxu_registers: 2, tpu_mxu_issue_slots: 2, tpu_mxu_word_a_cycle: 1, tpu_xlu_queue_entries: 256, tpu_xlu_latency_cycles: 137, tpu_xlu_move_latency_cycles: 123, tpu_xlu_elements_per_cycle: 16, tpu_xlu_issue_per_cycle: 2, tpu_sfu_latency_cycles: 10, tpu_sfu_queue_registers: 16}
+
+address_map: {spad_vaddr: 0x40000000, dram_base: 0x80000000, dram_size: 107374182400}
+
+dram_type: ramulator2
+dram_channels: 32
+dram_stats_print_period_cycles: 200
+ramulator_config_path: ../configs/ramulator2_configs/HBM3_TPUv6e.yaml
+l2d_type: datacache
+l2d_config: S:128:128:512,32,L:T:m:W:L,A:192:4,32:0,32
+
+icnt_type: simple
+icnt_latency_cycles: 10
+icnt_freq_mhz: 1751
+icnt_injection_ports_per_core: 32
+
+# The PyTorch run on this machine is timed: gem5 times sampled tiles, TOGSim the whole grid (PyTorchSim reads
+# this key; TORCHSIM_TIMING_MODE, when set, wins over it).
+pytorchsim_timing_mode: 1
