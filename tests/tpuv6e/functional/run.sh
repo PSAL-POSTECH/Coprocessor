@@ -57,9 +57,17 @@ refused depth "tpu: vmatpush: field 3 names no half of the depth: [4:3] is 1 or 
 refused push3 "tpu: vmatpush: [4:3] 3 is the v6e's vmatpush3, which is not modelled"
 refused prep-weights "vcix_cp: vmatprep waits, and nothing in its unit moves any more"
 refused prep-inputs "vcix_cp: vmatprep waits, and nothing in its unit moves any more"
-refused format "tpu: vmatprep: format 2 names nothing a word holds"
 refused words "tpu: vmatpush: its elements are words of 32 bits, not of 16"
 refused pop-array "tpu: vpop: array 1, and the machine has 1 (tpu_mxu_units)"
+
+on_model mxu-e4m3 -- mxu e4m3; rc=$?
+if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  words of four E4M3 rows (format 2), a tile pushed four rows at a time and latched: $(tail -n1 "$OUT/mxu-e4m3.out") (exit $rc)"
+
+on_model mxu-e5m2 -- mxu e5m2; rc=$?
+if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  words of four E5M2 rows (format 2, rd[4]), a tile pushed four rows at a time and latched: $(tail -n1 "$OUT/mxu-e5m2.out") (exit $rc)"
+refused e5m2-format "tpu: vmatprep: rd[4] names E5M2, and format 0 is no 8-bit float"
 
 echo "-- the matrix unit with tpu_mxu_units: 2"
 { cat "$MACHINE/machine.yml"; echo "tpu_mxu_units: 2"; } > "$OUT/machine-mxu2.yml"

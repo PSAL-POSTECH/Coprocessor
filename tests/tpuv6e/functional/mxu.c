@@ -1,18 +1,20 @@
 // The matrix unit of libtpuv6e.so against a formula: an array of 2 x LANES columns, an operand of two registers, words
-// of a single or two 16-bit rows, weights staged half the depth at a time, results popped half the columns at a time.
-// Usage: mxu [arrays | what the model refuses]; arrays: tpu_mxu_units: 2, each array its own tile and held halves.
+// of a single, two 16-bit rows or four E4M3, weights staged half the depth at a time, results popped half at a time.
+// Usage: mxu [arrays | e4m3 | e5m2 | what the model refuses]; arrays: tpu_mxu_units: 2; e4m3, e5m2: words of four
+// 8-bit float rows, E5M2 named by rd[4].
 #include "common.h"
 
 // sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2: the encodings the matrix unit has. The number is the instruction's field.
 // The _a1 and _a2 kernels name array 1 or 2 in the field the encodings leave free (sf.vc.iv's rd, sf.vc.v.i's rs2).
 kernel_with k_mxu_matmul_32, k_mxu_push_32, k_mxu_prep_32, k_mxu_pop_32, k_mxu_push_16;
 kernel_with k_mxu_matmul_32_a1, k_mxu_push_32_a1, k_mxu_prep_32_a1, k_mxu_pop_32_a1, k_mxu_matmul_32_a2;
+kernel_with k_mxu_matmul_32_e5m2, k_mxu_push_32_e5m2, k_mxu_prep_32_e5m2;
 // The array the helpers below work on: its kernels, and the weights it holds as this program models them.
 static unsigned array_on;
-static kernel_with *const matmuls[] = {k_mxu_matmul_32, k_mxu_matmul_32_a1};
-static kernel_with *const pushes[] = {k_mxu_push_32, k_mxu_push_32_a1};
-static kernel_with *const preps[] = {k_mxu_prep_32, k_mxu_prep_32_a1};
-static kernel_with *const pops[] = {k_mxu_pop_32, k_mxu_pop_32_a1};
+static kernel_with *const matmuls[] = {k_mxu_matmul_32, k_mxu_matmul_32_a1, k_mxu_matmul_32_e5m2};
+static kernel_with *const pushes[] = {k_mxu_push_32, k_mxu_push_32_a1, k_mxu_push_32_e5m2};
+static kernel_with *const preps[] = {k_mxu_prep_32, k_mxu_prep_32_a1, k_mxu_prep_32_e5m2};
+static kernel_with *const pops[] = {k_mxu_pop_32, k_mxu_pop_32_a1, k_mxu_pop_32};
 #define k_vmatmul (matmuls[array_on])
 #define k_vmatpush (pushes[array_on])
 #define k_vmatprep (preps[array_on])
@@ -22,7 +24,7 @@ static kernel_with *const pops[] = {k_mxu_pop_32, k_mxu_pop_32_a1};
 #define OUT 4096ul
 #define WIDTH (2 * LANES)
 #define SLAB 2u
-enum { SINGLE = 0, HALF = 1, BF16 = 3, INPUTS = 4, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16 };
+enum { SINGLE = 0, HALF = 1, E4M3 = 2, BF16 = 3, E5M2 = 6, INPUTS = 4, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16 };
 
 // A float that a bfloat16 holds, of exponent 2^-30 to 2^30: every product of two is exact.
 static float value(void) {
@@ -42,12 +44,28 @@ static uint16_t half_of(uint32_t bits) {
   const int exponent = (int)((bits >> 23) & 0xff) - 127 + 15;
   return (uint16_t)((bits >> 16 & 0x8000) | exponent << 10 | (bits >> 13 & 0x3ff));
 }
+// The E4M3 of a normal single whose value E4M3 holds exactly (bias 7, three bits of fraction); zero as zero.
+static uint8_t e4m3_of(uint32_t bits) {
+  if ((bits & 0x7fffffff) == 0) return (uint8_t)(bits >> 24 & 0x80);
+  const int exponent = (int)((bits >> 23) & 0xff) - 127 + 7;
+  return (uint8_t)((bits >> 24 & 0x80) | exponent << 3 | (bits >> 20 & 0x7));
+}
+// The E5M2 of a normal single whose value E5M2 holds exactly (bias 15, two bits of fraction); zero as zero.
+static uint8_t e5m2_of(uint32_t bits) {
+  if ((bits & 0x7fffffff) == 0) return (uint8_t)(bits >> 24 & 0x80);
+  const int exponent = (int)((bits >> 23) & 0xff) - 127 + 15;
+  return (uint8_t)((bits >> 24 & 0x80) | exponent << 2 | (bits >> 21 & 0x3));
+}
+// Rows of `format` in one word; E5M2 is format 2 in the field, set apart only in rd.
+static unsigned pack_of(unsigned format) { return format == SINGLE ? 1 : format == E4M3 || format == E5M2 ? 4 : 2; }
 // `rows` rows of the columns from `first`, a column per lane, as the words of `format`.
 static void place(float (*matrix)[WIDTH], unsigned rows, unsigned first, unsigned format) {
   for (unsigned lane = 0; lane < LANES; lane++)
     for (unsigned row = 0; row < rows; row++) {
       const uint32_t bits = bits_of(matrix[row][first + lane]);
       if (format == SINGLE) *(uint32_t *)spad(lane, IN + 4 * row) = bits;
+      else if (format == E4M3) *(uint8_t *)spad(lane, IN + row) = e4m3_of(bits);
+      else if (format == E5M2) *(uint8_t *)spad(lane, IN + row) = e5m2_of(bits);
       else if (format == BF16) *(uint16_t *)spad(lane, IN + 2 * row) = (uint16_t)(bits >> 16);
       else *(uint16_t *)spad(lane, IN + 2 * row) = half_of(bits);
     }
@@ -55,15 +73,15 @@ static void place(float (*matrix)[WIDTH], unsigned rows, unsigned first, unsigne
 // The upper half of an operand under a vmatprep with `prep` in its field, which the unit holds until its operand's
 // next vmatpush or vmatmul.
 static void prep(float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned field) {
-  const unsigned long words = format == SINGLE ? rows : rows / 2;
+  const unsigned long words = rows / pack_of(format);
   place(matrix, rows, LANES, format);
-  if (k_vmatprep(spad(0, IN), 0, words, format | field, 0) != words) puts("a vmatprep did not take every word");
+  if (k_vmatprep(spad(0, IN), 0, words, (format & 3) | field, 0) != words) puts("a vmatprep did not take every word");
 }
 // The lower half of an operand with `field` in its field, which takes the upper half held for its operand.
 static void bring(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned field) {
-  const unsigned long words = format == SINGLE ? rows : rows / 2;
+  const unsigned long words = rows / pack_of(format);
   place(matrix, rows, 0, format);
-  if (lower(spad(0, IN), 0, words, format | field, 0) != words) puts("an operand did not take every word");
+  if (lower(spad(0, IN), 0, words, (format & 3) | field, 0) != words) puts("an operand did not take every word");
 }
 // An operand: its upper half under a vmatprep, then its lower half.
 static void operand(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned upper,
@@ -74,7 +92,7 @@ static void operand(kernel_with *lower, float (*matrix)[WIDTH], unsigned rows, u
 
 // What each array holds, a weight at each depth of each column: the staged weights, and the active ones, which the
 // last vmatmul that latched copied whole.
-static float staged[2][WIDTH][WIDTH], active[2][WIDTH][WIDTH];
+static float staged[3][WIDTH][WIDTH], active[3][WIDTH][WIDTH];
 // `count` rows of weights to one half of the depth: what the half held moves down `count` depths, what passes its
 // last is gone, and the rows take its top in their order. The other half is as it was.
 static void stage(float (*rows)[WIDTH], unsigned count, unsigned half) {
@@ -146,8 +164,8 @@ static int refused(const char *which) {
     prep(one, 2, BF16, INPUTS);
     operand(k_vmatpush, one, 2, BF16, 0, PUSH1);
     prep(one, 2, BF16, INPUTS);
-  } else if (!strcmp(which, "format")) {    // format 2, which names nothing
-    k_vmatprep(spad(0, IN), 0, 1, 2, 0);
+  } else if (!strcmp(which, "e5m2-format")) {  // rd[4] on a word of singles
+    k_mxu_prep_32_e5m2(spad(0, IN), 0, 1, SINGLE, 0);
   } else if (!strcmp(which, "words")) {     // elements of 16 bits
     k_mxu_push_16(spad(0, IN), 0, 1, SINGLE, 0);
   } else if (!strcmp(which, "pop-array")) { // a vpop of array 1 on a machine of one array
@@ -202,8 +220,30 @@ static int arrays(void) {
   return wrong != 0;
 }
 
+// Words of four 8-bit float rows (E5M2 on array_on 2's kernels, rd[4]): a tile pushed four rows at a time to both
+// halves of the depth, latched, and an input of sixteen rows. Every value is k/4 for |k| <= 8, which both formats
+// hold, so every product and sum is exact.
+static int fp8(unsigned format) {
+  enum { M = 16, ROWS = 4 };
+  static float a[M][WIDTH], b[WIDTH][WIDTH];
+  unsigned wrong = 0;
+  for (unsigned row = 0; row < M; row++)
+    for (unsigned k = 0; k < WIDTH; k++) a[row][k] = ((int)random_below(17) - 8) / 4.0f;
+  for (unsigned k = 0; k < WIDTH; k++)
+    for (unsigned column = 0; column < WIDTH; column++) b[k][column] = ((int)random_below(17) - 8) / 4.0f;
+  for (unsigned half = PUSH1; half <= PUSH2; half += PUSH1)
+    for (unsigned at = LANES / ROWS; at-- > 0;) push(b + (half == PUSH2 ? LANES : 0) + at * ROWS, ROWS, format, half);
+  matmul(a, M, format, LATCH);
+  wrong += check(a, 0, M / 2);
+  wrong += check(a, M / 2, M / 2);
+  printf("mxu %s: %u of %u elements as the formula says\n", format == E5M2 ? "e5m2" : "e4m3", checked - wrong, checked);
+  return wrong != 0;
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "arrays")) return arrays();
+  if (argc == 2 && !strcmp(argv[1], "e4m3")) return fp8(E4M3);
+  if (argc == 2 && !strcmp(argv[1], "e5m2")) return array_on = 2, fp8(E5M2);
   if (argc == 2) return refused(argv[1]);
   enum { M = 16 };
   static float a[M][WIDTH], low[M][WIDTH], b[3][WIDTH][WIDTH], slab[SLAB][WIDTH];
