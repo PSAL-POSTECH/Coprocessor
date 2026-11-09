@@ -36,6 +36,10 @@
     mxu_operand k_mxu_push_32_a1, 0x1, 32, 1
     mxu_operand k_mxu_matmul_32_a1, 0x0, 32, 1
     mxu_operand k_mxu_matmul_32_a2, 0x0, 32, 2
+# rd[4]: the 8-bit floats of format 2 are E5M2.
+    mxu_operand k_mxu_prep_32_e5m2, 0x2, 32, 16
+    mxu_operand k_mxu_push_32_e5m2, 0x1, 32, 16
+    mxu_operand k_mxu_matmul_32_e5m2, 0x0, 32, 16
 # Elements of 16 bits, which the unit refuses: its operands are words.
     mxu_operand k_mxu_push_16, 0x1, 16
 

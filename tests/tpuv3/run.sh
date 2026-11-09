@@ -143,7 +143,7 @@ report "exit ${rc[machine-mxu]}, $(issues machine-mxu); commits $(commits machin
 echo "-- the model"
 printf 'tpu_mxu_queue_entries: 1\n' > "$BUILD/tpuv3-queue-1.yml"
 on_gem5 queue-1 mxu "$BUILD/tpuv3-queue-1.yml"
-why=$(grep -Fc "tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of two rows needs 2" \
+why=$(grep -Fc "tpuv3: machine description: tpu_mxu_queue_entries: '1' is not a queue size: a word of four rows needs 4" \
   "$BUILD/tpuv3-queue-1.gem5.log")
 report "exit ${rc[queue-1]}, reason given $why" "exit 1, reason given 1" \
   "gem5 stops on tpu_mxu_queue_entries: 1, where a vmatmul of a word of two bfloat16 rows would never be accepted"
