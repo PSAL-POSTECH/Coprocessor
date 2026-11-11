@@ -37,7 +37,7 @@ commits() {
 # unit_stat <run> <group> <counter>: the value of vcix.<group>.<counter> in the run's one dump
 unit_stat() { awk -v want=".vcix.$2.$3" 'substr($1, length($1) - length(want) + 1) == want { print $2; exit }' "$BUILD/m5out-tpuv6e-$1/stats.txt"; }
 
-for program in mxu mxu_rate mxu_arrays mxu_slots mxu_pops sfu scratchpad valu ../tpu/loads; do
+for program in mxu mxu_int8 mxu_rate mxu_arrays mxu_slots mxu_pops sfu scratchpad valu ../tpu/loads; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv6e-${program##*/}" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 
@@ -68,6 +68,22 @@ report "TPUV6E_MXU rows $(unit_stat mxu TPUV6E_MXU rows), rows_in_flight $(unit_
   "gem5 reports the matrix unit's counters: the eight rows in at the matrix unit two a cycle, a word of two 15 cycles in the line, the line busy 4 + 15 - 1 cycles"
 
 printf 'tpu_trace: 1\nvpu_num_lanes: 4\ntpu_mxu_queue_entries: 16\n' > "$BUILD/tpuv6e-mxu-16.yml"
+echo "-- matrix unit, 4 lanes, queues of 16: words of four int8 rows, tpu_mxu_int8_macs_per_pe 2 (the v6e's) and 1"
+on_gem5 mxu_int8 mxu_int8 "$BUILD/tpuv6e-mxu-16.yml"
+report "exit ${rc[mxu_int8]}, TPUV6E_MXU rows $(unit_stat mxu_int8 TPUV6E_MXU rows), rows_in_flight $(unit_stat mxu_int8 TPUV6E_MXU rows_in_flight), active_cycles $(unit_stat mxu_int8 TPUV6E_MXU active_cycles)" \
+  "exit 0, TPUV6E_MXU rows 8, rows_in_flight 240, active_cycles 18" \
+  "mxu.S's four words as int8: sixteen rows enter four a cycle, so the line is busy 4 + 15 - 1 cycles as for mxu.S's eight bfloat16 rows; rows counts a word's entry as two, the 16-bit rate the counter's capacity is, so rows over capacity is the same 4 cycles"
+{ cat "$BUILD/tpuv6e-mxu-16.yml"; echo "tpu_mxu_int8_macs_per_pe: 1"; } > "$BUILD/tpuv6e-int8-1.yml"
+on_gem5 mxu_int8-1 mxu_int8 "$BUILD/tpuv6e-int8-1.yml"
+report "exit ${rc[mxu_int8-1]}, TPUV6E_MXU rows $(unit_stat mxu_int8-1 TPUV6E_MXU rows), rows_in_flight $(unit_stat mxu_int8-1 TPUV6E_MXU rows_in_flight), active_cycles $(unit_stat mxu_int8-1 TPUV6E_MXU active_cycles)" \
+  "exit 0, TPUV6E_MXU rows 16, rows_in_flight 240, active_cycles 22" \
+  "tpu_mxu_int8_macs_per_pe: 1: the sixteen int8 rows enter two a cycle, a 16-bit word's rate, so the line is busy 8 + 15 - 1 cycles"
+printf 'tpu_mxu_int8_macs_per_pe: 3\n' > "$BUILD/tpuv6e-int8-3.yml"
+on_gem5 int8-3 mxu_int8 "$BUILD/tpuv6e-int8-3.yml"
+why=$(grep -Fc "tpuv6e: machine description: tpu_mxu_int8_macs_per_pe: '3' is not 1 or 2: an int8 row a cycle is the work of one or two 16-bit rows" \
+  "$BUILD/tpuv6e-int8-3.gem5.log")
+report "exit ${rc[int8-3]}, reason given $why" "exit 1, reason given 1" "gem5 stops on tpu_mxu_int8_macs_per_pe: 3"
+
 on_gem5 mxu_rate mxu_rate "$BUILD/tpuv6e-mxu-16.yml"
 queues=$(grep -o "input queue [0-9]*" "$BUILD/tpuv6e-mxu_rate.gem5.log" | cut -d' ' -f3 | tr '\n' ' ')
 report "exit ${rc[mxu_rate]}, input queue at each issue ${queues% }" "exit 0, input queue at each issue 0 0 0 0 0 0 4 4 3 3 10 9 9 8 6 4" \

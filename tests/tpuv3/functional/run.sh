@@ -54,7 +54,7 @@ refused() {
 
 echo "-- the matrix unit, checked against a formula"
 formula mxu-4 tpuv3 "$MACHINE/machine.yml" mxu-4 \
-  "4 lanes, an array of 4 x 4: an operand one register, words of singles, halves and bfloat16, weights staged and latched"
+  "4 lanes, an array of 4 x 4: an operand one register, words of singles, int8 (popped as int32) and bfloat16, weights staged and latched"
 formula mxu-8 tpuv3 "$OUT/machine-8.yml" mxu-8 "8 lanes, an array of 8 x 8"
 
 echo "-- libtpuv6e.so with tpu_mxu_bound_to_lanes: 1, an array of lanes x lanes: the same program, the same results"

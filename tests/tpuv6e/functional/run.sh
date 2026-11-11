@@ -37,7 +37,7 @@ on_model() {
 echo "-- the matrix unit, checked against a formula"
 on_model mxu -- mxu; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
-echo "  operands as two registers, words of singles, halves and bfloat16, weights staged a half of the depth at a time and latched, each operand's upper half held apart in the v6e's orders, popped a half at a time: $(tail -n1 "$OUT/mxu.out") (exit $rc)"
+echo "  operands as two registers, words of singles and bfloat16, weights staged a half of the depth at a time and latched, each operand's upper half held apart in the v6e's orders, popped a half at a time: $(tail -n1 "$OUT/mxu.out") (exit $rc)"
 
 # refused <which> <text>: the run ends there, with this on standard error.
 refused() {
@@ -59,6 +59,15 @@ refused prep-weights "vcix_cp: vmatprep waits, and nothing in its unit moves any
 refused prep-inputs "vcix_cp: vmatprep waits, and nothing in its unit moves any more"
 refused words "tpu: vmatpush: its elements are words of 32 bits, not of 16"
 refused pop-array "tpu: vpop: array 1, and the machine has 1 (tpu_mxu_units)"
+
+on_model mxu-int8 -- mxu int8; rc=$?
+if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+echo "  words of four int8 rows (format 1), a tile pushed four rows at a time and latched, a tile LANES deep, a tile pushed under vmatmuls that compute with the one before, popped as int32 (format 1), bit for bit: $(tail -n1 "$OUT/mxu-int8.out") (exit $rc)"
+refused pop-singles "tpu: vpop: format 0 writes singles, and its row 0 is of int8 inputs"
+refused pop-int32 "tpu: vpop: format 1 writes int32, and its row 0 is of float inputs"
+refused pop-format "tpu: vpop: a result is a single or an int32 (format 0 or 1), and format 2 of 32 bits was asked"
+refused int8-weights "tpu: vmatmul: inputs of int8, and the weights it computes with are not int8"
+refused held-kind "tpu: vmatmul: words of E4M3, and the vmatprep before it held int8"
 
 on_model mxu-e4m3 -- mxu e4m3; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi

@@ -33,7 +33,7 @@ commits() {
   sed -n 's/^\[tpu\] commit \([a-z]*\): \([0-9]*\) cycles after its issue$/\1:\2/p' "$BUILD/tpuv3-$1.gem5.log" | tr '\n' ' ' | sed 's/ $//'
 }
 
-for program in mxu mxu_rate; do
+for program in mxu mxu_int8 mxu_rate; do
   rv_program "$HERE/$program.S" "$BUILD/tpuv3-$program" || { echo "FAIL  $program.S does not build"; exit 2; }
 done
 for program in scratchpad ../tpuv6e/valu ../tpu/loads; do
@@ -63,6 +63,10 @@ on_gem5 mxu_rate-16 mxu_rate "$BUILD/tpuv3-mxu-16.yml"
 report "exit ${rc[mxu_rate-16]}, $(issues mxu_rate-16 | cut -d' ' -f1-2); commits $(commits mxu_rate-16 | cut -d' ' -f1-3)" \
   "exit 0, vmatmul:0:0/0 vmatmul:1:0/0; commits vmatpush:1 vmatmul:2 vmatmul:2" \
   "with queues of 16, the second vmatmul waits only for the one MXU slot: it commits 2 cycles after its issue, as the first does, a cycle behind it"
+on_gem5 mxu_int8 mxu_int8 "$BUILD/tpuv3-mxu-16.yml"
+report "exit ${rc[mxu_int8]}, TPUV3_MXU rows $(unit_stat mxu_int8 TPUV3_MXU rows), rows_in_flight $(unit_stat mxu_int8 TPUV3_MXU rows_in_flight), active_cycles $(unit_stat mxu_int8 TPUV3_MXU active_cycles)" \
+  "exit 0, TPUV3_MXU rows 16, rows_in_flight 112, active_cycles 22" \
+  "queues of 16, mxu.S's four words as int8: sixteen rows enter one a cycle (tpu_mxu_int8_macs_per_pe 1, the v3's), the rate of mxu.S's eight bfloat16 rows, so the line is busy 16 + 7 - 1 cycles"
 
 printf 'tpu_trace: 1\n' > "$BUILD/tpuv3-128.yml"
 on_gem5 lanes-128 mxu "$BUILD/tpuv3-128.yml"
