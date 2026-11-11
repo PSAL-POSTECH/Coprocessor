@@ -158,7 +158,7 @@ carries out:
 
     4   3   2   1   0
   ┌───────┬───┬───────┐
-  │ DEPTH │ 2 │FORMAT │   FORMAT [1:0]  0 single, 1 two halves, 3 two bfloat16
+  │ DEPTH │ 2 │FORMAT │   FORMAT [1:0]  0 single, 1 four int8, 2 four 8-bit floats, 3 two bfloat16
   └───────┴───┴───────┘   [2]           vmatprep: weights or inputs
                                         vmatmul:  latch the staged weights
                                         vpop:     0 lower, 1 upper half of the columns   <- 1 refused on v3
@@ -276,10 +276,14 @@ words of bfloat16 (8 rows):
   v6e (WORD_A_CYCLE true):   4 words of 2 rows      input port: 2 rows a cycle
 ```
 
-The input port's width is `(word_a_cycle ? 2 : 1) x tpu_mxu_units` rows: 1 on
-the v3, 2 on the v6e, or as a machine's `tpu_mxu_word_a_cycle` says
-(`mxu.hpp:65-70`, `75-76`). It is the capacity of `TPUV3_MXU.rows`, which gem5
-prints in that counter's description (`rows, at most 1 a cycle`).
+An entry is a word under `tpu_mxu_word_a_cycle`, else one row; an int8 entry is
+`tpu_mxu_int8_macs_per_pe` times a 16-bit format's (4 rows on the v6e, 1 on the
+v3). The input port's width is the widest
+entry x `tpu_mxu_units` rows: 1 on the v3, 4 on the v6e. `TPUV3_MXU.rows` counts
+at most a 16-bit word's rows an entry, `(word_a_cycle ? 2 : 1)`, which is its
+capacity: 1 on the v3, 2 on the v6e, so rows over capacity is the cycles the
+line took entries whatever the format. gem5 prints it in that counter's
+description (`rows, at most 1 a cycle`).
 
 The v3 still needs a queue of at least 2 rows. A `vmatmul` with `vl` = 1 of
 bfloat16 sends two rows, and both must fit the input queue. A queue of 1 is

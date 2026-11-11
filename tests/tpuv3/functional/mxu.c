@@ -1,6 +1,6 @@
 // The matrix unit of libtpuv3.so: an array of WIDTH x WIDTH, WIDTH the machine's lanes (LANES unless the build says),
-// an operand one register, a word of one single or two rows of 16 bits, weights staged and latched, a result popped
-// whole. Checked against a formula. Usage: mxu [what the model refuses]
+// an operand one register, a word of one single, two bfloat16 rows or four int8 rows, weights staged and latched, a
+// result popped whole, int8's as int32. Checked against a formula. Usage: mxu [what the model refuses]
 #include "common.h"
 
 #ifndef WIDTH
@@ -13,7 +13,7 @@ kernel_with k_mxu_matmul_32, k_mxu_push_32, k_mxu_prep_32, k_mxu_pop_32;
 #define IN 0ul
 #define OUT 4096ul
 #define SLAB 2u
-enum { SINGLE = 0, HALF = 1, BF16 = 3, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16 };
+enum { SINGLE = 0, INT8 = 1, BF16 = 3, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16 };
 
 // A float that a bfloat16 holds, of exponent 2^-30 to 2^30: every product of two is exact.
 static float value(void) {
@@ -22,28 +22,22 @@ static float value(void) {
   memcpy(&made, &bits, sizeof made);
   return made;
 }
-// A number of the format, every product of two exact: a bfloat16's for singles and bfloat16, sixteenths for halves.
-static float number(unsigned format) { return format == HALF ? ((int)random_below(129) - 64) / 16.0f : value(); }
+// A number of the format, every product of two exact: a bfloat16's for singles and bfloat16, an int8 for int8.
+static float number(unsigned format) { return format == INT8 ? (float)((int)random_below(256) - 128) : value(); }
 static uint32_t bits_of(float made) {
   uint32_t bits;
   memcpy(&bits, &made, sizeof bits);
   return bits;
 }
-// The half of a single that a half holds exactly and that is not subnormal as one.
-static uint16_t half_of(uint32_t bits) {
-  if ((bits & 0x7fffffff) == 0) return (uint16_t)(bits >> 16);
-  const int exponent = (int)((bits >> 23) & 0xff) - 127 + 15;
-  return (uint16_t)((bits >> 16 & 0x8000) | exponent << 10 | (bits >> 13 & 0x3ff));
-}
 // `rows` rows of an operand, a column per lane, as the words of `format`, under the kernel with `field`.
 static void operand(kernel_with *kernel, float (*matrix)[WIDTH], unsigned rows, unsigned format, unsigned field) {
-  const unsigned long words = format == SINGLE ? rows : rows / 2;
+  const unsigned long words = format == SINGLE ? rows : format == INT8 ? rows / 4 : rows / 2;
   for (unsigned lane = 0; lane < WIDTH; lane++)
     for (unsigned row = 0; row < rows; row++) {
       const uint32_t bits = bits_of(matrix[row][lane]);
       if (format == SINGLE) *(uint32_t *)spad(lane, IN + 4 * row) = bits;
-      else if (format == BF16) *(uint16_t *)spad(lane, IN + 2 * row) = (uint16_t)(bits >> 16);
-      else *(uint16_t *)spad(lane, IN + 2 * row) = half_of(bits);
+      else if (format == INT8) *(int8_t *)spad(lane, IN + row) = (int8_t)matrix[row][lane];
+      else *(uint16_t *)spad(lane, IN + 2 * row) = (uint16_t)(bits >> 16);
     }
   if (kernel(spad(0, IN), 0, words, format | field, 0) != words) puts("an operand did not take every word");
 }
@@ -56,21 +50,31 @@ static void push(float (*rows)[WIDTH], unsigned count, unsigned format) {
   memcpy(staged, rows, count * sizeof *rows);
   operand(k_mxu_push_32, rows, count, format, PUSH1);
 }
-// A tile a slab at a time, the deepest first, so that the depth holds the tile's rows as they are.
-static void push_tile(float (*tile)[WIDTH], unsigned format) {
-  for (unsigned slab = WIDTH / SLAB; slab-- > 0;) push(tile + slab * SLAB, SLAB, format);
+// A tile `step` rows at a time, the deepest first, so that the depth holds the tile's rows as they are.
+static void push_tile(float (*tile)[WIDTH], unsigned format, unsigned step) {
+  for (unsigned slab = WIDTH / step; slab-- > 0;) push(tile + slab * step, step, format);
 }
 static void matmul(float (*a)[WIDTH], unsigned rows, unsigned format, unsigned latch) {
   if (latch) memcpy(active, staged, sizeof active);
   operand(k_mxu_matmul_32, a, rows, format, latch);
 }
-// `rows` rows of the result against a x the active weights.
+// `rows` rows of the result against a x the active weights: singles, or of int8 inputs int32 (a vpop of format 1).
 static unsigned checked;
-static unsigned check(float (*a)[WIDTH], unsigned from, unsigned rows) {
+static unsigned check(float (*a)[WIDTH], unsigned from, unsigned rows, unsigned format) {
   unsigned wrong = 0;
-  if (k_mxu_pop_32(0, spad(0, OUT), rows, 0, 0) != rows) puts("a vpop did not take every row");
+  if (k_mxu_pop_32(0, spad(0, OUT), rows, format == INT8 ? INT8 : 0, 0) != rows) puts("a vpop did not take every row");
   for (unsigned lane = 0; lane < WIDTH; lane++)
     for (unsigned row = 0; row < rows; row++) {
+      if (format == INT8) {
+        int32_t want = 0;
+        for (unsigned k = 0; k < WIDTH; k++) want += (int32_t)a[from + row][k] * (int32_t)active[k][lane];
+        const int32_t got = *(int32_t *)spad(lane, OUT + 4 * row);
+        if (got != want) {
+          if (!wrong) printf("row %u column %u: got %d, want %d\n", from + row, lane, (int)got, (int)want);
+          wrong++;
+        }
+        continue;
+      }
       float want = 0;
       for (unsigned k = 0; k < WIDTH; k++) want += a[from + row][k] * active[k][lane];
       const float got = *(float *)spad(lane, OUT + 4 * row);
@@ -100,34 +104,36 @@ static int refused(const char *which) {
 }
 
 // In each format: a tile, which the first vmatmul latches; the next a slab at a time between vmatmuls that compute
-// with the one before; a vmatmul that latches it, popped in two; a slab more, which moves the rows down.
+// with the one before; a vmatmul that latches it, popped in two; a slab more, which moves the rows down. A slab and an
+// input are two rows, four of int8, a word's.
 int main(int argc, char **argv) {
   if (argc == 2) return refused(argv[1]);
   enum { M = 16 };
-  static float a[M][WIDTH], b[2][WIDTH][WIDTH], slab[SLAB][WIDTH];
+  static float a[M][WIDTH], b[2][WIDTH][WIDTH], slab[4][WIDTH];
   unsigned wrong = 0;
-  for (unsigned format = SINGLE; format <= BF16; format += format == HALF ? 2 : 1) {
+  for (unsigned format = SINGLE; format <= BF16; format += format == INT8 ? 2 : 1) {
+    const unsigned step = format == INT8 ? 4 : SLAB;
     for (unsigned row = 0; row < M; row++)
       for (unsigned k = 0; k < WIDTH; k++) a[row][k] = number(format);
     for (unsigned tile = 0; tile < 2; tile++)
       for (unsigned k = 0; k < WIDTH; k++)
         for (unsigned column = 0; column < WIDTH; column++) b[tile][k][column] = number(format);
-    for (unsigned k = 0; k < SLAB; k++)
+    for (unsigned k = 0; k < step; k++)
       for (unsigned column = 0; column < WIDTH; column++) slab[k][column] = number(format);
-    push_tile(b[0], format);
-    matmul(a, 2, format, LATCH);
-    wrong += check(a, 0, 2);
-    for (unsigned at = WIDTH / SLAB; at-- > 0;) {
-      push(b[1] + at * SLAB, SLAB, format);
-      matmul(a + 2, 2, format, 0);
-      wrong += check(a, 2, 2);
+    push_tile(b[0], format, step);
+    matmul(a, step, format, LATCH);
+    wrong += check(a, 0, step, format);
+    for (unsigned at = WIDTH / step; at-- > 0;) {
+      push(b[1] + at * step, step, format);
+      matmul(a + step, step, format, 0);
+      wrong += check(a, step, step, format);
     }
     matmul(a, M, format, LATCH);
-    wrong += check(a, 0, M / 2);
-    wrong += check(a, M / 2, M / 2);
-    push(slab, SLAB, format);
+    wrong += check(a, 0, M / 2, format);
+    wrong += check(a, M / 2, M / 2, format);
+    push(slab, step, format);
     matmul(a + 4, 4, format, LATCH);
-    wrong += check(a, 4, 4);
+    wrong += check(a, 4, 4, format);
   }
   printf("mxu: %u of %u elements as the formula says\n", checked - wrong, checked);
   return wrong != 0;

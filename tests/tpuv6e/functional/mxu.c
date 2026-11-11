@@ -1,7 +1,7 @@
 // The matrix unit of libtpuv6e.so against a formula: an array of 2 x LANES columns, an operand of two registers, words
-// of a single, two 16-bit rows or four E4M3, weights staged half the depth at a time, results popped half at a time.
-// Usage: mxu [arrays | e4m3 | e5m2 | what the model refuses]; arrays: tpu_mxu_units: 2; e4m3, e5m2: words of four
-// 8-bit float rows, E5M2 named by rd[4].
+// of a single, two bfloat16 rows, four int8 or four E4M3, weights staged half the depth at a time, results popped half
+// at a time. Usage: mxu [arrays | int8 | e4m3 | e5m2 | what the model refuses]; arrays: tpu_mxu_units: 2; int8: words
+// of four int8 rows, popped as int32; e4m3, e5m2: words of four 8-bit float rows, E5M2 named by rd[4].
 #include "common.h"
 
 // sf.vc.iv 0, 1 and 2 and sf.vc.v.i 2: the encodings the matrix unit has. The number is the instruction's field.
@@ -24,7 +24,7 @@ static kernel_with *const pops[] = {k_mxu_pop_32, k_mxu_pop_32_a1, k_mxu_pop_32}
 #define OUT 4096ul
 #define WIDTH (2 * LANES)
 #define SLAB 2u
-enum { SINGLE = 0, HALF = 1, E4M3 = 2, BF16 = 3, E5M2 = 6, INPUTS = 4, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16 };
+enum { SINGLE = 0, INT8 = 1, E4M3 = 2, BF16 = 3, E5M2 = 6, INPUTS = 4, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16 };
 
 // A float that a bfloat16 holds, of exponent 2^-30 to 2^30: every product of two is exact.
 static float value(void) {
@@ -37,12 +37,6 @@ static uint32_t bits_of(float made) {
   uint32_t bits;
   memcpy(&bits, &made, sizeof bits);
   return bits;
-}
-// The half of a single that a half holds exactly and that is not subnormal as one.
-static uint16_t half_of(uint32_t bits) {
-  if ((bits & 0x7fffffff) == 0) return (uint16_t)(bits >> 16);
-  const int exponent = (int)((bits >> 23) & 0xff) - 127 + 15;
-  return (uint16_t)((bits >> 16 & 0x8000) | exponent << 10 | (bits >> 13 & 0x3ff));
 }
 // The E4M3 of a normal single whose value E4M3 holds exactly (bias 7, three bits of fraction); zero as zero.
 static uint8_t e4m3_of(uint32_t bits) {
@@ -57,17 +51,17 @@ static uint8_t e5m2_of(uint32_t bits) {
   return (uint8_t)((bits >> 24 & 0x80) | exponent << 2 | (bits >> 21 & 0x3));
 }
 // Rows of `format` in one word; E5M2 is format 2 in the field, set apart only in rd.
-static unsigned pack_of(unsigned format) { return format == SINGLE ? 1 : format == E4M3 || format == E5M2 ? 4 : 2; }
+static unsigned pack_of(unsigned format) { return format == SINGLE ? 1 : format == BF16 ? 2 : 4; }
 // `rows` rows of the columns from `first`, a column per lane, as the words of `format`.
 static void place(float (*matrix)[WIDTH], unsigned rows, unsigned first, unsigned format) {
   for (unsigned lane = 0; lane < LANES; lane++)
     for (unsigned row = 0; row < rows; row++) {
       const uint32_t bits = bits_of(matrix[row][first + lane]);
       if (format == SINGLE) *(uint32_t *)spad(lane, IN + 4 * row) = bits;
+      else if (format == INT8) *(int8_t *)spad(lane, IN + row) = (int8_t)matrix[row][first + lane];
       else if (format == E4M3) *(uint8_t *)spad(lane, IN + row) = e4m3_of(bits);
       else if (format == E5M2) *(uint8_t *)spad(lane, IN + row) = e5m2_of(bits);
-      else if (format == BF16) *(uint16_t *)spad(lane, IN + 2 * row) = (uint16_t)(bits >> 16);
-      else *(uint16_t *)spad(lane, IN + 2 * row) = half_of(bits);
+      else *(uint16_t *)spad(lane, IN + 2 * row) = (uint16_t)(bits >> 16);
     }
 }
 // The upper half of an operand under a vmatprep with `prep` in its field, which the unit holds until its operand's
@@ -114,14 +108,27 @@ static void matmul(float (*a)[WIDTH], unsigned rows, unsigned format, unsigned l
   if (latch) memcpy(active[array_on], staged[array_on], sizeof active[0]);
   operand(k_vmatmul, a, rows, format, INPUTS, latch);
 }
-// `rows` rows of the result, the lower half of the columns and then the upper, against a x the active weights.
+// `rows` rows of the result, the lower half of the columns and then the upper, against a x the active weights: singles,
+// or of int8 inputs int32, which a vpop of format 1 writes.
 static unsigned checked;
-static unsigned check(float (*a)[WIDTH], unsigned from, unsigned rows) {
+static unsigned check_as(float (*a)[WIDTH], unsigned from, unsigned rows, unsigned format) {
   unsigned wrong = 0;
   for (unsigned half = 0; half < 2; half++) {
-    if (k_vpop(0, spad(0, OUT), rows, half ? UPPER : 0, 0) != rows) puts("a vpop did not take every row");
+    if (k_vpop(0, spad(0, OUT), rows, (format == INT8 ? INT8 : 0) | (half ? UPPER : 0), 0) != rows)
+      puts("a vpop did not take every row");
     for (unsigned lane = 0; lane < LANES; lane++)
       for (unsigned row = 0; row < rows; row++) {
+        if (format == INT8) {
+          int32_t want = 0;
+          for (unsigned k = 0; k < WIDTH; k++)
+            want += (int32_t)a[from + row][k] * (int32_t)active[array_on][k][half * LANES + lane];
+          const int32_t got = *(int32_t *)spad(lane, OUT + 4 * row);
+          if (got != want) {
+            if (!wrong) printf("row %u column %u: got %d, want %d\n", from + row, half * LANES + lane, (int)got, (int)want);
+            wrong++;
+          }
+          continue;
+        }
         float want = 0;
         for (unsigned k = 0; k < WIDTH; k++) want += a[from + row][k] * active[array_on][k][half * LANES + lane];
         const float got = *(float *)spad(lane, OUT + 4 * row);
@@ -134,6 +141,7 @@ static unsigned check(float (*a)[WIDTH], unsigned from, unsigned rows) {
   checked += 2 * LANES * rows;
   return wrong;
 }
+static unsigned check(float (*a)[WIDTH], unsigned from, unsigned rows) { return check_as(a, from, rows, SINGLE); }
 
 static int refused(const char *which) {
   static float one[2][WIDTH];
@@ -166,6 +174,22 @@ static int refused(const char *which) {
     prep(one, 2, BF16, INPUTS);
   } else if (!strcmp(which, "e5m2-format")) {  // rd[4] on a word of singles
     k_mxu_prep_32_e5m2(spad(0, IN), 0, 1, SINGLE, 0);
+  } else if (!strcmp(which, "pop-singles")) {  // int8 rows popped as singles
+    operand(k_vmatpush, one, 4, INT8, 0, PUSH1);
+    operand(k_vmatmul, one, 4, INT8, INPUTS, LATCH);
+    k_vpop(0, spad(0, OUT), 1, 0, 0);
+  } else if (!strcmp(which, "pop-int32")) {    // bfloat16 rows popped as int32
+    operand(k_vmatpush, one, 2, BF16, 0, PUSH1);
+    operand(k_vmatmul, one, 2, BF16, INPUTS, LATCH);
+    k_vpop(0, spad(0, OUT), 1, INT8, 0);
+  } else if (!strcmp(which, "pop-format")) {   // a vpop of format 2: a result is a single or an int32
+    k_vpop(0, spad(0, OUT), 1, E4M3, 0);
+  } else if (!strcmp(which, "int8-weights")) { // int8 inputs latching bfloat16 weights
+    operand(k_vmatpush, one, 2, BF16, 0, PUSH1);
+    operand(k_vmatmul, one, 4, INT8, INPUTS, LATCH);
+  } else if (!strcmp(which, "held-kind")) {    // an int8 upper half held, an E4M3 lower half taking it
+    prep(one, 4, INT8, INPUTS);
+    bring(k_vmatmul, one, 4, E4M3, 0);
   } else if (!strcmp(which, "words")) {     // elements of 16 bits
     k_mxu_push_16(spad(0, IN), 0, 1, SINGLE, 0);
   } else if (!strcmp(which, "pop-array")) { // a vpop of array 1 on a machine of one array
@@ -220,6 +244,42 @@ static int arrays(void) {
   return wrong != 0;
 }
 
+// Words of four int8 rows, the v6e's four a cycle: a tile pushed four rows at a time to both halves of the depth and
+// latched, an input of sixteen rows popped as int32; then a tile LANES deep, only the first half of the depth pushed
+// and the input's half under the vmatprep zeros; and the next tile between vmatmuls that compute with the one before.
+// Every value is an int8, extremes included.
+static float int8_value(void) {
+  const unsigned pick = random_below(16);
+  return pick == 0 ? -128.0f : pick == 1 ? 127.0f : (float)((int)random_below(256) - 128);
+}
+static int int8(void) {
+  enum { M = 16, ROWS = 4 };
+  static float a[M][WIDTH], low[M][WIDTH], b[2][WIDTH][WIDTH];
+  unsigned wrong = 0;
+  for (unsigned row = 0; row < M; row++)
+    for (unsigned k = 0; k < WIDTH; k++) {
+      a[row][k] = int8_value();
+      low[row][k] = k < LANES ? a[row][k] : 0;
+    }
+  for (unsigned tile = 0; tile < 2; tile++)
+    for (unsigned k = 0; k < WIDTH; k++)
+      for (unsigned column = 0; column < WIDTH; column++) b[tile][k][column] = int8_value();
+  for (unsigned half = PUSH1; half <= PUSH2; half += PUSH1)
+    for (unsigned at = LANES / ROWS; at-- > 0;) push(b[0] + (half == PUSH2 ? LANES : 0) + at * ROWS, ROWS, INT8, half);
+  matmul(a, M, INT8, LATCH);
+  wrong += check_as(a, 0, M / 2, INT8);
+  wrong += check_as(a, M / 2, M / 2, INT8);
+  for (unsigned at = LANES / ROWS; at-- > 0;) {
+    push(b[1] + at * ROWS, ROWS, INT8, PUSH1);
+    matmul(a + 4, ROWS, INT8, 0);
+    wrong += check_as(a, 4, ROWS, INT8);
+  }
+  matmul(low, 8, INT8, LATCH);
+  wrong += check_as(low, 0, 8, INT8);
+  printf("mxu int8: %u of %u elements as the formula says\n", checked - wrong, checked);
+  return wrong != 0;
+}
+
 // Words of four 8-bit float rows (E5M2 on array_on 2's kernels, rd[4]): a tile pushed four rows at a time to both
 // halves of the depth, latched, and an input of sixteen rows. Every value is k/4 for |k| <= 8, which both formats
 // hold, so every product and sum is exact.
@@ -242,25 +302,26 @@ static int fp8(unsigned format) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "arrays")) return arrays();
+  if (argc == 2 && !strcmp(argv[1], "int8")) return int8();
   if (argc == 2 && !strcmp(argv[1], "e4m3")) return fp8(E4M3);
   if (argc == 2 && !strcmp(argv[1], "e5m2")) return array_on = 2, fp8(E5M2);
   if (argc == 2) return refused(argv[1]);
   enum { M = 16 };
   static float a[M][WIDTH], low[M][WIDTH], b[3][WIDTH][WIDTH], slab[SLAB][WIDTH];
   unsigned wrong = 0;
-  for (unsigned format = SINGLE; format <= BF16; format += format == HALF ? 2 : 1) {
+  for (unsigned format = SINGLE; format <= BF16; format += BF16 - SINGLE) {
     for (unsigned row = 0; row < M; row++)
       for (unsigned k = 0; k < WIDTH; k++) {
-        a[row][k] = format == HALF ? ((int)random_below(129) - 64) / 16.0f : value();
+        a[row][k] = value();
         low[row][k] = k < LANES ? a[row][k] : 0;
       }
     for (unsigned tile = 0; tile < 3; tile++)
       for (unsigned k = 0; k < WIDTH; k++)
         for (unsigned column = 0; column < WIDTH; column++)
-          b[tile][k][column] = format == HALF ? ((int)random_below(129) - 64) / 16.0f : value();
+          b[tile][k][column] = value();
     for (unsigned k = 0; k < SLAB; k++)
       for (unsigned column = 0; column < WIDTH; column++)
-        slab[k][column] = format == HALF ? ((int)random_below(129) - 64) / 16.0f : value();
+        slab[k][column] = value();
     // A tile, both halves of the depth, which the first vmatmul latches.
     push_half(b[0], format, PUSH1);
     push_half(b[0], format, PUSH2);

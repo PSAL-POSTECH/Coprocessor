@@ -1,10 +1,11 @@
 // A TPU model's matrix unit: `tpu_mxu_units` arrays of tpu_mxu_registers x lanes each way (lanes x lanes under
-// tpu_mxu_bound_to_lanes: 1), an operand that many registers; tpu_mxu_issue_slots and tpu_mxu_word_a_cycle set its
-// issue slots and its rows a cycle. A key the machine leaves out is the model's Shape.
+// tpu_mxu_bound_to_lanes: 1), an operand that many registers; tpu_mxu_issue_slots, tpu_mxu_word_a_cycle and
+// tpu_mxu_int8_macs_per_pe set its issue slots and its rows a cycle. A key the machine leaves out is the model's Shape.
 // Each array: an input queue -> a line of tpu_mxu_delay_cycles -> one output queue per half of its columns.
 #ifndef TPU_MXU_HPP
 #define TPU_MXU_HPP
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -36,15 +37,18 @@ class Mxu : public Component {
     for (const cp::Encoding &e : {MATMUL, PUSH, PREP, POP}) register_insn(e);
   }
 
-  // The field at 19:15: [1:0] what a word holds (0 a single, 1 two halves, 2 four 8-bit floats, 3 two bfloat16); [2]
-  // which operand a vmatprep is for (0 weights, 1 inputs), whether a vmatmul latches the staged weights, or which half
-  // of the columns a vpop takes (0 lower, 1 upper); [4:3] which half of the depth a vmatpush fills (1 lower, 2 upper).
+  // The field at 19:15: [1:0] what a word holds (0 a single, 1 four int8, 2 four 8-bit floats, 3 two bfloat16), and
+  // what a vpop writes (0 singles, 1 int32); [2] which operand a vmatprep is for (0 weights, 1 inputs), whether a
+  // vmatmul latches the staged weights, or which half of the columns a vpop takes (0 lower, 1 upper); [4:3] which half
+  // of the depth a vmatpush fills (1 lower, 2 upper).
   static constexpr uint32_t FORMAT = 0x3, SECOND = 0x4, LATCH = 0x4, DEPTH = 0x18;
+  // Format 1: four int8 a word, summed as int32, which a vpop of format 1 writes.
+  static constexpr uint32_t INT8 = 1;
   // sf.vc.iv's rd: [3:0] the array, [4] the 8-bit float of format 2 is E5M2 (else E4M3).
   static constexpr uint32_t ARRAY = 0xF, E5M2_RD = 0x10;
-  // Rows that enter the line together under tpu_mxu_word_a_cycle: a word, of four rows at most.
+  // Rows that enter the line together: a word of four rows at most.
   static constexpr uint32_t LINE_ROWS = 4;
-  static uint32_t rows_in_word(uint32_t field) { return (field & FORMAT) == 2 ? 4 : (field & FORMAT) ? 2 : 1; }
+  static uint32_t rows_in_word(uint32_t field) { return (field & FORMAT) == 3 ? 2 : (field & FORMAT) ? 4 : 1; }
   static uint32_t array_of(const vcix_insn &insn) { return is_pop(insn) ? cp::rs2(insn) : cp::rd(insn) & ARRAY; }
   static constexpr uint64_t MAX_ARRAYS = 16;
 
@@ -72,13 +76,19 @@ class Mxu : public Component {
       throw cp::ConfigError(SLOTS_KEY, config.get(SLOTS_KEY), "is not a number of instructions a cycle");
     if (word > 1)
       throw cp::ConfigError(WORD_KEY, config.get(WORD_KEY), "is not 0 (a row a cycle) or 1 (a word a cycle)");
-    registers_ = static_cast<uint32_t>(registers), word_a_cycle_ = word;
+    const uint64_t macs = config.uint(INT8_MACS_KEY, Shape::INT8_MACS);
+    if (macs < 1 || macs > 2)
+      throw cp::ConfigError(INT8_MACS_KEY, config.get(INT8_MACS_KEY),
+                            "is not 1 or 2: an int8 row a cycle is the work of one or two 16-bit rows");
+    registers_ = static_cast<uint32_t>(registers), word_a_cycle_ = word, int8_macs_ = static_cast<uint32_t>(macs);
     const uint64_t stages = config.uint(DELAY_KEY, 2 * registers_ * lanes - 1);
     if (stages < 1 || stages > UINT32_MAX)
       throw cp::ConfigError(DELAY_KEY, config.get(DELAY_KEY), "is not a delay in cycles");
     insns().configure(2 * (slots + arrays), slots + arrays);
-    entry_.set_width((word_a_cycle_ ? LINE_ROWS : 1) * arrays);
-    rows_.set_capacity(entry_.width());
+    uint32_t widest = 1;
+    for (uint32_t format = 0; format <= FORMAT; format++) widest = std::max(widest, rows_a_cycle(format));
+    entry_.set_width(widest * arrays);
+    rows_.set_capacity(counted_rows(word_a_cycle_) * arrays);
     issue_.set_width(slots);
     pop_.set_width(entries);
     units_ = arrays;
@@ -94,7 +104,7 @@ class Mxu : public Component {
   // (or faulted). active_cycles counts the cycles some line holds a row.
   void cycle() override {
     uint64_t in_line = 0;
-    for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_, rows_);
+    for (size_t i = 0; i < units_; i++) in_line += arrays_[i]->flow(entry_, rows_, counted_rows(word_a_cycle_));
     while (insns().length() && carry_out(insns().front())) insns().pop();
     rows_in_flight_.add(in_line);
     active_cycles_.add(in_line != 0);
@@ -122,12 +132,14 @@ class Mxu : public Component {
 
  private:
   enum Operand : uint32_t { WEIGHTS, INPUTS };
-  // One array's state: whether each operand's upper half is held, and of how many rows; whether a push has staged
-  // weights, and a latch made them active.
+  // One array's state: whether each operand's upper half is held, of how many rows and of which kind; whether a push
+  // has staged weights, and a latch made them active; and whether the staged and the active weights are int8.
   struct State {
     bool held[2] = {false, false};
     uint64_t rows[2] = {0, 0};
+    uint32_t kind[2] = {0, 0};
     bool pushed = false, latched = false;
+    bool staged_int8 = false, active_int8 = false;
   };
   // One array's values (Spike): the upper half each operand's vmatprep holds; per column, of registers x lanes, its
   // weight at each depth as the pushes left them (staged) and as the last latch took them (active).
@@ -135,15 +147,20 @@ class Mxu : public Component {
     Rows upper[2];
     Rows staged, active;
   };
-  // A row in an input queue: its outputs (Spike), and on a word's first row the rows that enter the line with it.
+  // A row's outputs: whether its inputs were int8, and (Spike) each column's 32 bits, a single's or an int32's.
+  struct Out {
+    bool int8 = false;
+    std::vector<uint32_t> bits;
+  };
+  // A row in an input queue: its outputs, and on the first row of an entry the rows that enter the line with it.
   struct Input {
     uint32_t word;
-    Row out;
+    Out out;
   };
-  // An entry of a line: a word's rows, entered and left together.
+  // An entry of a line: rows entered and left together.
   struct Word {
     uint32_t rows;
-    Row out[LINE_ROWS];
+    Out out[LINE_ROWS];
   };
   // One array: its issue slots, one instruction a cycle each; its queues and line, named array<i>_<block>; its state,
   // its values, and the rows in its line.
@@ -163,11 +180,12 @@ class Mxu : public Component {
       lower.configure(entries);
       if (upper) upper->configure(entries);
     }
-    cp::Queue<Row> &out(uint32_t half) { return half ? *upper : lower; }
-    const cp::Queue<Row> &out(uint32_t half) const { return half ? *upper : lower; }
+    cp::Queue<Out> &out(uint32_t half) { return half ? *upper : lower; }
+    const cp::Queue<Out> &out(uint32_t half) const { return half ? *upper : lower; }
     // The finished word into every output queue, if each has room for all its rows; then the next word in, if the
-    // shared input port has room for its rows, counted in `rows_in`. Returns the rows in the line.
-    uint64_t flow(Port &entry, Counter &rows_in) {
+    // shared input port has room for its rows, counted in `rows_in` up to `counted` an entry. Returns the rows in the
+    // line.
+    uint64_t flow(Port &entry, Counter &rows_in, uint32_t counted) {
       if (line.length()) {
         const uint32_t rows = line.front().rows;
         if (lower.available() >= rows && (!upper || upper->available() >= rows)) {
@@ -180,7 +198,7 @@ class Mxu : public Component {
       if (input.length() && line.available() && entry.utilize(input.front().word)) {
         Word w{input.front().word, {}};
         for (uint32_t k = 0; k < w.rows; k++) w.out[k] = input.pop().out;
-        rows_in.add(w.rows);
+        rows_in.add(std::min(w.rows, counted));
         in_line += w.rows;
         if (!line.push(std::move(w))) std::abort();
       }
@@ -191,8 +209,8 @@ class Mxu : public Component {
     Port weight_issue, input_issue, pop_issue;
     cp::Queue<Input> input;
     cp::Pipeline<Word> line;
-    cp::Queue<Row> lower;
-    std::optional<cp::Queue<Row>> upper;
+    cp::Queue<Out> lower;
+    std::optional<cp::Queue<Out>> upper;
     State state;
     Values values;
     uint64_t in_line = 0;
@@ -201,6 +219,22 @@ class Mxu : public Component {
   static bool is(const vcix_insn &insn, const cp::Encoding &e) { return (insn.bits & e.mask) == e.match; }
   static bool is_pop(const vcix_insn &insn) { return is(insn, POP); }
   static bool e5m2(const vcix_insn &insn) { return !is_pop(insn) && (cp::rd(insn) & E5M2_RD); }
+  // What an operand's words hold: the format, and E5M2 apart from E4M3 (4 + 2); its name.
+  static uint32_t kind(const vcix_insn &insn) { return (cp::rs1(insn) & FORMAT) | (e5m2(insn) ? 4 : 0); }
+  static const char *kind_name(uint32_t kind) {
+    static const char *const names[] = {"singles", "int8", "E4M3", "bfloat16", "", "", "E5M2", ""};
+    return names[kind & 7];
+  }
+  // Rows of `format` that enter the line together, one entry a cycle: a word under tpu_mxu_word_a_cycle, else a row;
+  // int8's tpu_mxu_int8_macs_per_pe times a 16-bit format's.
+  uint32_t rows_a_cycle(uint32_t format) const {
+    if (format == INT8) return (word_a_cycle_ ? 2 : 1) * int8_macs_;
+    return word_a_cycle_ ? rows_in_word(format) : 1;
+  }
+  // The rows counter's rows an entry at most, and each array's capacity: a 16-bit word's rows under
+  // tpu_mxu_word_a_cycle, else one. Rows over capacity is then the cycles a line took entries, whatever the format,
+  // a word of four 8-bit rows counted as two.
+  static constexpr uint32_t counted_rows(bool word_a_cycle) { return word_a_cycle ? 2 : 1; }
   // A failed check, in `why`.
   template <class... A>
   static bool no(std::string &why, const char *format, A... a) {
@@ -216,7 +250,9 @@ class Mxu : public Component {
     const char *what = is_pop(insn) ? "vpop" : prep ? "vmatprep" : push ? "vmatpush" : "vmatmul";
     if (which >= units_) return no(why, "%s: array %u, and the machine has %zu (tpu_mxu_units)", what, which, units_);
     if (is_pop(insn)) {
-      if (sew != 32 || format) return no(why, "vpop: a result is a single, and format %u of %u bits was asked", format, sew);
+      if (sew != 32 || (format != 0 && format != INT8))
+        return no(why, "vpop: a result is a single or an int32 (format 0 or 1), and format %u of %u bits was asked",
+                  format, sew);
       return !(field & SECOND) || registers_ > 1 ||
              no(why, "vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not");
     }
@@ -239,9 +275,16 @@ class Mxu : public Component {
     if (registers_ > 1 && s.rows[operand] != rows)
       return no(why, "%s: %zu rows, and the vmatprep before it held %zu", what, static_cast<size_t>(rows),
                 static_cast<size_t>(s.rows[operand]));
+    if (registers_ > 1 && s.kind[operand] != kind(insn))
+      return no(why, "%s: words of %s, and the vmatprep before it held %s", what, kind_name(kind(insn)),
+                kind_name(s.kind[operand]));
     if (push) return true;
-    if (field & LATCH) return s.pushed || no(why, "vmatmul: no weight was pushed before it");
-    return s.latched || no(why, "vmatmul: no weights were latched before it, and it does not latch");
+    const bool int8 = format == INT8, latch = field & LATCH;
+    if (latch && !s.pushed) return no(why, "vmatmul: no weight was pushed before it");
+    if (!latch && !s.latched) return no(why, "vmatmul: no weights were latched before it, and it does not latch");
+    const bool weights_int8 = latch ? s.staged_int8 : s.active_int8;
+    return weights_int8 == int8 || no(why, "vmatmul: inputs of %s, and the weights it computes with are %s",
+                                      kind_name(kind(insn)), weights_int8 ? "int8" : "not int8");
   }
   // The head of insns(), carried out whole in this cycle when its slots, its rows and its room allow: a vpop takes
   // its rows of one output queue through the pop port, a vmatmul puts its rows in the input queue, both at once. True
@@ -253,17 +296,22 @@ class Mxu : public Component {
     Array &a = *arrays_[array_of(insn)];
     if (is_pop(insn)) {
       const uint32_t half = field & SECOND ? 1 : 0;
-      cp::Queue<Row> &out = a.out(half);
+      const bool int8 = (field & FORMAT) == INT8;
+      cp::Queue<Out> &out = a.out(half);
       if (out.size() < vl && !a.input.size() && a.line.idle())
         return fault(insn, message("vpop: %u rows asked of the %s half, %zu computed", vl, half ? "upper" : "lower",
                                    static_cast<size_t>(out.size()))),
                true;
       if (out.length() < vl || pop_.available() < vl || !a.pop_issue.utilize(1) || !pop_.utilize(vl)) return false;
       for (uint32_t i = 0; i < vl; i++) {
-        const Row row = out.pop();
+        const Out row = out.pop();
+        if (row.int8 != int8)
+          return fault(insn, message("vpop: format %u writes %s, and its row %u is of %s inputs", field & FORMAT,
+                                     int8 ? "int32" : "singles", i, row.int8 ? "int8" : "float")),
+                 true;
         values([&](const Host &host) {
           for (uint32_t lane = 0, first = half ? host.lanes() : 0; lane < host.lanes(); lane++)
-            put<float>(host, lane, cp::rd(insn), i, row[first + lane]);
+            put<uint32_t>(host, lane, cp::rd(insn), i, row.bits[first + lane]);
         });
       }
       complete(insn);
@@ -282,7 +330,7 @@ class Mxu : public Component {
   }
   // vmatprep holds the upper half of its operand until the next vmatpush or vmatmul of that operand takes it.
   void prep(const Insn &insn, Array &a, Operand operand, uint64_t rows) {
-    a.state.held[operand] = true, a.state.rows[operand] = rows;
+    a.state.held[operand] = true, a.state.rows[operand] = rows, a.state.kind[operand] = kind(insn);
     values([&](const Host &host) { a.values.upper[operand] = operand_rows(host, insn); });
   }
   // vmatpush stages a weight per row in every column in one half of the depth: what it held moves down as many
@@ -302,22 +350,23 @@ class Mxu : public Component {
         for (size_t row = 0; row < rows && row < lanes; row++) weight[row] = column < lanes ? lower[column][row] : upper[column - lanes][row];
       }
     });
-    a.state.held[WEIGHTS] = false, a.state.pushed = true;
+    a.state.held[WEIGHTS] = false, a.state.pushed = true, a.state.staged_int8 = (cp::rs1(insn) & FORMAT) == INT8;
   }
   // vmatmul: one that latches first makes the staged weights the active; then its vl words of 1, 2 or 4 rows enter the
-  // input queue, each row's outputs made as it enters (output()), a word one entry under tpu_mxu_word_a_cycle.
+  // input queue, each row's outputs made as it enters (output()), rows_a_cycle of them one entry.
   void matmul(const Insn &insn, Array &a, uint64_t rows) {
-    const uint32_t field = cp::rs1(insn), word = word_a_cycle_ ? rows_in_word(field) : 1;
+    const uint32_t field = cp::rs1(insn), word = rows_a_cycle(field & FORMAT);
     const bool latch = field & LATCH;
     values([&](const Host &) {
       if (latch) a.values.active = a.values.staged;
     });
     for (uint64_t row = 0; row < rows; row++) {
-      Input in{row % word ? 0 : word, {}};
-      values([&](const Host &host) { in.out = output(host, insn, a, row); });
+      Input in{row % word ? 0 : word, {(field & FORMAT) == INT8, {}}};
+      values([&](const Host &host) { in.out.bits = output(host, insn, a, row); });
       if (!a.input.push(std::move(in))) std::abort();
     }
     a.state.held[INPUTS] = false, a.state.latched |= latch;
+    if (latch) a.state.active_int8 = a.state.staged_int8;
   }
   static float word_element(uint32_t word, uint32_t slot, uint32_t format, bool e5m2) {
     if (format == 0) {
@@ -325,10 +374,13 @@ class Mxu : public Component {
       std::memcpy(&value, &word, sizeof value);
       return value;
     }
+    if (format == INT8) return static_cast<int8_t>(word >> (8 * slot));
     if (format == 2) return fp8_to_float(static_cast<uint8_t>(word >> (8 * slot)), e5m2 ? E5M2 : E4M3);
-    const uint16_t part = static_cast<uint16_t>(word >> (16 * slot));
-    return format == 3 ? bf16_to_float(part) : half_to_float(part);
+    return bf16_to_float(static_cast<uint16_t>(word >> (16 * slot)));
   }
+  // An int8 value as word_element holds it; 0 for what no int8 is (a weight a float tile left at a depth no int8
+  // push reached).
+  static int32_t int8_of(float value) { return value >= -128 && value <= 127 ? static_cast<int32_t>(value) : 0; }
   // The rows of one register group, per lane.
   static Rows operand_rows(const Host &host, const Insn &insn) {
     const uint32_t format = cp::rs1(insn) & FORMAT, pack = rows_in_word(format);
@@ -340,18 +392,26 @@ class Mxu : public Component {
     return rows;
   }
   // Row `row` of a vmatmul's input, as it enters: a column's output is its active weights times the row, one input
-  // vector of registers x lanes, the lower lanes from vs2 and the upper from the vmatprep the vmatmul took.
-  Row output(const Host &host, const Insn &insn, const Array &array, uint64_t row) const {
+  // vector of registers x lanes, the lower lanes from vs2 and the upper from the vmatprep the vmatmul took. Each
+  // column's 32 bits: a single, or of int8 inputs an int32, the sum wrapping as an int32 accumulator does.
+  std::vector<uint32_t> output(const Host &host, const Insn &insn, const Array &array, uint64_t row) const {
     const Values &v = array.values;
     const uint32_t lanes = host.lanes(), width = registers_ * lanes, format = cp::rs1(insn) & FORMAT;
     const uint32_t pack = rows_in_word(format), word = static_cast<uint32_t>(row / pack), slot = static_cast<uint32_t>(row % pack);
-    Row input(width), out(width);
+    Row input(width);
+    std::vector<uint32_t> out(width);
     for (uint32_t k = 0; k < width; k++)
       input[k] = k < lanes ? word_element(get<uint32_t>(host, k, cp::rs2(insn), word), slot, format, e5m2(insn)) : v.upper[INPUTS][k - lanes][row];
     for (uint32_t column = 0; column < width; column++) {
+      if (format == INT8) {
+        uint32_t sum = 0;
+        for (uint32_t k = 0; k < width; k++) sum += static_cast<uint32_t>(int8_of(input[k]) * int8_of(v.active[column][k]));
+        out[column] = sum;
+        continue;
+      }
       float sum = 0;
       for (uint32_t k = 0; k < width; k++) sum = multiply_add(sum, input[k], v.active[column][k]);
-      out[column] = sum;
+      std::memcpy(&out[column], &sum, sizeof sum);
     }
     return out;
   }
@@ -364,9 +424,11 @@ class Mxu : public Component {
   static constexpr const char *REGISTERS_KEY = "tpu_mxu_registers";
   static constexpr const char *SLOTS_KEY = "tpu_mxu_issue_slots";
   static constexpr const char *WORD_KEY = "tpu_mxu_word_a_cycle";
+  static constexpr const char *INT8_MACS_KEY = "tpu_mxu_int8_macs_per_pe";
 
-  Port entry_{*this, "input", Shape::WORD_A_CYCLE ? LINE_ROWS : 1};
-  Counter rows_{*this, "rows", Shape::WORD_A_CYCLE ? LINE_ROWS : 1};
+  Port entry_{*this, "input", std::max<uint32_t>(Shape::WORD_A_CYCLE ? LINE_ROWS : 1,
+                                                 counted_rows(Shape::WORD_A_CYCLE) * Shape::INT8_MACS)};
+  Counter rows_{*this, "rows", counted_rows(Shape::WORD_A_CYCLE)};
   Counter rows_in_flight_{*this, "rows_in_flight"};
   Counter active_cycles_{*this, "active_cycles"};
   Port issue_{*this, "issue", Shape::SLOTS};
@@ -374,6 +436,7 @@ class Mxu : public Component {
   Port pop_{*this, "pop", 256};
   uint32_t registers_ = Shape::REGISTERS;
   bool word_a_cycle_ = Shape::WORD_A_CYCLE;
+  uint32_t int8_macs_ = Shape::INT8_MACS;
   size_t units_ = 1;
 };
 

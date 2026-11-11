@@ -182,7 +182,9 @@ The field at 19:15 (`mxu.hpp:39-42`: `FORMAT = 0x3, SECOND = 0x4, LATCH =
 ```
  bit:      4  3  2  1  0
           └─┬─┘  │  └─┬─┘
-            │    │    └── [1:0] format: 0 a single, 1 two fp16 halves, 3 two bfloat16
+            │    │    └── [1:0] format: 0 a single, 1 four int8, 2 four 8-bit floats
+            │    │                       (E5M2 under rd[4], else E4M3), 3 two bfloat16;
+            │    │                       vpop: 0 writes singles, 1 int32 (of int8 inputs)
             │    └─────── [2]   vmatprep: 0 weights, 1 inputs
             │                   vmatmul:  1 latch the staged weights first
             │                   vpop:     0 lower columns, 1 upper columns

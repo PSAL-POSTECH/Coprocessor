@@ -11,11 +11,14 @@
 namespace {
 
 // The v6e's MXU: 256 x 256 on 128 lanes, so an operand is two registers; two MXU slots a bundle, shared by its
-// MXUs; a word of two 16-bit rows a cycle.
+// MXUs; a word of two 16-bit rows a cycle, and four int8 rows: on one v6e an int8 GEMM takes 0.50 to 0.53 of the
+// bfloat16 one's time for K >= 512, with the same weight latches and half the pushes and vmatmuls (tpu-perf-archive
+// runs/v6e/mxu_int8/probes, PR #16).
 struct Shape {
   static constexpr uint32_t REGISTERS = 2;
   static constexpr uint64_t SLOTS = 2;
   static constexpr bool WORD_A_CYCLE = true;
+  static constexpr uint32_t INT8_MACS = 2;
 };
 
 class Tpuv6e final : public tpu::Coprocessor {
