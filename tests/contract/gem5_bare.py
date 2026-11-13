@@ -8,11 +8,17 @@ from m5.objects import *
 parser = argparse.ArgumentParser()
 parser.add_argument("binary")
 parser.add_argument("--model", required=True)
+parser.add_argument("--trace-file", default="")
 args = parser.parse_args()
 
 
+unit = MinorCoprocessorFU(coprocessorModel=args.model)
+if args.trace_file:
+    unit.coprocessorTraceFile = args.trace_file
+
+
 class BareFUPool(MinorFUPool):
-    funcUnits = MinorDefaultFUPool.funcUnits + [MinorCoprocessorFU(coprocessorModel=args.model)]
+    funcUnits = MinorDefaultFUPool.funcUnits + [unit]
 
 
 system = System()
