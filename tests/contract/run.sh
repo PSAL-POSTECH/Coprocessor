@@ -207,4 +207,19 @@ part 0 "[commit ] insn=2c2552db "
 part 1 "[commit ] insn=2825c1db "
 verdict "gem5: writing vd dirties VS, and FS off refuses only a form that reads f[rs1]"
 
+echo "-- trace"
+log="$BUILD/status.trace.log"
+gem5_bare_run "$BUILD/m5out-trace" "$BUILD/libprint_args.so" "$BUILD/status" --trace-file=trace.json > "$log" 2>&1; rc=$?
+ended 0
+python3 - "$BUILD/m5out-trace/trace.json" "$(grep -c '^\[issue  \]' "$log")" > "$log.check" 2>&1 <<'PY' || miss "trace.json: $(tail -1 "$log.check")"
+import json, sys
+t = json.load(open(sys.argv[1]))
+assert t["otherData"]["schema"] == "coprocessor-trace/1", t["otherData"]
+slices = [e for e in t["traceEvents"] if e["ph"] == "X"]
+assert slices and all(e["dur"] >= 0 for e in slices), "no instruction slices"
+assert len(slices) == int(sys.argv[2]), f"{len(slices)} slices for {sys.argv[2]} issued instructions"
+assert any(e["ph"] == "i" and e["name"] == "reset" for e in t["traceEvents"]), "no stats reset instant"
+PY
+verdict "gem5: coprocessorTraceFile writes coprocessor-trace/1 with a slice per issued instruction"
+
 exit $failed
