@@ -59,6 +59,7 @@ refused prep-weights "vcix_cp: vmatprep waits, and nothing in its unit moves any
 refused prep-inputs "vcix_cp: vmatprep waits, and nothing in its unit moves any more"
 refused words "tpu: vmatpush: its elements are words of 32 bits, not of 16"
 refused pop-array "tpu: vpop: array 1, and the machine has 1 (tpu_mxu_units)"
+refused pop-add "tpu: vpop: [3] adds array 1's rows, and the machine has 1 (tpu_mxu_units)"
 
 on_model mxu-int8 -- mxu int8; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
@@ -83,6 +84,11 @@ echo "-- the matrix unit with tpu_mxu_units: 2"
 MACHINE_YML="$OUT/machine-mxu2.yml" on_model mxu-arrays -- mxu arrays; rc=$?
 if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
 echo "  two arrays, each its own tile and its own held halves, named in sf.vc.iv's rd and sf.vc.v.i's rs2, popped the other way round: $(tail -n1 "$OUT/mxu-arrays.out") (exit $rc)"
+for kind in arrays-add arrays-add-int8; do
+  MACHINE_YML="$OUT/machine-mxu2.yml" on_model "mxu-$kind" -- mxu "$kind"; rc=$?
+  if [ "$rc" = 0 ]; then printf 'PASS'; else printf 'FAIL'; failed=1; fi
+  echo "  each array its own tile and input, one vpop of [3] from array 0 their sum (vpop.add of mxu0 and mxu1): $(tail -n1 "$OUT/mxu-$kind.out") (exit $rc)"
+done
 MACHINE_YML="$OUT/machine-mxu2.yml" refused array "tpu: vmatmul: array 2, and the machine has 2 (tpu_mxu_units)"
 
 exit $failed

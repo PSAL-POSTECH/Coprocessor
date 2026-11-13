@@ -189,6 +189,7 @@ The field at 19:15 (`mxu.hpp:39-42`: `FORMAT = 0x3, SECOND = 0x4, LATCH =
             │                   vmatmul:  1 latch the staged weights first
             │                   vpop:     0 lower columns, 1 upper columns
             └──────────── [4:3] vmatpush: 1 first half of the depth, 2 second half
+                          vpop:  [3] each row plus the next array's (vpop.add)
 ```
 
 What each instruction does:
@@ -205,7 +206,9 @@ What each instruction does:
   (`mxu.hpp:302-314`).
 - **`vpop`** (`sf.vc.v.i 2`): takes exactly `vl` result rows of one half of
   the columns, as singles. Row i goes to element i of `vd`; lane l gets
-  column l of that half (`mxu.hpp:255-260`).
+  column l of that half (`mxu.hpp:255-260`). With [3] set each row is its
+  array's plus the next array's, int32 or singles, the v6e's `vpop.add` of
+  mxu0 and mxu1; both arrays' pop slots are taken (`tests/tpuv6e/functional`, `arrays-add`).
 
 The fields the tests use, decoded:
 
