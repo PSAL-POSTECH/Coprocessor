@@ -43,7 +43,8 @@
 # Elements of 16 bits, which the unit refuses: its operands are words.
     mxu_operand k_mxu_push_16, 0x1, 16
 
-# Its vpop (sf.vc.v.i 2) into the destination: the field, 0 to 7, [1:0] the format and [2] the half of the columns.
+# Its vpop (sf.vc.v.i 2) into the destination: the field, 0 to 15, [1:0] the format, [2] the half of the columns and
+# [3] the next array's rows added.
 # The array it pops is sf.vc.v.i's rs2, which names no register: 0 unless said.
 .macro mxu_pop name, array=0
     .globl \name
@@ -55,7 +56,7 @@
     add     t1, t1, t3
     jr      t1
 1:
-  .irp field, 0, 1, 2, 3, 4, 5, 6, 7
+  .irp field, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
     sf.vc.v.i 0x2, \array, v16, \field
     j       2f
   .endr

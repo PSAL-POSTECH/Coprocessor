@@ -42,6 +42,8 @@ class Mxu : public Component {
   // vmatmul latches the staged weights, or which half of the columns a vpop takes (0 lower, 1 upper); [4:3] which half
   // of the depth a vmatpush fills (1 lower, 2 upper).
   static constexpr uint32_t FORMAT = 0x3, SECOND = 0x4, LATCH = 0x4, DEPTH = 0x18;
+  // A vpop's [3]: each row is its array's plus the next array's, as the v6e's vpop.add of mxu0 and mxu1.
+  static constexpr uint32_t ADD = 0x8;
   // Format 1: four int8 a word, summed as int32, which a vpop of format 1 writes.
   static constexpr uint32_t INT8 = 1;
   // sf.vc.iv's rd: [3:0] the array, [4] the 8-bit float of format 2 is E5M2 (else E4M3).
@@ -231,6 +233,16 @@ class Mxu : public Component {
     if (format == INT8) return (word_a_cycle_ ? 2 : 1) * int8_macs_;
     return word_a_cycle_ ? rows_in_word(format) : 1;
   }
+  // Two results of one column added as a vpop of [3] adds them: int32 as an int32 accumulator wraps, singles as floats.
+  static uint32_t sum(uint32_t a, uint32_t b, bool int8) {
+    if (int8) return a + b;
+    float x, y;
+    std::memcpy(&x, &a, sizeof x), std::memcpy(&y, &b, sizeof y);
+    const float z = x + y;
+    uint32_t bits;
+    std::memcpy(&bits, &z, sizeof bits);
+    return bits;
+  }
   // The rows counter's rows an entry at most, and each array's capacity: a 16-bit word's rows under
   // tpu_mxu_word_a_cycle, else one. Rows over capacity is then the cycles a line took entries, whatever the format,
   // a word of four 8-bit rows counted as two.
@@ -253,6 +265,8 @@ class Mxu : public Component {
       if (sew != 32 || (format != 0 && format != INT8))
         return no(why, "vpop: a result is a single or an int32 (format 0 or 1), and format %u of %u bits was asked",
                   format, sew);
+      if ((field & ADD) && which + 1 >= units_)
+        return no(why, "vpop: [3] adds array %u's rows, and the machine has %zu (tpu_mxu_units)", which + 1, units_);
       return !(field & SECOND) || registers_ > 1 ||
              no(why, "vpop: [2] names the upper half of the columns, which an array of lanes x lanes has not");
     }
@@ -302,16 +316,27 @@ class Mxu : public Component {
         return fault(insn, message("vpop: %u rows asked of the %s half, %zu computed", vl, half ? "upper" : "lower",
                                    static_cast<size_t>(out.size()))),
                true;
-      if (out.length() < vl || pop_.available() < vl || !a.pop_issue.utilize(1) || !pop_.utilize(vl)) return false;
+      Array *const next = field & ADD ? &*arrays_[array_of(insn) + 1] : nullptr;
+      cp::Queue<Out> *const more = next ? &next->out(half) : nullptr;
+      if (more && more->size() < vl && !next->input.size() && next->line.idle())
+        return fault(insn, message("vpop: %u rows asked of the next array's %s half, %zu computed", vl,
+                                   half ? "upper" : "lower", static_cast<size_t>(more->size()))),
+               true;
+      if (out.length() < vl || (more && more->length() < vl) || pop_.available() < vl || !a.pop_issue.available() ||
+          (next && !next->pop_issue.available()))
+        return false;
+      if (!a.pop_issue.utilize(1) || (next && !next->pop_issue.utilize(1)) || !pop_.utilize(vl)) std::abort();
       for (uint32_t i = 0; i < vl; i++) {
         const Out row = out.pop();
-        if (row.int8 != int8)
+        const Out added = more ? more->pop() : Out{int8, {}};
+        if (row.int8 != int8 || added.int8 != int8)
           return fault(insn, message("vpop: format %u writes %s, and its row %u is of %s inputs", field & FORMAT,
-                                     int8 ? "int32" : "singles", i, row.int8 ? "int8" : "float")),
+                                     int8 ? "int32" : "singles", i, int8 ? "float" : "int8")),
                  true;
         values([&](const Host &host) {
           for (uint32_t lane = 0, first = half ? host.lanes() : 0; lane < host.lanes(); lane++)
-            put<uint32_t>(host, lane, cp::rd(insn), i, row.bits[first + lane]);
+            put<uint32_t>(host, lane, cp::rd(insn), i,
+                          more ? sum(row.bits[first + lane], added.bits[first + lane], int8) : row.bits[first + lane]);
         });
       }
       complete(insn);

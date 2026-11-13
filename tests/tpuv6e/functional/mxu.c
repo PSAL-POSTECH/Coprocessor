@@ -1,6 +1,7 @@
 // The matrix unit of libtpuv6e.so against a formula: an array of 2 x LANES columns, an operand of two registers, words
 // of a single, two bfloat16 rows, four int8 or four E4M3, weights staged half the depth at a time, results popped half
-// at a time. Usage: mxu [arrays | int8 | e4m3 | e5m2 | what the model refuses]; arrays: tpu_mxu_units: 2; int8: words
+// at a time. Usage: mxu [arrays | arrays-add | arrays-add-int8 | int8 | e4m3 | e5m2 | what the model refuses]; arrays and
+// arrays-add: tpu_mxu_units: 2; int8: words
 // of four int8 rows, popped as int32; e4m3, e5m2: words of four 8-bit float rows, E5M2 named by rd[4].
 #include "common.h"
 
@@ -24,7 +25,8 @@ static kernel_with *const pops[] = {k_mxu_pop_32, k_mxu_pop_32_a1, k_mxu_pop_32}
 #define OUT 4096ul
 #define WIDTH (2 * LANES)
 #define SLAB 2u
-enum { SINGLE = 0, INT8 = 1, E4M3 = 2, BF16 = 3, E5M2 = 6, INPUTS = 4, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16 };
+enum { SINGLE = 0, INT8 = 1, E4M3 = 2, BF16 = 3, E5M2 = 6, INPUTS = 4, UPPER = 4, LATCH = 4, PUSH1 = 8, PUSH2 = 16,
+       ADDED = 8 };
 
 // A float that a bfloat16 holds, of exponent 2^-30 to 2^30: every product of two is exact.
 static float value(void) {
@@ -194,6 +196,8 @@ static int refused(const char *which) {
     k_mxu_push_16(spad(0, IN), 0, 1, SINGLE, 0);
   } else if (!strcmp(which, "pop-array")) { // a vpop of array 1 on a machine of one array
     k_mxu_pop_32_a1(0, spad(0, OUT), 1, 0, 0);
+  } else if (!strcmp(which, "pop-add")) {   // a vpop adding array 1's rows on a machine of one array
+    k_vpop(0, spad(0, OUT), 1, ADDED, 0);
   } else if (!strcmp(which, "array")) {     // a vmatmul for array 2 on a machine of two
     k_mxu_matmul_32_a2(spad(0, IN), 0, 1, SINGLE, 0);
   }
@@ -241,6 +245,52 @@ static int arrays(void) {
   matmul(a + 4, 2, BF16, LATCH);
   wrong += check(a, 4, 2);
   printf("mxu arrays: %u of %u elements as the formula says\n", checked - wrong, checked);
+  return wrong != 0;
+}
+
+// On a machine of two arrays, the v6e's split of K: each array its own tile and its own input, and one vpop of [3]
+// from array 0 their sum, as the v6e's vpop.add of mxu0 and mxu1: bfloat16 inputs as singles, int8 as int32.
+static float int8_value(void);
+static int arrays_add(unsigned format) {
+  enum { M = 8 };
+  static float a[2][M][WIDTH], b[2][WIDTH][WIDTH];
+  const unsigned rows = format == INT8 ? 4 : SLAB;
+  unsigned wrong = 0;
+  for (unsigned t = 0; t < 2; t++) {
+    for (unsigned row = 0; row < M; row++)
+      for (unsigned k = 0; k < WIDTH; k++) a[t][row][k] = format == INT8 ? int8_value() : value();
+    for (unsigned k = 0; k < WIDTH; k++)
+      for (unsigned column = 0; column < WIDTH; column++) b[t][k][column] = format == INT8 ? int8_value() : value();
+  }
+  for (array_on = 0; array_on < 2; array_on++)
+    for (unsigned half = PUSH1; half <= PUSH2; half += PUSH1)
+      for (unsigned at = LANES / rows; at-- > 0;) push(b[array_on] + (half == PUSH2 ? LANES : 0) + at * rows, rows, format, half);
+  for (array_on = 0; array_on < 2; array_on++) matmul(a[array_on], M, format, LATCH);
+  array_on = 0;
+  for (unsigned half = 0; half < 2; half++) {
+    if (k_vpop(0, spad(0, OUT), M, (format == INT8 ? INT8 : 0) | (half ? UPPER : 0) | ADDED, 0) != M)
+      puts("a vpop did not take every row");
+    for (unsigned lane = 0; lane < LANES; lane++)
+      for (unsigned row = 0; row < M; row++, checked++) {
+        const unsigned column = half * LANES + lane;
+        if (format == INT8) {
+          int32_t part[2] = {0, 0};
+          for (unsigned t = 0; t < 2; t++)
+            for (unsigned k = 0; k < WIDTH; k++) part[t] += (int32_t)a[t][row][k] * (int32_t)active[t][k][column];
+          const int32_t want = part[0] + part[1], got = *(int32_t *)spad(lane, OUT + 4 * row);
+          if (got != want && !wrong++) printf("row %u column %u: got %d, want %d\n", row, column, (int)got, (int)want);
+          continue;
+        }
+        float part[2] = {0, 0};
+        for (unsigned t = 0; t < 2; t++)
+          for (unsigned k = 0; k < WIDTH; k++) part[t] += a[t][row][k] * active[t][k][column];
+        const float want = part[0] + part[1], got = *(float *)spad(lane, OUT + 4 * row);
+        if (memcmp(&got, &want, sizeof got) && !wrong++)
+          printf("row %u column %u: got %g, want %g\n", row, column, (double)got, (double)want);
+      }
+  }
+  printf("mxu arrays added (%s): %u of %u elements as the formula says\n", format == INT8 ? "int8" : "bfloat16",
+         checked - wrong, checked);
   return wrong != 0;
 }
 
@@ -302,6 +352,8 @@ static int fp8(unsigned format) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "arrays")) return arrays();
+  if (argc == 2 && !strcmp(argv[1], "arrays-add")) return arrays_add(BF16);
+  if (argc == 2 && !strcmp(argv[1], "arrays-add-int8")) return arrays_add(INT8);
   if (argc == 2 && !strcmp(argv[1], "int8")) return int8();
   if (argc == 2 && !strcmp(argv[1], "e4m3")) return fp8(E4M3);
   if (argc == 2 && !strcmp(argv[1], "e5m2")) return array_on = 2, fp8(E5M2);
