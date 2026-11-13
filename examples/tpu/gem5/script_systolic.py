@@ -25,6 +25,7 @@ def arguments():
     parser.add_argument("--machine-config", help="The machine description (YAML) the model is configured from.")
     parser.add_argument("--vlane", type=int, help="The model's vpu_num_lanes, over the machine description's.")
     parser.add_argument("--vlen", type=int, default=256)
+    parser.add_argument("--coprocessor-trace-file", default="", help="File in the output directory for a Chrome trace of the model's calls and counters.")
     return parser.parse_args()
 
 class InstMemory(SimpleMemory):
@@ -157,6 +158,8 @@ def machine(args, vpu, scratchpad, clock="1GHz"):
             unit.coprocessorModel = args.model
             unit.coprocessorConfigKeys = list(settings.keys())
             unit.coprocessorConfigValues = list(settings.values())
+            if args.coprocessor_trace_file:
+                unit.coprocessorTraceFile = args.coprocessor_trace_file
 
     system.mem_ranges = [AddrRange(start=0, size="16GB")]
 
