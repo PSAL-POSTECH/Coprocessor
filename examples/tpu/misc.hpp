@@ -1,6 +1,6 @@
 // A TPU's instructions with no timing of their own: tpu_misc_issue_width of them a cycle, each done the cycle after its
-// issue, when it writes its values: the lane number, the bf16 pack and unpack, and the DMA (dma.hpp), an untimed side
-// path whose time TOGSim counts.
+// issue, when it writes its values: the lane number, the bf16 pack and unpack, the f32 minimum and maximum that carry
+// a NaN, and the DMA (dma.hpp), an untimed side path whose time TOGSim counts.
 #ifndef TPU_MISC_HPP
 #define TPU_MISC_HPP
 
@@ -23,7 +23,9 @@ class Misc : public cp::Component {
  public:
   // custom-2: lane number, compute. custom-1: DMA. pack is custom-2 sf.vc.v.vv funct6 10 (vd's vl words from vs2's vl
   // elements then vs1's, each rounded to bf16, two to a word); unpack_lo / unpack_hi sf.vc.v.iv funct6 10 with the
-  // field at 19:15 8 / 9 (vd's vl f32 from the first or the last vl of vs2's 2 * vl bf16).
+  // field at 19:15 8 / 9 (vd's vl f32 from the first or the last vl of vs2's 2 * vl bf16). minimum / maximum are
+  // sf.vc.v.vv funct6 8 / 9: vd's vl f32 the least / greatest of vs2's and vs1's, a NaN if either is, -0 below +0,
+  // as the v6e's vmin.f32 / vmax.f32 (XLA's minimum and maximum) where RISC-V's vfmin / vfmax drop a NaN.
   static constexpr uint32_t FUNCTION = 0xFE00707F, FIELD = 0xFE0FF07F;
   static constexpr cp::Encoding VLANE_IDX{0x0000305B, FUNCTION, "vlane_idx"};
   static constexpr cp::Encoding COMPUTE{0x0600305B, FUNCTION, "compute"};
@@ -36,11 +38,13 @@ class Misc : public cp::Component {
   static constexpr cp::Encoding PACK{0x2800005B, FUNCTION, "pack"};
   static constexpr cp::Encoding UNPACK_LO{0x2804305B, FIELD, "unpack_lo"};
   static constexpr cp::Encoding UNPACK_HI{0x2804B05B, FIELD, "unpack_hi"};
+  static constexpr cp::Encoding MINIMUM{0x2000005B, FUNCTION, "minimum"};
+  static constexpr cp::Encoding MAXIMUM{0x2400005B, FUNCTION, "maximum"};
 
   // `name` is the component as its statistics report it; the model that holds the component says it.
   Misc(cp::Coprocessor &cp, const char *name) : Component(cp, name) {
     for (const cp::Encoding *e : {&VLANE_IDX, &COMPUTE, &MVIN2, &MVIN, &MVOUT, &DMA_CONFIG_DESC, &DMA_INDEX_KEY, &MVIN3,
-                                  &PACK, &UNPACK_LO, &UNPACK_HI})
+                                  &PACK, &UNPACK_LO, &UNPACK_HI, &MINIMUM, &MAXIMUM})
       register_insn(*e);
   }
   // width a cycle; a slot is free the cycle after its pop, so 2 x width slots sustain it. A fresh Dma each time.
@@ -86,6 +90,8 @@ class Misc : public cp::Component {
     else if (is(insn, PACK)) pack(host, insn);
     else if (is(insn, UNPACK_LO)) unpack(host, insn, 0);
     else if (is(insn, UNPACK_HI)) unpack(host, insn, insn.vl);
+    else if (is(insn, MINIMUM)) extreme(host, insn, false);
+    else if (is(insn, MAXIMUM)) extreme(host, insn, true);
     else if (is(insn, DMA_CONFIG_DESC)) dma_.dma_config_desc(host, insn);
     else if (is(insn, MVOUT)) return dma_.mvout(host, insn);
     else if (transfer(insn)) return dma_.mvin(host, insn);
@@ -129,6 +135,25 @@ class Misc : public cp::Component {
         put<float>(host, lane, cp::rd(insn), i, f32_of_bf16(words[e / 2] >> (16 * (e & 1))));
       }
     }
+  }
+
+  // minimum / maximum: element i of vd is the least (greatest with `greatest`) of vs2's and vs1's element i, the
+  // quiet NaN 0x7FC00000 if either is a NaN, and -0 the lesser of the two zeros.
+  static void extreme(const Host &host, const Insn &insn, bool greatest) {
+    for (uint32_t lane = 0; lane < host.lanes(); lane++)
+      for (uint32_t i = 0; i < insn.vl; i++) {
+        const uint32_t a = get<uint32_t>(host, lane, cp::rs2(insn), i), b = get<uint32_t>(host, lane, cp::rs1(insn), i);
+        put<uint32_t>(host, lane, cp::rd(insn), i, extreme_of(a, b, greatest));
+      }
+  }
+  static bool is_nan(uint32_t u) { return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu); }
+  static uint32_t extreme_of(uint32_t a, uint32_t b, bool greatest) {
+    if (is_nan(a) || is_nan(b)) return 0x7FC00000u;
+    if ((a | b) == 0x80000000u) return greatest ? (a & b) : (a | b);
+    float x, y;
+    std::memcpy(&x, &a, sizeof x);
+    std::memcpy(&y, &b, sizeof y);
+    return (greatest ? x < y : y < x) ? b : a;
   }
 
   // vlane_idx: every element of vd is the number of its lane, as 64 bits whatever the element width.

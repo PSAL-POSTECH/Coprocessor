@@ -249,6 +249,26 @@ k_pack:
     mv      a0, t0
     ret
 
+# The f32 minimum and maximum (sf.vc.v.vv 0x0, 0x1): a0 holds vl singles to vs2, a1 vl singles to vs1; a2 receives
+# the minimums then the maximums, vl each.
+.macro extremes name, lmul, vd, vs2, vs1, vd2
+    .globl \name
+\name:
+    vsetvli t0, a3, e32, \lmul, ta, ma
+    vle32.v \vs2, (a0)
+    vle32.v \vs1, (a1)
+    sf.vc.v.vv 0x0, \vd, \vs2, \vs1
+    sf.vc.v.vv 0x1, \vd2, \vs2, \vs1
+    slli    t1, t0, 2
+    add     t1, a2, t1
+    vse32.v \vd, (a2)
+    vse32.v \vd2, (t1)
+    mv      a0, t0
+    ret
+.endm
+    extremes k_extremes_m1, m1, v16, v8, v9, v17
+    extremes k_extremes_m8, m8, v16, v0, v8, v24
+
 # The bf16 unpack: a0 holds vl words (2 * vl bf16); a1 receives 2 * vl singles, unpack_lo's then unpack_hi's.
     .globl k_unpack
 k_unpack:

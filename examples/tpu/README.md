@@ -65,6 +65,8 @@ custom-2 (opcode 0x5B)
   sf.vc.v.vv 0x2, v16, v8, v9     0x2884885b   pack                   Misc
   sf.vc.v.iv 0x2, v16, v8, 8      0x2884385b   unpack_lo (field 8)    Misc
   sf.vc.v.iv 0x2, v17, v8, 9      0x2884b8db   unpack_hi (field 9)    Misc
+  sf.vc.v.vv 0x0, v16, v8, v9     0x2084885b   minimum                Misc
+  sf.vc.v.vv 0x1, v17, v8, v9     0x248488db   maximum                Misc
   sf.vc.iv   0x1, 0x0, v1, 0      0x2610305b   systolic weight push   Systolic
   sf.vc.iv   0x0, 0x0, v1, 0      0x2210305b   systolic input push    Systolic
   sf.vc.v.i  0x2, 0x0, v2, 0      0x0800315b   systolic pop           Systolic
@@ -237,7 +239,10 @@ keys are [below](#keys-read-from-the-machine-description).
 ## Misc: one-cycle instructions and the DMA
 
 `tpu::Misc` owns every instruction with no timing of its own: `vlane_idx`,
-`compute`, `pack`, `unpack_lo`, `unpack_hi`, and the DMA's six. Its `insns()`
+`compute`, `pack`, `unpack_lo`, `unpack_hi`, `minimum`, `maximum`, and the DMA's six.
+`minimum` and `maximum` are the f32 least and greatest that carry a NaN, as the
+v6e's `vmin.f32` and `vmax.f32` (XLA's `minimum`, `maximum`) do in one
+instruction where RISC-V's `vfmin` and `vfmax` return the operand that is not a NaN. Its `insns()`
 takes `tpu_misc_issue_width` (default 2) a cycle, 2 x that deep
 ([misc.hpp:47-55](misc.hpp#L47-L55)); at the next `cycle` each pops, spends
 one slot of the `issue` port, writes its values (Spike) and completes
