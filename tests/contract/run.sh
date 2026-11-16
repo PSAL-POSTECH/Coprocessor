@@ -207,4 +207,50 @@ part 0 "[commit ] insn=2c2552db "
 part 1 "[commit ] insn=2825c1db "
 verdict "gem5: writing vd dirties VS, and FS off refuses only a form that reads f[rs1]"
 
+echo "-- trace"
+log="$BUILD/status.trace.log"
+gem5_bare_run "$BUILD/m5out-trace" "$BUILD/libprint_args.so" "$BUILD/status" --trace-file=trace.pftrace > "$log" 2>&1; rc=$?
+ended 0
+python3 - "$BUILD/m5out-trace/trace.pftrace" "$(grep -c '^\[issue  \]' "$log")" > "$log.check" 2>&1 <<'PY' || miss "trace.pftrace: $(tail -1 "$log.check")"
+import sys
+def fields(b):
+    i = 0
+    while i < len(b):
+        k = s = 0
+        while True:
+            c = b[i]; i += 1; k |= (c & 127) << s; s += 7
+            if c < 128: break
+        f, w = k >> 3, k & 7
+        if w == 0:
+            v = s = 0
+            while True:
+                c = b[i]; i += 1; v |= (c & 127) << s; s += 7
+                if c < 128: break
+        else:
+            n = s = 0
+            while True:
+                c = b[i]; i += 1; n |= (c & 127) << s; s += 7
+                if c < 128: break
+            v = b[i:i + n]; i += n
+        yield f, v
+def one(b, f):
+    return next((v for g, v in fields(b) if g == f), None)
+begins = ends = 0; schema = False; reset = False
+for f, pkt in fields(open(sys.argv[1], "rb").read()):
+    assert f == 1, "top level is not Trace.packet"
+    ev = one(pkt, 11)
+    if ev is None: continue
+    kind, name = one(ev, 9), (one(ev, 23) or b"").decode()
+    begins += kind == 1; ends += kind == 2
+    notes = [bytes(v) for g, v in fields(ev) if g == 4]
+    if kind == 3 and name == "schema":
+        schema = b"coprocessor-trace/2" in b"".join(notes)
+    reset |= kind == 3 and name == "reset"
+assert schema, "no coprocessor-trace/2 schema instant"
+assert begins and begins == ends, f"{begins} slice begins, {ends} ends"
+assert begins == int(sys.argv[2]), f"{begins} slices for {sys.argv[2]} issued instructions"
+assert reset, "no stats reset instant"
+PY
+verdict "gem5: coprocessorTraceFile writes coprocessor-trace/2 with a slice per issued instruction"
+
 exit $failed

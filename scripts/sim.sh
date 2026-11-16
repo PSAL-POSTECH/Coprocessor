@@ -42,9 +42,9 @@ gem5_run() {
   "$GEM5" -d "$1" "$REPO/examples/gem5_se.py" --model "$2" "${description[@]}" "${@:5}" "$4"
 }
 
-# gem5_bare_run <output-dir> <model.so> <elf>
+# gem5_bare_run <output-dir> <model.so> <elf> [fixture options]
 gem5_bare_run() {
-  "$GEM5" -d "$1" "$REPO/tests/contract/gem5_bare.py" --model "$2" "$3"
+  "$GEM5" -d "$1" "$REPO/tests/contract/gem5_bare.py" --model "$2" "${@:4}" "$3"
 }
 
 # gem5_config <m5out> <section> <key>: the key's value in the section of the run's config.ini
