@@ -959,10 +959,10 @@ occupied:
 
 ```
  64 ops                       generic tpu machine       v6e machine
- vfadd only                   busy 16 of 35 cycles      busy 16 of 35 cycles    4 a cycle on both
- vfadd and vfmul in turn      busy  8 of 28 cycles      busy 16 of 35 cycles    8 a cycle -> 4 a cycle
+ vfadd only                   busy 16 of 34 cycles      busy 16 of 34 cycles    4 a cycle on both
+ vfadd and vfmul in turn      busy  8 of 27 cycles      busy 16 of 34 cycles    8 a cycle -> 4 a cycle
    (tests/tpuv6e/valu.S)
- vfredusum.vs only            busy 16 of 36 cycles      busy 32 of 51 cycles    two VALU ops each
+ vfredusum.vs only            busy 16 of 35 cycles      busy 32 of 50 cycles    two VALU ops each
 ```
 
 `tests/tpuv6e/run.sh` asserts the `valu.S` row on the v6e machine. The rest

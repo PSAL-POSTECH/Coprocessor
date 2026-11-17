@@ -657,12 +657,12 @@ statistics dump. `tests/tpuv3/run.sh` asserts the v3's numbers,
 `tests/tpuv6e/run.sh` the v6e's.
 
 - `tests/tpuv6e/valu.S`: 64 independent `vfadd`s and `vfmul`s.
-  - v6e: VALUs busy 16 of 35 cycles, 4 a cycle.
-  - v3: busy 32 of 51 cycles, 2 a cycle.
+  - v6e: VALUs busy 16 of 34 cycles, 4 a cycle.
+  - v3: busy 32 of 50 cycles, 2 a cycle.
 - `tests/tpu/loads.S`: 64 vector loads from lines 128 bytes apart, then 64
   bytes apart.
   - v6e: 40 and 40 cycles.
-  - v3: 86 and 83 cycles, with 68 and 64 scratchpad reads, at most 1 a cycle.
+  - v3: 86 and 82 cycles, with 68 and 64 scratchpad reads, at most 1 a cycle.
     The scratchpad has no banks, so the spacing alone changes nothing. The 4
     extra reads are the instruction lines the 128-apart window still fetches,
     and they take the one load port.
