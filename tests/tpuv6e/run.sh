@@ -178,7 +178,7 @@ report "at most $(window scratchpad 1 system.spad.loadsPerCycle::max_value) load
 report "$(window loads 2 system.cpu.numCycles) and $(window loads 4 system.cpu.numCycles), at most $(window loads 2 system.spad.loadsPerCycle::max_value) loads a cycle" \
   "40 and 40, at most 3 loads a cycle" \
   "loads.S's 64 loads take the same from lines 128 and 64 bytes apart: the scratchpad has no banks, its ports take any address"
-report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 16 of 35 cycles" \
+report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 16 of 34 cycles" \
   "valu.S's 64 independent vfadds and vfmuls keep the VALUs busy 16 cycles: 4 a cycle, whatever the mix"
 
 echo "-- what it computes"

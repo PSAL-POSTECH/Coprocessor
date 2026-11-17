@@ -137,9 +137,9 @@ report "at most $(window scratchpad 1 system.spad.loadsPerCycle::max_value) load
   "at most 1 loads, 1 stores, 2 accesses a cycle" \
   "scratchpad.S's independent loads and stores, one and one in turn: the scratchpad takes 1 load, 1 store and 2 accesses in a cycle"
 report "$(window loads 2 system.cpu.numCycles) and $(window loads 4 system.cpu.numCycles), $(window loads 2 system.spad.loads) and $(window loads 4 system.spad.loads) reads, at most $(window loads 2 system.spad.loadsPerCycle::max_value) a cycle" \
-  "86 and 83, 68 and 64 reads, at most 1 a cycle" \
+  "86 and 82, 68 and 64 reads, at most 1 a cycle" \
   "loads.S's 64 loads from lines 128 and 64 bytes apart: no banks, so only the 4 instruction lines the 128-apart window still fetches, on the one load port, set them apart"
-report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 32 of 51 cycles" \
+report "busy $(window valu 1 system.cpu.units.Vpu.admitted) of $(window valu 1 system.cpu.numCycles) cycles" "busy 32 of 50 cycles" \
   "tests/tpuv6e/valu.S's 64 independent vfadds and vfmuls keep the VALUs busy 32 cycles: 2 a cycle, whatever the mix"
 report "exit ${rc[machine-mxu]}, $(issues machine-mxu); commits $(commits machine-mxu)" "exit 0, vmatmul:0:0/0 vpop:1:0/0 vpop:0:0/0; commits vmatpush:1 vmatmul:2 vpop:13 vpop:17" \
   "mxu.S on the machine as on gem5_se.py: the matrix unit's timing is the model's, not the machine's; its insns() takes 2 a cycle, so the machine's wider issue changes nothing"

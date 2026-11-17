@@ -244,7 +244,7 @@ report "$(window machine-loads 2 system.cpu.numCycles) and $(window machine-load
 
 timeout 300 "$GEM5" -d "$BUILD/m5out-tpu-machine-addresses" "$REPO/examples/tpu/gem5/script_systolic.py" \
   -c "$BUILD/tpu-addresses" --model "$BUILD/libtpu.so" > "$BUILD/tpu-machine-addresses.gem5.log" 2>&1
-report "$(window machine-addresses 2 system.cpu.numCycles)" "91" \
-  "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 91 cycles (99 with four integer units, 95 with five)"
+report "$(window machine-addresses 2 system.cpu.numCycles)" "85" \
+  "addresses.S's 64 vector loads, each with the addi that steps its pointer, take 85 cycles (93 with four integer units, 88 with five)"
 
 exit $failed

@@ -1288,7 +1288,7 @@ machine's two:
 
 ```
                                      lines 128 B apart     lines 64 B apart
-one request, one bank of 32 GB/s            89                    82
+one request, one bank of 32 GB/s            95                    82
 two requests, two banks (this machine)      85                    51
 reads per bank (this machine)             64 / 0               32 / 32
 ```
@@ -1335,9 +1335,9 @@ Cycles of the window, with 4, 5 and 6 integer units:
 
 ```
                        4 units   5 units   6 units (this machine)
-addresses.S              99        95        91
+addresses.S              93        88        85
 loads.S, 128 B apart     92        89        85
-loads.S, 64 B apart      60        57        51
+loads.S, 64 B apart      58        55        51
 ```
 
 <details><summary>Reproduce</summary>
